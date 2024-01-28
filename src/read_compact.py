@@ -1,7 +1,5 @@
 import struct
-import time
 from typing import Iterator, BinaryIO
-import numpy as np
 
 
 def read_data(
@@ -72,20 +70,4 @@ def read_binary_file(
 
 
 if __name__ == "__main__":
-    # Path to the binary file
-    binary_file_path = "P:/Valencia/I3M/Proyectos/ForTheGroup/event_petsys/data/ERC/david_data_coinc.ldat"
-
-    # test the time taken to read the entire file using read_binary_file function
-    start_time = time.time()
-    event_count = 0
-    for event in read_binary_file(binary_file_path):
-        det1, det2 = event
-        print(f"Lenghts: {len(det1)}, {len(det2)}")
-        time.sleep(1)
-        event_count += 1
-        if event_count % 10000 == 0:
-            print(f"Events processed: {event_count}")
-        pass
-    print("---------------------")
-    end_time = time.time()
-    print(f"Time taken: {end_time - start_time} seconds")
+    pass
