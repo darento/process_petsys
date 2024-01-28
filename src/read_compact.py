@@ -2,11 +2,12 @@ import struct
 from typing import Iterator, BinaryIO
 
 
-def read_data(
+def read_detector_evt(
     f: BinaryIO, data_format: str, data_size: int, num_lines: int, en_filter: float
 ) -> list:
     """
-    Reads and unpacks data from a binary file.
+    Reads and unpacks data from a binary file for the lines corresponding to the hits
+    at detector level.
 
     Parameters:
     f (file): The binary file to read from.
@@ -59,9 +60,9 @@ def read_binary_file(
                 f.seek(data_size * (header[0] + header[1]), 1)
                 continue
 
-            det1 = read_data(f, data_format, data_size, header[0], en_filter)
+            det1 = read_detector_evt(f, data_format, data_size, header[0], en_filter)
             det2 = (
-                read_data(f, data_format, data_size, header[1], en_filter)
+                read_detector_evt(f, data_format, data_size, header[1], en_filter)
                 if not group_events
                 else []
             )
