@@ -1,22 +1,41 @@
 import numpy as np
 import yaml
 
-from src.plots import plot_chan_position
+
+def validate_yaml_map(yaml_map: dict, schema: dict) -> bool:
+    # Validate mandatory keys
+    for key, value_type in schema["mandatory"].items():
+        if key not in yaml_map:
+            raise RuntimeError(f"Missing mandatory key in YAML map: {key}")
+        if not isinstance(yaml_map[key], value_type):
+            raise RuntimeError(
+                f"Incorrect type for mandatory key {key}: expected {value_type.__name__}, got {type(yaml_map[key]).__name__}"
+            )
+
+    # Check for the presence and validity of one and only one optional group
+    found_group = None
+    for group_info in schema["optional_groups"]:
+        group, expected_type = group_info["group"], group_info["type"]
+        if all(
+            key in yaml_map and isinstance(yaml_map[key], expected_type)
+            for key in group
+        ):
+            if found_group is not None:
+                # Found more than one valid group
+                raise RuntimeError(
+                    "More than one of the optional groups are present and correctly formatted in the YAML map."
+                )
+            found_group = group
+    if found_group is None:
+        raise RuntimeError(
+            "Exactly one of the optional groups must be present and correctly formatted in the YAML map.\n"
+            "Name[channels_j1, channels_j2] and [Time, Energy] are the optional groups."
+        )
+
+    return True
 
 
 def _read_yaml_file(mapping_file: str) -> dict:
-    """
-    This function reads a YAML file and returns its contents as a dictionary.
-
-    Parameters:
-    mapping_file (str): The path to the YAML file.
-
-    Output:
-    dict: The contents of the YAML file as a dictionary.
-
-    Raises:
-    RuntimeError: If the YAML file is not readable or not found, or if it does not have the correct format.
-    """
     try:
         with open(mapping_file) as map_buffer:
             yaml_map = yaml.safe_load(map_buffer)
@@ -24,118 +43,143 @@ def _read_yaml_file(mapping_file: str) -> dict:
         raise RuntimeError("Mapping file not readable.")
     except FileNotFoundError:
         raise RuntimeError("Mapping file not found, please check directory")
-    if (
-        type(yaml_map) is not dict
-        or "channels_j1" not in yaml_map.keys()
-        or "channels_j2" not in yaml_map.keys()
-        or "FEM" not in yaml_map.keys()
-        or "FEBD" not in yaml_map.keys()
-        or "mod_feb_map" not in yaml_map.keys()
-        or "x_pitch" not in yaml_map.keys()
-        or "y_pitch" not in yaml_map.keys()
-    ):
-        raise RuntimeError("Mapping file not correct format.")
+
+    # Define YAML schema
+    yaml_schema = {
+        "mandatory": {
+            "FEM": str,
+            "FEBD": str,
+            "mod_feb_map": dict,
+            "x_pitch": (int, float),
+            "y_pitch": (int, float),
+        },
+        "optional_groups": [
+            {
+                "group": ["channels_j1", "channels_j2"],
+                "type": list,
+            },
+            {
+                "group": ["Time", "Energy"],
+                "type": list,
+            },
+        ],
+    }
+
+    validate_yaml_map(yaml_map, yaml_schema)
     return yaml_map
 
 
-def _get_coordinates_FEM128(channel_pos: int, x_pitch: float, y_pitch: float) -> tuple:
+class FEMBase:
+    def __init__(self, x_pitch: float, y_pitch: float, channels: int):
+        self.x_pitch = x_pitch
+        self.y_pitch = y_pitch
+        self.channels = channels
+
+    def get_coordinates(self, channel_pos: int) -> tuple:
+        raise NotImplementedError("Subclass must implement abstract method")
+
+
+class FEM128(FEMBase):
+    def __init__(self, x_pitch: float, y_pitch: float):
+        super().__init__(x_pitch, y_pitch, 128)
+
+    def get_coordinates(self, channel_pos: int) -> tuple:
+        row = channel_pos // 8
+        col = channel_pos % 8
+        loc_x = (col + 0.5) * self.x_pitch
+        loc_y = (row + 0.5) * self.y_pitch
+        return (loc_x, loc_y)
+
+
+class FEM256(FEMBase):
+    def __init__(self, x_pitch: float, y_pitch: float):
+        super().__init__(x_pitch, y_pitch, 256)
+
+    def get_coordinates(self, channel_pos: int) -> tuple:
+        # Implement the FEM256 coordinate calculation logic here
+        pass
+
+
+def get_FEM_instance(FEM_type: str, x_pitch: float, y_pitch: float):
+    if FEM_type == "FEM128":
+        return FEM128(x_pitch, y_pitch)
+    elif FEM_type == "FEM256":
+        return FEM256(x_pitch, y_pitch)
+    else:
+        raise ValueError("Unsupported FEM type")
+
+
+def get_optional_group_keys(yaml_map: dict) -> tuple:
     """
-    This function calculates the x and y coordinates for a given channel position in the FEM128.
+    Determines which optional group is present in the yaml_map and returns the keys.
 
     Parameters:
-    channel_pos (int): The position of the channel.
-    x_pitch (float): The x pitch.
-    y_pitch (float): The y pitch.
+    - yaml_map (dict): The loaded YAML map.
 
-    Output:
-    tuple: The x and y coordinates.
+    Returns:
+    - tuple: A tuple containing the keys of the present optional group.
     """
-    # Calculate row and column in the grid
-    row = (channel_pos) // 8
-    col = (channel_pos) % 8
-
-    # Calculate x and y coordinates
-    loc_x = (col + 0.5) * x_pitch
-    loc_y = (row + 0.5) * y_pitch
-
-    print(f"channel: {channel_pos}, row: {row}, col: {col}, x: {loc_x}, y: {loc_y}")
-    return (loc_x, loc_y)
-
-
-def _get_coordinates_FEM256(channel_pos: int, x_pitch: float, y_pitch: float) -> tuple:
-    pass
+    if "channels_j1" in yaml_map and "channels_j2" in yaml_map:
+        return ("channels_j1", "channels_j2")
+    elif "Time" in yaml_map and "Energy" in yaml_map:
+        return ("Time", "Energy")
+    else:
+        raise RuntimeError("No valid optional group found.")
 
 
 def _get_local_mapping(
-    FEM_chan: int,
-    mod_feb_map: dict,
-    channels_j1: list,
-    channels_j2: list,
-    x_pitch: float,
-    y_pitch: float,
+    mod_feb_map: dict, channels_1: list, channels_2: list, FEM_instance: FEMBase
 ) -> dict:
     """
-    This function generates the basic mapping from the mapping file.
+    Generates the basic mapping from the mapping file.
 
     Parameters:
-    FEM_chan (int): The number of channels in the FEM.
-    mod_feb_map (dict): The mapping from modules to FEBs.
-    channels_j1 (list): The list of channels in J1.
-    channels_j2 (list): The list of channels in J2.
-    x_pitch (float): The x pitch.
-    y_pitch (float): The y pitch.
+    - mod_feb_map (dict): Mapping from modules to FEBs.
+    - channels_1 (list): The first list of channels or other entities.
+    - channels_2 (list): The second list of channels or other entities.
+    - FEM_instance (FEMBase): FEM instance for coordinate calculations.
 
-    Output:
-    dict: The local mapping.
+    Returns:
+    - dict: The local mapping.
     """
-    get_coord_from = (
-        _get_coordinates_FEM128 if FEM_chan == 128 else _get_coordinates_FEM256
-    )
     local_map = {}
     for mod, value in mod_feb_map.items():
         portID, slaveID, febport = value
-        # Calculate the minimum channel number for the module
-        mod_min_chan = 131072 * portID + 4096 * slaveID + FEM_chan * febport
-        for i, (ch_j1, ch_j2) in enumerate(zip(channels_j1, channels_j2)):
-            loc_x, loc_y = get_coord_from(i, x_pitch, y_pitch)
-            local_map[ch_j1 + mod_min_chan] = (loc_x, loc_y)
-            local_map[ch_j2 + mod_min_chan] = (loc_x, loc_y)
-    print(local_map)
+        mod_min_chan = (
+            131072 * portID + 4096 * slaveID + FEM_instance.channels * febport
+        )
+        for i, (ch_1, ch_2) in enumerate(zip(channels_1, channels_2)):
+            loc_x, loc_y = FEM_instance.get_coordinates(i)
+            local_map[ch_1 + mod_min_chan] = (loc_x, loc_y)
+            local_map[ch_2 + mod_min_chan] = (loc_x, loc_y)
+
     return local_map
 
 
 def map_factory(mapping_file: str) -> dict:
     """
-    This function reads a mapping file and generates a mapping.
+    Reads a mapping file and generates a mapping.
 
     Parameters:
-    mapping_file (str): The path to the mapping file.
+    - mapping_file (str): The path to the mapping file.
 
-    Output:
-    dict: The mapping.
-
-    Raises:
-    RuntimeError: If the FEM is not in the correct format.
+    Returns:
+    - dict: The mapping.
     """
     yaml_map = _read_yaml_file(mapping_file)
-    FEM = yaml_map["FEM"]
-    FEBD = yaml_map["FEBD"]
+    FEM_type = yaml_map["FEM"]
     x_pitch = yaml_map["x_pitch"]
     y_pitch = yaml_map["y_pitch"]
     mod_feb_map = yaml_map["mod_feb_map"]
 
-    if FEM == "FEM128":
-        FEM_chan = 128
-        channels_j1 = yaml_map["channels_j1"]
-        channels_j2 = yaml_map["channels_j2"]
-        local_map = _get_local_mapping(
-            FEM_chan, mod_feb_map, channels_j1, channels_j2, x_pitch, y_pitch
-        )
-    elif FEM == "FEM256":
-        # TODO: Add FEM256 mapping
-        FEM_chan = 256
-        pass
-    else:
-        raise RuntimeError("FEM not correct format.")
+    # Extracting the necessary lists based on the optional group present
+    channel_group_keys = get_optional_group_keys(yaml_map)
+    channels_1 = yaml_map[channel_group_keys[0]]
+    channels_2 = yaml_map[channel_group_keys[1]]
 
+    # Creating the FEM instance
+    FEM_instance = get_FEM_instance(FEM_type, x_pitch, y_pitch)
+
+    # Generating the local map without passing the whole yaml_map
+    local_map = _get_local_mapping(mod_feb_map, channels_1, channels_2, FEM_instance)
     return local_map
