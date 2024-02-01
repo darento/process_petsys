@@ -19,8 +19,10 @@ import yaml
 from src.read_compact import read_binary_file
 from src.filters import filter_total_energy
 import src.filters as filters
+
 from src.detector_features import calculate_total_energy
-from src.map_generator import get_coordinates
+from src.mapping_generator import map_factory
+from src.plots import plot_chan_position
 
 
 def main():
@@ -37,7 +39,10 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    dict_coords = get_coordinates(map_file)
+    dict_coords = map_factory(map_file)
+
+    # Plot the coordinates of the channels
+    plot_chan_position(dict_coords)
 
     # Read the energy range
     en_min = float(config["energy_range"][0])
