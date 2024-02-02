@@ -1,8 +1,9 @@
 class FEMBase:
-    def __init__(self, x_pitch: float, y_pitch: float, channels: int):
+    def __init__(self, x_pitch: float, y_pitch: float, channels: int, num_ASICS: int):
         self.x_pitch = x_pitch
         self.y_pitch = y_pitch
         self.channels = channels
+        self.num_ASICS = num_ASICS
 
     def get_coordinates(self, channel_pos: int) -> tuple:
         raise NotImplementedError("Subclass must implement abstract method")
@@ -10,7 +11,7 @@ class FEMBase:
 
 class FEM128(FEMBase):
     def __init__(self, x_pitch: float, y_pitch: float):
-        super().__init__(x_pitch, y_pitch, 128)
+        super().__init__(x_pitch, y_pitch, 128, 2)
 
     def get_coordinates(self, channel_pos: int) -> tuple:
         row = channel_pos // 8
@@ -22,7 +23,7 @@ class FEM128(FEMBase):
 
 class FEM256(FEMBase):
     def __init__(self, x_pitch: float, y_pitch: float):
-        super().__init__(x_pitch, y_pitch, 256)
+        super().__init__(x_pitch, y_pitch, 256, 4)
 
     def get_coordinates(self, channel_pos: int) -> tuple:
         # Implement FEM256 logic
