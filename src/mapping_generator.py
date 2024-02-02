@@ -1,5 +1,5 @@
 from src.fem_handler import FEMBase, get_FEM_instance
-from src.yaml_handler import YAMLReader, get_optional_group_keys
+from src.yaml_handler import YAMLMapReader, get_optional_group_keys
 
 
 def _get_local_mapping(
@@ -32,6 +32,16 @@ def _get_local_mapping(
 
 
 def map_factory(mapping_file: str) -> dict:
+    """
+    This function reads a YAML mapping file and returns a local map and the keys of the mod_feb_map.
+
+    Parameters:
+    mapping_file (str): The path to the YAML mapping file.
+
+    Returns:
+    dict: A dictionary containing the local map and the keys of the mod_feb_map.
+    int: The number of ASICS in the mapping file.
+    """
     yaml_schema = {
         "mandatory": {
             "FEM": str,
@@ -46,7 +56,7 @@ def map_factory(mapping_file: str) -> dict:
         ],
     }
 
-    reader = YAMLReader(yaml_schema)
+    reader = YAMLMapReader(yaml_schema)
     yaml_map = reader.read_yaml_file(mapping_file)
     FEM_type = yaml_map["FEM"]
     x_pitch = yaml_map["x_pitch"]
@@ -64,4 +74,4 @@ def map_factory(mapping_file: str) -> dict:
 
     # Implement _get_local_mapping based on the refactored approach
     local_map = _get_local_mapping(mod_feb_map, channels_1, channels_2, FEM_instance)
-    return local_map
+    return local_map, len(mod_feb_map.keys()) * FEM_instance.num_ASICS
