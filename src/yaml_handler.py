@@ -1,7 +1,7 @@
 import yaml
 
 
-class YAMLReader:
+class YAMLMapReader:
     def __init__(self, schema):
         self.schema = schema
 
