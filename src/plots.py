@@ -18,9 +18,6 @@ def plot_chan_position(dict_coords: dict, mod_number) -> None:
     """
     sqrt_mod = math.ceil(mod_number**0.5)
 
-    # Initialize plot
-    fig, ax = plt.subplots(sqrt_mod, sqrt_mod, figsize=(10, 10))
-
     # Create a dictionary to store the count of channels at each position
     mM_dict = {}
     fig_number = 0
@@ -32,22 +29,23 @@ def plot_chan_position(dict_coords: dict, mod_number) -> None:
             mM_dict[(portID, slaveID, chipID)] = fig_number
             fig_number += 1
 
-        # Calculate the row and column indices
-        row_index = mM_dict[(portID, slaveID, chipID)] // sqrt_mod
-        col_index = mM_dict[(portID, slaveID, chipID)] % sqrt_mod
-
         x, y = xy
-        print(mM_dict[(portID, slaveID, chipID)], row_index, col_index)
-        ax[row_index, col_index].scatter(x, y, label=f"Channel {ch}")
+
+        # chipID figure
+        fig = plt.figure(mM_dict[(portID, slaveID, chipID)], figsize=(10, 10))
+
+        plt.scatter(x, y, label=f"Channel {ch}")
 
         # Adjust the text position based on the count
-        ax[row_index, col_index].text(x, y, str(ch), va="center", ha="center")
+        plt.text(x, y, str(ch), va="center", ha="center")
 
         # Similarly plot for J2 and any other ports if needed
 
         # Set plot properties
-        ax[row_index, col_index].set_xlabel("X position (mm)")
-        ax[row_index, col_index].set_ylabel("Y position (mm)")
-        ax[row_index, col_index].set_title("Floodmap Representation of Channels")
-        ax[row_index, col_index].axis("equal")  # To maintain the aspect ratio
+        plt.xlabel("X position (mm)")
+        plt.ylabel("Y position (mm)")
+        plt.title(
+            f"Floodmap Representation of Channels for portID {portID}, slaveID {slaveID}, chipID {chipID}"
+        )
+        plt.axis("equal")  # To maintain the aspect ratio
     plt.show()
