@@ -1,7 +1,15 @@
+import numpy as np
+
+
 def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
     """
-    Calculates the electronics numbers:
-    portID, slaveID, chipID, channelID
+    Calculates the electronics numbers: portID, slaveID, chipID, channelID based on the given channel id.
+
+    Parameters:
+    channel_id (int): The channel id to calculate the electronics numbers from.
+
+    Returns:
+    tuple[int, int, int, int]: A tuple containing the portID, slaveID, chipID, and channelID.
     """
     portID = channel_id // 131072
     slaveID = (channel_id % 131072) // 4096
@@ -12,8 +20,16 @@ def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
 
 def get_absolute_id(portID: int, slaveID: int, chipID: int, channelID: int) -> int:
     """
-    Calculates absolute channel id from
-    electronics numbers.
+    Calculates the absolute channel id from the given electronics numbers.
+
+    Parameters:
+    portID (int): The port id.
+    slaveID (int): The slave id.
+    chipID (int): The chip id.
+    channelID (int): The channel id.
+
+    Returns:
+    int: The absolute channel id calculated from the electronics numbers.
     """
     return 131072 * portID + 4096 * slaveID + 64 * chipID + channelID
 
@@ -31,7 +47,9 @@ def calculate_total_energy(det_event: list) -> float:
     return sum([ch[1] for ch in det_event])
 
 
-def calculate_centroid(det_event: list, x_rtp: int, y_rtp: int) -> tuple:
+def calculate_centroid(
+    local_dict: dict, det_event: list, x_rtp: int, y_rtp: int
+) -> tuple:
     """
     Calculate the centroid of the event.
 
@@ -45,39 +63,21 @@ def calculate_centroid(det_event: list, x_rtp: int, y_rtp: int) -> tuple:
     """
     powers = [x_rtp, y_rtp]
     offsets = [0.00001, 0.00001]
-    print(det_event)
-    exit(0)
 
+    sum_xy = [0.0, 0.0]
+    weights_xy = [0.0, 0.0]
 
-def centroid_calculation(
-    plot_pos: dict, offset_x: float = 0.00001, offset_y: float = 0.00001
-) -> None:
-    """
-    Calculates the centroid of a set of module
-    data according to a centroid map.
-    """
-    powers = [1, 2]
-    offsets = [offset_x, offset_y]
-    plot_ax = ["local_x", "local_y"]
+    # Calculate the centroid of the event based on the local coordinates of the channels
+    # and the energy deposited in each channel
+    for hit in det_event:
+        ch = hit[-1]
+        energy = hit[1]
+        x, y = local_dict[ch]
+        weight_x = (energy + offsets[0]) ** powers[0]
+        weight_y = (energy + offsets[1]) ** powers[1]
+        sum_xy[0] += weight_x * x
+        sum_xy[1] += weight_y * y
+        weights_xy[0] += weight_x
+        weights_xy[1] += weight_y
 
-    def centroid(data: list[list]) -> tuple[float, float, float]:
-        """
-        Calculate the average position of the time
-        and energy channels and return them plus
-        the total energy channel deposit.
-        """
-        sums = [0.0, 0.0]
-        weights = [0.0, 0.0]
-        for imp in data:
-            en_t = imp[1].value - 1
-            pos = plot_pos[imp[0]][plot_ax[en_t]]
-            weight = (imp[3] + offsets[en_t]) ** powers[en_t]
-            sums[en_t] += weight * pos
-            weights[en_t] += weight
-        return (
-            sums[0] / weights[0] if weights[0] else 0.0,
-            sums[1] / weights[1] if weights[1] else 0.0,
-            weights[1],
-        )
-
-    return centroid
+    return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
