@@ -24,6 +24,31 @@ from src.detector_features import calculate_centroid, calculate_total_energy
 from src.mapping_generator import map_factory
 from src.plots import plot_chan_position
 
+# Total number of eevents
+EVT_COUNT_T = 0
+# Events passing the filter
+EVT_COUNT_F = 0
+
+
+def increment_total():
+    """
+    Increments the total event count.
+
+    This function is used to keep track of the total number of events processed.
+    """
+    global EVT_COUNT_T
+    EVT_COUNT_T += 1
+
+
+def increment_pf():
+    """
+    Increments the count of events that pass the filter.
+
+    This function is used to keep track of the number of events that pass the filter.
+    """
+    global EVT_COUNT_F
+    EVT_COUNT_F += 1
+
 
 def main():
     # Read the YAML configuration file
@@ -59,11 +84,16 @@ def main():
     start_time = time.time()
     event_count = 0
     for event in read_binary_file(binary_file_path, min_ch, en_min_ch):
+        increment_total()
         det1, det2 = event
         det1_en = calculate_total_energy(det1)
-        en_filter = filter_total_energy(det1_en, en_min, en_max)
+        det2_en = calculate_total_energy(det2)
+        en_filter1 = filter_total_energy(det1_en, en_min, en_max)
+        en_filter2 = filter_total_energy(det2_en, en_min, en_max)
+
         # print(det1, det1_en, det2, en_filter)
-        if en_filter:
+        if en_filter1 and en_filter2:
+            increment_pf()
             calculate_centroid(local_coord_dict, det1, x_rtp=1, y_rtp=1)
         # print(f"En filter: {filter_total_energy(det1, 50)}")
         # print(f"Lenghts: {len(det1)}, {len(det2)}")
@@ -75,8 +105,8 @@ def main():
     print("---------------------")
     end_time = time.time()
     print(f"Time taken: {end_time - start_time} seconds")
-    print(f"Total events: {filters.EVT_COUNT_T}")
-    print(f"Events passing the filter: {filters.EVT_COUNT_F}")
+    print(f"Total events: {EVT_COUNT_T}")
+    print(f"Events passing the filter: {EVT_COUNT_F}")
 
 
 if __name__ == "__main__":

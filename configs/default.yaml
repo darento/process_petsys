@@ -1,6 +1,6 @@
 # tuple of (min, max) total energy to consider per event.
 # if None (default), no cut is applied  
-energy_range: [-10, 1000]
+energy_range: [1, 1000]
 
 # minimum number of channels to consider per event 
 min_ch: 1
