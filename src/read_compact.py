@@ -55,17 +55,17 @@ def read_binary_file(
                 break
             header = struct.unpack(header_format, header_data)
 
-            # Check if the event should be skipped
-            if header[0] < min_ch or header[1] < min_ch:
-                f.seek(data_size * (header[0] + header[1]), 1)
-                continue
-
             det1 = read_detector_evt(f, data_format, data_size, header[0], en_filter)
             det2 = (
                 read_detector_evt(f, data_format, data_size, header[1], en_filter)
                 if not group_events
                 else []
             )
+            # Check if the event should be skipped
+            if (group_events and len(det1) < min_ch) or (
+                not group_events and (len(det1) < min_ch or len(det2) < min_ch)
+            ):
+                continue
 
             yield det1, det2
 
