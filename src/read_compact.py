@@ -1,6 +1,8 @@
 import struct
 from typing import Iterator, BinaryIO
 
+from src.filters import filter_min_ch
+
 
 def read_detector_evt(
     f: BinaryIO, data_format: str, data_size: int, num_lines: int, en_filter: float
@@ -61,11 +63,6 @@ def read_binary_file(
                 if not group_events
                 else []
             )
-            # Check if the event should be skipped
-            if (group_events and len(det1) < min_ch) or (
-                not group_events and (len(det1) < min_ch or len(det2) < min_ch)
-            ):
-                continue
 
             yield det1, det2
 
