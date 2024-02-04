@@ -39,10 +39,10 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    dict_coords, num_ASICs = map_factory(map_file)
+    local_coord_dict, num_ASICs = map_factory(map_file)
 
     # Plot the coordinates of the channels
-    plot_chan_position(dict_coords, num_ASICs)
+    # plot_chan_position(local_coord_dict, num_ASICs)
 
     # Read the energy range
     en_min = float(config["energy_range"][0])
@@ -50,8 +50,10 @@ def main():
     print(f"Energy range: {en_min} - {en_max}")
 
     min_ch = int(config["min_ch"])
+    print(f"Minimum number of channels: {min_ch}")
 
     en_min_ch = float(config["en_min_ch"])
+    print(f"Minimum energy per channel: {en_min_ch}")
 
     # test the time taken to read the entire file using read_binary_file function
     start_time = time.time()
@@ -60,8 +62,9 @@ def main():
         det1, det2 = event
         det1_en = calculate_total_energy(det1)
         en_filter = filter_total_energy(det1_en, en_min, en_max)
+        # print(det1, det1_en, det2, en_filter)
         if en_filter:
-            calculate_centroid(det1, 1, 1)
+            calculate_centroid(local_coord_dict, det1, x_rtp=1, y_rtp=1)
         # print(f"En filter: {filter_total_energy(det1, 50)}")
         # print(f"Lenghts: {len(det1)}, {len(det2)}")
         # time.sleep(1)
