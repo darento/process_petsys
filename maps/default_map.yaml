@@ -22,6 +22,15 @@ FEM: "FEM128"
 # FEB/D being used (FEBD1k/FEBD8k)
 FEBD: "FEBD1k"
 
+# Energy or Time channels per miniModule (64 if no sum_rows_cols, 8 (8E + 8T) otherwise)
+mM_channels: 64
+
+# mM disposition [n_rows, m_columns]
+mM_disposition: [2, 1]
+
+# Sum rows and columns flag
+sum_rows_cols: False
+
 # Detector module to [PortID, SlaveID, FEB/D port].
 mod_feb_map:
   0: [0, 0, 0]
