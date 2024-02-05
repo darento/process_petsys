@@ -34,6 +34,42 @@ def get_absolute_id(portID: int, slaveID: int, chipID: int, channelID: int) -> i
     return 131072 * portID + 4096 * slaveID + 64 * chipID + channelID
 
 
+def get_maxEnergy_sm_mM(det_event: list, sm_mM_map: dict) -> int:
+    """
+    Get the maximum energy miniModule and sm in the event.
+
+    Parameters:
+    det_event (list): The event data.
+    sm_mM_map (dict): The mapping of the channels to the mod and mM.
+
+    Returns:
+    int: The maximum energy mM in the event.
+    int: The maximum energy sm in the event.
+    """
+    # First we need to find if there is more than 1 mM in the event
+    mM_list = [sm_mM_map[ch[2]][1] for ch in det_event]
+    mM_list = list(set(mM_list))
+    if len(mM_list) == 1:
+        # If there is only 1 mM, we return it with the corresponding sm and the energy
+        return (
+            mM_list[0],
+            sm_mM_map[det_event[0][2]][0],
+            sum([ch[1] for ch in det_event]),
+        )
+    else:
+        # If there is more than 1 mM, we need to find the one with the maximum energy
+        max_energy = 0
+        max_mM = 0
+        max_sm = 0
+        for mM in mM_list:
+            energy = sum([ch[1] for ch in det_event if sm_mM_map[ch[2]][1] == mM])
+            if energy > max_energy:
+                max_energy = energy
+                max_mM = mM
+                max_sm = sm_mM_map[det_event[0][2]][0]
+        return max_mM, max_sm, energy
+
+
 def calculate_total_energy(det_event: list) -> float:
     """
     Calculate the total energy of the event.
