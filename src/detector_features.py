@@ -34,7 +34,7 @@ def get_absolute_id(portID: int, slaveID: int, chipID: int, channelID: int) -> i
     return 131072 * portID + 4096 * slaveID + 64 * chipID + channelID
 
 
-def get_maxEnergy_sm_mM(det_event: list, sm_mM_map: dict) -> int:
+def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict) -> int:
     """
     Get the maximum energy miniModule and sm in the event.
 
@@ -47,14 +47,14 @@ def get_maxEnergy_sm_mM(det_event: list, sm_mM_map: dict) -> int:
     int: The maximum energy sm in the event.
     """
     # First we need to find if there is more than 1 mM in the event
-    mM_list = [sm_mM_map[ch[2]][1] for ch in det_event]
+    mM_list = [sm_mM_map[ch[2]][1] for ch in det_list]
     mM_list = list(set(mM_list))
     if len(mM_list) == 1:
         # If there is only 1 mM, we return it with the corresponding sm and the energy
         return (
             mM_list[0],
-            sm_mM_map[det_event[0][2]][0],
-            sum([ch[1] for ch in det_event]),
+            sm_mM_map[det_list[0][2]][0],
+            sum([ch[1] for ch in det_list]),
         )
     else:
         # If there is more than 1 mM, we need to find the one with the maximum energy
@@ -62,15 +62,15 @@ def get_maxEnergy_sm_mM(det_event: list, sm_mM_map: dict) -> int:
         max_mM = 0
         max_sm = 0
         for mM in mM_list:
-            energy = sum([ch[1] for ch in det_event if sm_mM_map[ch[2]][1] == mM])
+            energy = sum([ch[1] for ch in det_list if sm_mM_map[ch[2]][1] == mM])
             if energy > max_energy:
                 max_energy = energy
                 max_mM = mM
-                max_sm = sm_mM_map[det_event[0][2]][0]
-        return max_mM, max_sm, energy
+                max_sm = sm_mM_map[det_list[0][2]][0]
+        return max_mM, max_sm, max_energy
 
 
-def calculate_total_energy(det_event: list) -> float:
+def calculate_total_energy(det_list: list[list]) -> float:
     """
     Calculate the total energy of the event.
 
@@ -80,11 +80,11 @@ def calculate_total_energy(det_event: list) -> float:
     Returns:
     float: The total energy of the event.
     """
-    return sum([ch[1] for ch in det_event])
+    return sum([ch[1] for ch in det_list])
 
 
 def calculate_centroid(
-    local_dict: dict, det_event: list, x_rtp: int, y_rtp: int
+    local_dict: dict, det_list: list[list], x_rtp: int, y_rtp: int
 ) -> tuple:
     """
     Calculate the centroid of the event.
@@ -105,7 +105,7 @@ def calculate_centroid(
 
     # Calculate the centroid of the event based on the local coordinates of the channels
     # and the energy deposited in each channel
-    for hit in det_event:
+    for hit in det_list:
         ch = hit[-1]
         energy = hit[1]
         x, y = local_dict[ch]
