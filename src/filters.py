@@ -20,7 +20,7 @@ def filter_total_energy(
         return False
 
 
-def filter_min_ch(det_list: list, min_ch: int) -> bool:
+def filter_min_ch(det_list: list[list], min_ch: int) -> bool:
     """
     Filters the event based on the minimum number of channels.
 
@@ -33,7 +33,23 @@ def filter_min_ch(det_list: list, min_ch: int) -> bool:
     Returns:
     bool: True if the number of channels is greater than min_ch, False otherwise.
     """
-    if len(det_list) > min_ch:
+    if len(det_list) >= min_ch:
         return True
     else:
         return False
+
+
+def filter_multihit(det_list: list[list], sm_mM_map: dict) -> bool:
+    """
+    This function filters out super modules that have more than one mini module hit.
+
+    Parameters:
+    det_list (list[list]): A nested list where each sublist represents a hit.
+                           Each sublist contains information about the hit.
+    sm_mM_map (dict): A dictionary mapping the super module (sm) to the mini module (mM).
+
+    Returns:
+    bool: True if the super module has exactly one mini module hit, False otherwise.
+    """
+    n_mm = len(set(sm_mM_map[x[2]] for x in det_list))
+    return n_mm == 1
