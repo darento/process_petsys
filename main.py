@@ -17,8 +17,7 @@ from docopt import docopt
 import yaml
 
 from src.read_compact import read_binary_file
-from src.filters import filter_total_energy
-import src.filters as filters
+from src.filters import filter_total_energy, filter_min_ch, filter_multihit
 
 from src.detector_features import (
     calculate_centroid,
@@ -26,7 +25,13 @@ from src.detector_features import (
     get_maxEnergy_sm_mM,
 )
 from src.mapping_generator import map_factory
-from src.plots import plot_chan_position, plot_floodmap_2D_mM, plot_energy_spectrum_mM
+from src.plots import (
+    plot_chan_position,
+    plot_floodmap,
+    plot_floodmap_mM,
+    plot_energy_spectrum_mM,
+    plot_single_energy_spectrum,
+)
 
 # Total number of eevents
 EVT_COUNT_T = 0
@@ -94,8 +99,20 @@ def main():
         det1, det2 = event
         det1_en = calculate_total_energy(det1)
         det2_en = calculate_total_energy(det2)
-        en_filter1 = filter_total_energy(det1_en, en_min, en_max)
-        en_filter2 = filter_total_energy(det2_en, en_min, en_max)
+        max_mM_det1, max_sm_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map)
+        max_mM_det2, max_sm_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map)
+        en_filter1 = filter_total_energy(energy_det1, en_min, en_max)
+        en_filter2 = filter_total_energy(energy_det2, en_min, en_max)
+
+        print(
+            det1,
+            filter_min_ch(det1, min_ch),
+            filter_multihit(det1, sm_mM_map=sm_mM_map),
+        )
+
+        if not filter_min_ch(det1, min_ch):
+            print([sm_mM_map[ch[2]] for ch in det1])
+            input("Press Enter to continue...")
 
         # print(det1, det1_en, det2, en_filter)
         if en_filter1 and en_filter2:
@@ -103,11 +120,11 @@ def main():
             x_det1, y_det1 = calculate_centroid(
                 local_coord_dict, det1, x_rtp=1, y_rtp=2
             )
-            max_mM_det1, max_sm_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map)
+
             x_det2, y_det2 = calculate_centroid(
                 local_coord_dict, det2, x_rtp=1, y_rtp=2
             )
-            max_mM_det2, max_sm_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map)
+
             if (max_sm_det1, max_mM_det1) not in sm_mM_floodmap:
                 sm_mM_floodmap[(max_sm_det1, max_mM_det1)] = []
                 sm_mM_energy[(max_sm_det1, max_mM_det1)] = []
@@ -131,7 +148,17 @@ def main():
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Total events: {EVT_COUNT_T}")
     print(f"Events passing the filter: {EVT_COUNT_F}")
-    plot_floodmap_2D_mM(sm_mM_floodmap)
+
+    """for key, value in sm_mM_floodmap.items():
+        plot_floodmap(value, key[0], key[1], show_fig=True)"""
+
+    """for key, value in sm_mM_energy.items():
+        print(value)
+        plot_single_energy_spectrum(
+            value, en_min, en_max, key[0], key[1], show_fig=True, fit_flag=True
+        )
+"""
+    plot_floodmap_mM(sm_mM_floodmap)
     # plot_energy_spectrum_mM(sm_mM_energy)
 
 
