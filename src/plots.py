@@ -2,6 +2,7 @@ import math
 from matplotlib import pyplot as plt
 
 from src.detector_features import get_electronics_nums
+from src.fits import fit_gaussian
 
 
 def plot_chan_position(dict_coords: dict) -> None:
@@ -49,13 +50,43 @@ def plot_chan_position(dict_coords: dict) -> None:
     plt.show()
 
 
-def plot_floodmap_2D_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
+def plot_floodmap(
+    xy_list: list, sm: int, mM: int, bins: tuple = (200, 200), show_fig: bool = False
+) -> None:
     """
-    This function plots the floodmap of the channels on a 2D graph.
+    This function plots the floodmap of a single channel on a 2D graph.
+
+    Parameters:
+    xy_list (list): A list of coordinates [(x1, y1), (x2, y2), ...] for a single channel.
+    bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
+
+    Output:
+    None. This function plots a graph and does not return anything.
+    """
+    # Unpack the x and y coordinates
+    x, y = zip(*xy_list)
+
+    plt.hist2d(x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma")
+
+    # Set plot properties
+    plt.xlabel("X position (mm)")
+    plt.ylabel("Y position (mm)")
+    plt.axis("equal")  # To maintain the aspect ratio
+    plt.xlim([0, 26])  # replace min_x, max_x with your desired values
+    plt.ylim([0, 26])
+    plt.title(f"Floodmap Representation of sm {sm}, mM {mM}")
+    if show_fig:
+        plt.show()
+
+
+def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
+    """
+    This function plots the floodmap of the channels on a 2D graph for each (sm, mM).
 
     Parameters:
     floodmap (dict): A dictionary mapping the (sm, mM) to a list of coordinates.
                      The keys are tuples (sm, mM) and the values are lists of coordinates [(x1, y1), (x2, y2), ...].
+    bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
 
     Output:
     None. This function plots a graph and does not return anything.
@@ -73,33 +104,56 @@ def plot_floodmap_2D_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
         # chipID figure
         fig = plt.figure(mM_dict[(sm, mM)], figsize=(10, 10))
 
-        # Unpack the x and y coordinates
-        x, y = zip(*xy_list)
-
-        plt.hist2d(x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma")
-
-        # Set plot properties
-        plt.xlabel("X position (mm)")
-        plt.ylabel("Y position (mm)")
-        plt.title(f"Floodmap Representation of sm {sm}, mM {mM}")
-        plt.axis("equal")  # To maintain the aspect ratio
-        plt.xlim([0, 26])  # replace min_x, max_x with your desired values
-        plt.ylim([0, 26])
-    plt.show()
+        plot_floodmap(xy_list, sm, mM, bins)
 
 
-def plot_energy_spectrum_mM(
-    sm_mM_energy: dict, en_min: float = 0, en_max: float = 100
+def plot_single_energy_spectrum(
+    energy_list: list,
+    en_min: float,
+    en_max: float,
+    sm: int,
+    mM: int,
+    show_fig: bool = False,
+    fit_flag: bool = False,
 ) -> None:
+    """
+    This function plots the energy spectrum of a single channel.
+
+    Parameters:
+    energy_list (list): A list of energies for a single channel.
+    en_min (float): The lower limit of the energy range.
+    en_max (float): The upper limit of the energy range.
+    sm, mM (int): Channel identifiers.
+    """
+    # Plot the energy spectrum and the Gaussian fit if the flag is set
+    n, bins, _ = plt.hist(
+        energy_list, bins=100, range=(en_min, en_max), label=f"sm {sm}, mM {mM}"
+    )
+
+    if fit_flag:
+        # Fit a Gaussian to the energy spectrum
+        x, y, _, _, _ = fit_gaussian(n, bins, cb=16)
+        plt.plot(x, y, label="Gaussian fit")
+
+    # Set plot properties
+    plt.xlabel("Energy (a.u.)")
+    plt.ylabel("Counts")
+    plt.title(f"Energy Spectrum of sm {sm}, mM {mM}")
+    plt.legend()
+
+    if show_fig:
+        plt.show()
+
+    return n, bins
+
+
+def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
     """
     This function plots the energy spectrum of the channels.
 
     Parameters:
     sm_mM_energy (dict): A dictionary mapping the (sm, mM) to a list of energies.
                          The keys are tuples (sm, mM) and the values are lists of energies.
-
-    Output:
-    None. This function plots a graph and does not return anything.
     """
     # Create a dictionary to store the count of channels at each position
     mM_dict = {}
@@ -114,17 +168,7 @@ def plot_energy_spectrum_mM(
         # chipID figure
         fig = plt.figure(mM_dict[(sm, mM)], figsize=(10, 10))
 
-        plt.hist(
-            energy_list,
-            bins=int(en_max - en_min),
-            range=(en_min, en_max),
-            alpha=0.7,
-            label=f"sm {sm}, mM {mM}",
-        )
+        # Call the function to plot a single energy spectrum
+        plot_single_energy_spectrum(energy_list, en_min, en_max, sm, mM)
 
-        # Set plot properties
-        plt.xlabel("Energy (a.u.)")
-        plt.ylabel("Counts")
-        plt.title(f"Energy Spectrum of sm {sm}, mM {mM}")
-        plt.legend()
     plt.show()
