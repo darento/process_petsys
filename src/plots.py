@@ -1,7 +1,9 @@
 import math
 from matplotlib import pyplot as plt
+import numpy as np
 
 from src.detector_features import get_electronics_nums
+from src.fem_handler import FEMBase
 from src.fits import fit_gaussian
 
 
@@ -171,4 +173,45 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
         # Call the function to plot a single energy spectrum
         plot_single_energy_spectrum(energy_list, en_min, en_max, sm, mM)
 
+    plt.show()
+
+
+def plot_event_impact(
+    det_event: list[list], local_coord_dict: dict, FEM_instance: FEMBase
+) -> None:
+    """
+    This function plots the impact of the event on the detector.
+
+    Parameters:
+    det_event (list): The event data.
+    local_coord_dict (dict): The local coordinates of the channels.
+    FEM_instance (FEMBase): The FEM instance.
+    """
+    num_ASIC_ch = FEM_instance.channels / FEM_instance.num_ASICS
+    num_boxes_side = int(math.sqrt(num_ASIC_ch))
+
+    # Crear una matriz para almacenar la energía en cada canal
+    energy_matrix = np.zeros((num_boxes_side, num_boxes_side))
+
+    # Llenar la matriz de energía con los datos del evento
+    for hit in det_event:
+        channel, energy = (
+            hit[2],
+            hit[1],
+        )  # Asumiendo que el canal y la energía están en estas posiciones
+        x, y = local_coord_dict[
+            channel
+        ]  # Asumiendo que las coordenadas locales son una tupla (x, y)
+
+        # Convertir las coordenadas del centro de la caja a índices de matriz
+        x_index = int(x / FEM_instance.x_pitch)
+        y_index = int(y / FEM_instance.x_pitch)
+
+        energy_matrix[
+            y_index, x_index
+        ] = energy  # Asumiendo que y_index, x_index están en el rango correcto
+
+    # Dibujar la matriz de energía
+    plt.imshow(energy_matrix, cmap="binary", interpolation="nearest")
+    plt.colorbar(label="Energy")
     plt.show()
