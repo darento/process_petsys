@@ -39,7 +39,7 @@ def filter_min_ch(det_list: list[list], min_ch: int) -> bool:
         return False
 
 
-def filter_multihit(det_list: list[list], sm_mM_map: dict) -> bool:
+def filter_single_mM(det_list: list[list], sm_mM_map: dict) -> bool:
     """
     This function filters out super modules that have more than one mini module hit.
 
