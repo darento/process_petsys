@@ -1,3 +1,4 @@
+from typing import Tuple
 from src.fem_handler import FEMBase, get_FEM_instance
 from src.yaml_handler import YAMLMapReader, get_optional_group_keys
 
@@ -44,7 +45,7 @@ def _get_local_mapping(
     return local_map, sm_mM_map
 
 
-def map_factory(mapping_file: str) -> dict:
+def map_factory(mapping_file: str) -> Tuple[dict, dict, FEMBase]:
     """
     This function reads a YAML mapping file and returns a local map and the keys of the mod_feb_map.
 
@@ -52,8 +53,7 @@ def map_factory(mapping_file: str) -> dict:
     mapping_file (str): The path to the YAML mapping file.
 
     Returns:
-    dict: A dictionary containing the local map and the keys of the mod_feb_map.
-    int: The number of ASICS in the mapping file.
+    Tuple[dict, dict, FEMBase]: The local map, the sm_mM_map, and the FEM instance.
     """
     yaml_schema = {
         "mandatory": {
@@ -99,4 +99,4 @@ def map_factory(mapping_file: str) -> dict:
         channels_2,
         FEM_instance,
     )
-    return local_map, sm_mM_map, len(mod_feb_map.keys()) * FEM_instance.num_ASICS
+    return local_map, sm_mM_map, FEM_instance
