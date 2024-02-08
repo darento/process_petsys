@@ -17,12 +17,13 @@ from docopt import docopt
 import yaml
 
 from src.read_compact import read_binary_file
-from src.filters import filter_total_energy, filter_min_ch, filter_multihit
+from src.filters import filter_total_energy, filter_min_ch, filter_single_mM
 
 from src.detector_features import (
     calculate_centroid,
     calculate_total_energy,
     get_maxEnergy_sm_mM,
+    calculate_DOI,
 )
 from src.mapping_generator import map_factory
 from src.plots import (
@@ -31,7 +32,9 @@ from src.plots import (
     plot_floodmap_mM,
     plot_energy_spectrum_mM,
     plot_single_energy_spectrum,
+    plot_event_impact,
 )
+from src.write_output import write_txt_toNN
 
 # Total number of eevents
 EVT_COUNT_T = 0
@@ -73,10 +76,10 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    local_coord_dict, sm_mM_map, num_ASICs = map_factory(map_file)
+    local_coord_dict, sm_mM_map, FEM_instance = map_factory(map_file)
 
     # Plot the coordinates of the channels
-    # plot_chan_position(local_coord_dict, num_ASICs)
+    # plot_chan_position(local_coord_dict)
 
     # Read the energy range
     en_min = float(config["energy_range"][0])
@@ -94,6 +97,9 @@ def main():
     event_count = 0
     sm_mM_floodmap = {}
     sm_mM_energy = {}
+    sm_mM_doi = {}
+    txt_NN_file = open("NN_input.txt", "w")
+    txt_NN_writer = write_txt_toNN(FEM_instance)
     for event in read_binary_file(binary_file_path, min_ch, en_min_ch):
         increment_total()
         det1, det2 = event
@@ -103,38 +109,42 @@ def main():
         max_mM_det2, max_sm_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map)
         en_filter1 = filter_total_energy(energy_det1, en_min, en_max)
         en_filter2 = filter_total_energy(energy_det2, en_min, en_max)
+        min_ch_filter1 = filter_min_ch(det1, min_ch)
+        min_ch_filter2 = filter_min_ch(det2, min_ch)
+        single_mM_filter1 = filter_single_mM(det1, sm_mM_map)
+        single_mM_filter2 = filter_single_mM(det2, sm_mM_map)
 
-        print(
-            det1,
-            filter_min_ch(det1, min_ch),
-            filter_multihit(det1, sm_mM_map=sm_mM_map),
-        )
+        # Write the event data to a text file
+        # txt_NN_writer(det1, sm_mM_map, local_coord_dict, txt_NN_file)
+        if min_ch_filter1 and min_ch_filter2:
+            det1_doi = calculate_DOI(det1, local_coord_dict)
+            det2_doi = calculate_DOI(det2, local_coord_dict)
+        # plot_event_impact(det1, local_coord_dict, FEM_instance)
 
-        if not filter_min_ch(det1, min_ch):
-            print([sm_mM_map[ch[2]] for ch in det1])
-            input("Press Enter to continue...")
-
-        # print(det1, det1_en, det2, en_filter)
         if en_filter1 and en_filter2:
             increment_pf()
             x_det1, y_det1 = calculate_centroid(
-                local_coord_dict, det1, x_rtp=1, y_rtp=2
+                det1, local_coord_dict, x_rtp=1, y_rtp=2
             )
 
             x_det2, y_det2 = calculate_centroid(
-                local_coord_dict, det2, x_rtp=1, y_rtp=2
+                det2, local_coord_dict, x_rtp=1, y_rtp=2
             )
 
             if (max_sm_det1, max_mM_det1) not in sm_mM_floodmap:
                 sm_mM_floodmap[(max_sm_det1, max_mM_det1)] = []
                 sm_mM_energy[(max_sm_det1, max_mM_det1)] = []
+                sm_mM_doi[(max_sm_det1, max_mM_det1)] = []
             if (max_sm_det2, max_mM_det2) not in sm_mM_floodmap:
                 sm_mM_floodmap[(max_sm_det2, max_mM_det2)] = []
                 sm_mM_energy[(max_sm_det2, max_mM_det2)] = []
+                sm_mM_doi[(max_sm_det2, max_mM_det2)] = []
             sm_mM_floodmap[(max_sm_det1, max_mM_det1)].append((x_det1, y_det1))
             sm_mM_floodmap[(max_sm_det2, max_mM_det2)].append((x_det2, y_det2))
             sm_mM_energy[(max_sm_det1, max_mM_det1)].append(energy_det1)
             sm_mM_energy[(max_sm_det2, max_mM_det2)].append(energy_det2)
+            sm_mM_doi[(max_sm_det1, max_mM_det1)].append(det1_doi)
+            sm_mM_doi[(max_sm_det2, max_mM_det2)].append(det2_doi)
             # print(max_sm_det1, max_mM_det1, max_sm_det2, max_mM_det2)
         # print(f"En filter: {filter_total_energy(det1, 50)}")
         # print(f"Lenghts: {len(det1)}, {len(det2)}")
@@ -149,6 +159,10 @@ def main():
     print(f"Total events: {EVT_COUNT_T}")
     print(f"Events passing the filter: {EVT_COUNT_F}")
 
+    # plot the DOI of the events
+    for key, value in sm_mM_doi.items():
+        plot_single_energy_spectrum(value, 0, 10, key[0], key[1], show_fig=True)
+
     """for key, value in sm_mM_floodmap.items():
         plot_floodmap(value, key[0], key[1], show_fig=True)"""
 
@@ -158,7 +172,7 @@ def main():
             value, en_min, en_max, key[0], key[1], show_fig=True, fit_flag=True
         )
 """
-    plot_floodmap_mM(sm_mM_floodmap)
+    # plot_floodmap_mM(sm_mM_floodmap)
     # plot_energy_spectrum_mM(sm_mM_energy)
 
 
