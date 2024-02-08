@@ -119,7 +119,9 @@ def main():
         if min_ch_filter1 and min_ch_filter2:
             det1_doi = calculate_DOI(det1, local_coord_dict)
             det2_doi = calculate_DOI(det2, local_coord_dict)
-        # plot_event_impact(det1, local_coord_dict, FEM_instance)
+            print(det1)
+            print(f"DOI: {det1_doi}")
+            plot_event_impact(det1, local_coord_dict, FEM_instance)
 
         if en_filter1 and en_filter2:
             increment_pf()
