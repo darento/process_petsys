@@ -109,12 +109,14 @@ def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
         plot_floodmap(xy_list, sm, mM, bins)
 
 
-def plot_single_energy_spectrum(
-    energy_list: list,
-    en_min: float,
-    en_max: float,
+def plot_single_spectrum(
+    hist_list: list,
+    hist_min: float,
+    hist_max: float,
     sm: int,
     mM: int,
+    title: str,
+    xlabel: str,
     show_fig: bool = False,
     fit_flag: bool = False,
 ) -> None:
@@ -129,7 +131,7 @@ def plot_single_energy_spectrum(
     """
     # Plot the energy spectrum and the Gaussian fit if the flag is set
     n, bins, _ = plt.hist(
-        energy_list, bins=100, range=(en_min, en_max), label=f"sm {sm}, mM {mM}"
+        hist_list, bins=100, range=(hist_min, hist_max), label=f"sm {sm}, mM {mM}"
     )
 
     if fit_flag:
@@ -138,9 +140,9 @@ def plot_single_energy_spectrum(
         plt.plot(x, y, label="Gaussian fit")
 
     # Set plot properties
-    plt.xlabel("Energy (a.u.)")
+    plt.xlabel(f"{xlabel}")
     plt.ylabel("Counts")
-    plt.title(f"Energy Spectrum of sm {sm}, mM {mM}")
+    plt.title(f"{title} Spectrum of sm {sm}, mM {mM}")
     plt.legend()
 
     if show_fig:
@@ -171,7 +173,9 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
         fig = plt.figure(mM_dict[(sm, mM)], figsize=(10, 10))
 
         # Call the function to plot a single energy spectrum
-        plot_single_energy_spectrum(energy_list, en_min, en_max, sm, mM)
+        plot_single_spectrum(
+            energy_list, en_min, en_max, sm, mM, "Energy ", "Energy (a.u.)"
+        )
 
     plt.show()
 
