@@ -1,4 +1,5 @@
 from collections import defaultdict
+import math
 import numpy as np
 
 
@@ -140,3 +141,39 @@ def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
     max_energy = max(x_pos.values())
     sum_energy = sum(x_pos.values())
     return sum_energy / max_energy
+
+
+def calculate_impact_hits(
+    det_list: list[list], local_coord_dict: dict, FEM_instance
+) -> tuple:
+    """
+    Calculate the impact hits of the event.
+
+    Parameters:
+    det_list (list): The event data.
+    local_coord_dict (dict): The local coordinates of the channels.
+    FEM_instance (FEM): The FEM instance.
+
+    Returns:
+    tuple: The impact hits of the event.
+    """
+    num_ASIC_ch = FEM_instance.channels / FEM_instance.num_ASICS
+    num_boxes_side = int(math.sqrt(num_ASIC_ch))
+
+    # Create a matrix to store the energy of each box
+    energy_matrix = np.zeros((num_boxes_side, num_boxes_side))
+
+    # Fill the matrix with the energy of each box
+    for hit in det_list:
+        channel, energy = (
+            hit[2],
+            hit[1],
+        )
+        x, y = local_coord_dict[channel]
+
+        # Convert the local coordinates to the box index
+        x_index = int(x / FEM_instance.x_pitch)
+        y_index = int(y / FEM_instance.x_pitch)
+
+        energy_matrix[y_index, x_index] = energy
+    return energy_matrix
