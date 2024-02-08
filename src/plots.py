@@ -190,28 +190,22 @@ def plot_event_impact(
     num_ASIC_ch = FEM_instance.channels / FEM_instance.num_ASICS
     num_boxes_side = int(math.sqrt(num_ASIC_ch))
 
-    # Crear una matriz para almacenar la energía en cada canal
+    # Create a matrix to store the energy of each box
     energy_matrix = np.zeros((num_boxes_side, num_boxes_side))
 
-    # Llenar la matriz de energía con los datos del evento
+    # Fill the matrix with the energy of each box
     for hit in det_event:
         channel, energy = (
             hit[2],
             hit[1],
-        )  # Asumiendo que el canal y la energía están en estas posiciones
-        x, y = local_coord_dict[
-            channel
-        ]  # Asumiendo que las coordenadas locales son una tupla (x, y)
+        )
+        x, y = local_coord_dict[channel]
 
-        # Convertir las coordenadas del centro de la caja a índices de matriz
+        # Convert the local coordinates to the box index
         x_index = int(x / FEM_instance.x_pitch)
         y_index = int(y / FEM_instance.x_pitch)
 
-        energy_matrix[
-            y_index, x_index
-        ] = energy  # Asumiendo que y_index, x_index están en el rango correcto
-
-    # Dibujar la matriz de energía
+        energy_matrix[y_index, x_index] = energy
     plt.imshow(energy_matrix, cmap="binary", interpolation="nearest")
     plt.colorbar(label="Energy")
     plt.show()
