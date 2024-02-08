@@ -1,3 +1,4 @@
+from collections import defaultdict
 import numpy as np
 
 
@@ -84,7 +85,7 @@ def calculate_total_energy(det_list: list[list]) -> float:
 
 
 def calculate_centroid(
-    local_dict: dict, det_list: list[list], x_rtp: int, y_rtp: int
+    det_list: list[list], local_dict: dict, x_rtp: int, y_rtp: int
 ) -> tuple:
     """
     Calculate the centroid of the event.
@@ -117,3 +118,25 @@ def calculate_centroid(
         weights_xy[1] += weight_y
 
     return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
+
+
+def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
+    """
+    Calculate the depth of interaction (DOI) of the event.
+
+    Parameters:
+    event: The event data.
+    local_dict: The local coordinates of the channels.
+
+    Returns:
+    float: The depth of interaction (DOI) of the event.
+    """
+    # DOI is calculated as the sum of the energies divided by the maximum energy,
+    # previosy summing the energies in the same x position
+    x_pos = defaultdict(float)
+    for ch in det_list:
+        x, _ = local_dict[ch[-1]]
+        x_pos[x] += ch[1]
+    max_energy = max(x_pos.values())
+    sum_energy = sum(x_pos.values())
+    return sum_energy / max_energy
