@@ -1,5 +1,7 @@
 from itertools import chain
 
+import numpy as np
+
 
 def filter_total_energy(
     en_total: float, en_min: float = 10, en_max: float = 100
@@ -81,3 +83,48 @@ def filter_max_sm(
         if len(sm_set) > max_sm:
             return False
     return True
+
+
+def filter_specific_mm(
+    det1_list: list[list],
+    det2_list: list[list],
+    sm_num: int,
+    mm_num: int,
+    sm_mM_map: dict,
+) -> bool:
+    """
+    Selects events in a specific mini module.
+
+    Parameters:
+    det1_list (list[list]): The first list of detections.
+    det2_list (list[list]): The second list of detections.
+    sm_num (int): The supermodule number to filter for.
+    mm_num (int): The mini module number to filter for.
+    sm_mM_map (dict): A mapping from module to supermodule and mini module.
+
+    Returns:
+    bool: True if the specified supermodule and mini module is present in the event, False otherwise.
+    """
+    for hit in chain(det1_list, det2_list):
+        if sm_mM_map(hit[2]) == (sm_num, mm_num):
+            return True
+    return False
+
+
+def filter_channel_list(
+    det1_list: list[list], det2_list: list[list], valid_channels: np.ndarray
+) -> bool:
+    """
+    Filters events based on whether all impacts in either list are in the valid channels list.
+
+    Parameters:
+    det1_list (list[list]): The first list of detections.
+    det2_list (list[list]): The second list of detections.
+    valid_channels (np.ndarray): An array of valid channels.
+
+    Returns:
+    bool: True if all impacts in either det1_list or det2_list are in valid_channels, False otherwise.
+    """
+    return all(imp[0] in valid_channels for imp in det1_list) or all(
+        imp[0] in valid_channels for imp in det2_list
+    )
