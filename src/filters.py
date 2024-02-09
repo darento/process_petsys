@@ -1,3 +1,6 @@
+from itertools import chain
+
+
 def filter_total_energy(
     en_total: float, en_min: float = 10, en_max: float = 100
 ) -> list:
@@ -53,3 +56,28 @@ def filter_single_mM(det_list: list[list], sm_mM_map: dict) -> bool:
     """
     n_mm = len(set(sm_mM_map[x[2]] for x in det_list))
     return n_mm == 1
+
+
+def filter_max_sm(
+    det1_list: list[list], det2_list: list[list], max_sm: int, sm_mM_map: dict
+) -> bool:
+    """
+    Filters events based on the number of supermodules present.
+
+    Parameters:
+    det1_list (list[list]): The first list of detections.
+    det2_list (list[list]): The second list of detections.
+    max_sm (int): The maximum number of supermodules allowed.
+    sm_mM_map (dict): A mapping from module to supermodule.
+
+    Returns:
+    bool: True if the number of unique supermodules in the event does not exceed max_sm, False otherwise.
+
+    Note: This function is only valid for coinc mode.
+    """
+    sm_set = set()
+    for hit in chain(det1_list, det2_list):
+        sm_set.add(sm_mM_map(hit[2]))
+        if len(sm_set) > max_sm:
+            return False
+    return True
