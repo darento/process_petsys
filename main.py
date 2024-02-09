@@ -21,6 +21,7 @@ from src.filters import filter_total_energy, filter_min_ch, filter_single_mM
 
 from src.detector_features import (
     calculate_centroid,
+    calculate_impact_hits,
     calculate_total_energy,
     get_maxEnergy_sm_mM,
     calculate_DOI,
@@ -119,7 +120,9 @@ def main():
         if min_ch_filter1 and min_ch_filter2:
             det1_doi = calculate_DOI(det1, local_coord_dict)
             det2_doi = calculate_DOI(det2, local_coord_dict)
-        # plot_event_impact(det1, local_coord_dict, FEM_instance)
+            print(det1)
+            print(f"DOI: {det1_doi}")
+            impact_matrix = calculate_impact_hits(det1, local_coord_dict, FEM_instance)
 
         if en_filter1 and en_filter2:
             increment_pf()
