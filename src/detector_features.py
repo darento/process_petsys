@@ -49,8 +49,7 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict) -> int:
     int: The maximum energy sm in the event.
     """
     # First we need to find if there is more than 1 mM in the event
-    mM_list = [sm_mM_map[ch[2]][1] for ch in det_list]
-    mM_list = list(set(mM_list))
+    mM_list = list(set([sm_mM_map[ch[2]] for ch in det_list]))
     if len(mM_list) == 1:
         # If there is only 1 mM, we return it with the corresponding sm and the energy
         return (
@@ -63,12 +62,12 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict) -> int:
         max_energy = 0
         max_mM = 0
         max_sm = 0
-        for mM in mM_list:
-            energy = sum([ch[1] for ch in det_list if sm_mM_map[ch[2]][1] == mM])
+        for sm_mM in mM_list:
+            energy = sum([ch[1] for ch in det_list if sm_mM_map[ch[2]] == sm_mM])
             if energy > max_energy:
                 max_energy = energy
-                max_mM = mM
-                max_sm = sm_mM_map[det_list[0][2]][0]
+                max_mM = sm_mM[1]
+                max_sm = sm_mM[0]
         return max_mM, max_sm, max_energy
 
 
