@@ -35,7 +35,6 @@ def read_binary_file(
 
     Parameters:
     file_path (str): The path to the binary file to read.
-    min_ch (int, optional): The minimum number of channels. Defaults to 0.
     en_filter (float, optional): The energy filter threshold. Defaults to 0.
     group_events (bool, optional): Whether to group events. Defaults to True.
 
