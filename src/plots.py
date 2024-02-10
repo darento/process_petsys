@@ -180,36 +180,13 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
     plt.show()
 
 
-def plot_event_impact(
-    det_event: list[list], local_coord_dict: dict, FEM_instance: FEMBase
-) -> None:
+def plot_event_impact(impact_matrix: np.ndarray) -> None:
     """
     This function plots the impact of the event on the detector.
 
     Parameters:
-    det_event (list): The event data.
-    local_coord_dict (dict): The local coordinates of the channels.
-    FEM_instance (FEMBase): The FEM instance.
+    impact_matrix (np.ndarray): A 2D NumPy array representing the impact of the event on the detector.
     """
-    num_ASIC_ch = FEM_instance.channels / FEM_instance.num_ASICS
-    num_boxes_side = int(math.sqrt(num_ASIC_ch))
-
-    # Create a matrix to store the energy of each box
-    energy_matrix = np.zeros((num_boxes_side, num_boxes_side))
-
-    # Fill the matrix with the energy of each box
-    for hit in det_event:
-        channel, energy = (
-            hit[2],
-            hit[1],
-        )
-        x, y = local_coord_dict[channel]
-
-        # Convert the local coordinates to the box index
-        x_index = int(x / FEM_instance.x_pitch)
-        y_index = int(y / FEM_instance.x_pitch)
-
-        energy_matrix[y_index, x_index] = energy
-    plt.imshow(energy_matrix, cmap="binary", interpolation="nearest")
+    plt.imshow(impact_matrix, cmap="binary", interpolation="nearest")
     plt.colorbar(label="Energy")
     plt.show()
