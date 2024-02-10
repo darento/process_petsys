@@ -1,8 +1,6 @@
 import struct
 from typing import Iterator, BinaryIO
 
-from src.filters import filter_min_ch
-
 
 def read_detector_evt(
     f: BinaryIO, data_format: str, data_size: int, num_lines: int, en_filter: float
@@ -30,7 +28,7 @@ def read_detector_evt(
 
 
 def read_binary_file(
-    file_path: str, min_ch: int = 0, en_filter: float = 0, group_events: bool = False
+    file_path: str, en_filter: float = 0, group_events: bool = False
 ) -> Iterator[tuple]:
     """
     Generates events from a binary file.
