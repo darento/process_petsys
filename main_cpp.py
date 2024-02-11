@@ -17,25 +17,24 @@ from typing import Callable
 from docopt import docopt
 import numpy as np
 import yaml
-from src.fem_handler import FEMBase
 
+from src.fem_handler import FEMBase
 from src.read_compact import read_binary_file
 from src.filters import filter_total_energy, filter_min_ch, filter_single_mM
-
 from src.detector_features import (
     calculate_centroid,
     calculate_impact_hits,
     calculate_total_energy,
     calculate_DOI,
 )
-from src.mapping_generator import map_factory
+from src.mapping_generator import ChannelType, map_factory
 from src.plots import (
     plot_floodmap,
     plot_single_spectrum,
     plot_event_impact,
 )
 from src.fits import fit_gaussian
-from src.utils import get_num_eng_channels
+from src.utils import get_num_eng_channels, select_max_energy
 
 # Total number of eevents
 EVT_COUNT_T = 0
