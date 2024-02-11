@@ -2,13 +2,20 @@ from typing import Tuple
 from src.fem_handler import FEMBase, get_FEM_instance
 from src.yaml_handler import YAMLMapReader, get_optional_group_keys
 
+from enum import Enum, auto
+
+
+class ChannelType(Enum):
+    TIME = auto()
+    ENERGY = auto()
+
 
 def _get_local_mapping(
     mod_feb_map: dict,
     channels_1: list,
     channels_2: list,
     FEM_instance: FEMBase,
-) -> dict:
+) -> Tuple[dict, dict, dict]:
     # TODO: Need to generalize this function to handle slabs and other types of detectors.
     """
     Generates the basic mapping from the mapping file.
@@ -20,10 +27,11 @@ def _get_local_mapping(
     - FEM_instance (FEMBase): FEM instance for coordinate calculations.
 
     Returns:
-    - dict: The local mapping.
+    Tuple[dict, dict, dict]: The local map, the sm_mM_map, and the chtype_map.
     """
     local_map = {}
     sm_mM_map = {}
+    chtype_map = {}
 
     for mod, value in mod_feb_map.items():
         portID, slaveID, febport = value
@@ -41,11 +49,17 @@ def _get_local_mapping(
             sm_mM_map[ch_2 + mod_min_chan] = (
                 (mod, mM + 1) if not FEM_instance.sum_rows_cols else (mod, mM)
             )
+            if not FEM_instance.sum_rows_cols:
+                chtype_map[ch_1 + mod_min_chan] = [ChannelType.TIME, ChannelType.ENERGY]
+                chtype_map[ch_2 + mod_min_chan] = [ChannelType.TIME, ChannelType.ENERGY]
+            else:
+                chtype_map[ch_1 + mod_min_chan] = [ChannelType.TIME]
+                chtype_map[ch_2 + mod_min_chan] = [ChannelType.ENERGY]
 
-    return local_map, sm_mM_map
+    return local_map, sm_mM_map, chtype_map
 
 
-def map_factory(mapping_file: str) -> Tuple[dict, dict, FEMBase]:
+def map_factory(mapping_file: str) -> Tuple[dict, dict, dict, FEMBase]:
     """
     This function reads a YAML mapping file and returns a local map and the keys of the mod_feb_map.
 
@@ -53,7 +67,7 @@ def map_factory(mapping_file: str) -> Tuple[dict, dict, FEMBase]:
     mapping_file (str): The path to the YAML mapping file.
 
     Returns:
-    Tuple[dict, dict, FEMBase]: The local map, the sm_mM_map, and the FEM instance.
+    Tuple[dict, dict, dict, FEMBase]: The local map, the sm_mM_map, the chtype_map, and the FEM instance.
     """
     yaml_schema = {
         "mandatory": {
@@ -93,10 +107,10 @@ def map_factory(mapping_file: str) -> Tuple[dict, dict, FEMBase]:
     )
 
     # Implement _get_local_mapping based on the refactored approach
-    local_map, sm_mM_map = _get_local_mapping(
+    local_map, sm_mM_map, chtype_map = _get_local_mapping(
         mod_feb_map,
         channels_1,
         channels_2,
         FEM_instance,
     )
-    return local_map, sm_mM_map, FEM_instance
+    return local_map, sm_mM_map, chtype_map, FEM_instance
