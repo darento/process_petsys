@@ -34,7 +34,7 @@ from src.plots import (
     plot_event_impact,
 )
 from src.fits import fit_gaussian
-from src.utils import get_num_eng_channels, select_max_energy
+from src.utils import get_num_eng_channels, get_max_en_channel
 
 # Total number of eevents
 EVT_COUNT_T = 0

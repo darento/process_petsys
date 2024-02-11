@@ -23,7 +23,6 @@ from src.detector_features import (
     calculate_centroid,
     calculate_impact_hits,
     calculate_total_energy,
-    get_maxEnergy_sm_mM,
     calculate_DOI,
 )
 from src.mapping_generator import map_factory
@@ -36,6 +35,7 @@ from src.plots import (
     plot_event_impact,
 )
 from src.write_output import write_txt_toNN
+from src.utils import get_maxEnergy_sm_mM
 
 # Total number of eevents
 EVT_COUNT_T = 0
@@ -100,7 +100,9 @@ def main():
     sm_mM_energy = {}
     sm_mM_doi = {}
     txt_NN_file = open("NN_input.txt", "w")
-    txt_NN_writer = write_txt_toNN(FEM_instance)
+    txt_NN_writer = write_txt_toNN(
+        FEM_instance, sm_mM_map, local_coord_dict, chtype_map, txt_NN_file
+    )
     for event in read_binary_file(binary_file_path, min_ch, en_min_ch):
         increment_total()
         det1, det2 = event
@@ -116,7 +118,7 @@ def main():
         single_mM_filter2 = filter_single_mM(det2, sm_mM_map)
 
         # Write the event data to a text file
-        # txt_NN_writer(det1, sm_mM_map, local_coord_dict, txt_NN_file)
+        txt_NN_writer(max_det1)
         if min_ch_filter1 and min_ch_filter2:
             det1_doi = calculate_DOI(det1, local_coord_dict)
             det2_doi = calculate_DOI(det2, local_coord_dict)
