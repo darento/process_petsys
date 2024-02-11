@@ -2,6 +2,8 @@ from collections import defaultdict
 import math
 import numpy as np
 
+from src.mapping_generator import ChannelType
+
 
 def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
     """
@@ -36,7 +38,7 @@ def get_absolute_id(portID: int, slaveID: int, chipID: int, channelID: int) -> i
     return 131072 * portID + 4096 * slaveID + 64 * chipID + channelID
 
 
-def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict) -> int:
+def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict) -> int:
     """
     Get the maximum energy miniModule and sm in the event.
 
@@ -45,43 +47,50 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict) -> int:
     sm_mM_map (dict): The mapping of the channels to the mod and mM.
 
     Returns:
-    int: The maximum energy mM in the event.
-    int: The maximum energy sm in the event.
+    list[list]: The event data for the maximum energy miniModule and sm.
+    float: The maximum energy in the event.
     """
     # First we need to find if there is more than 1 mM in the event
     mM_list = list(set([sm_mM_map[ch[2]] for ch in det_list]))
     if len(mM_list) == 1:
         # If there is only 1 mM, we return it with the corresponding sm and the energy
         return (
-            mM_list[0],
-            sm_mM_map[det_list[0][2]][0],
-            sum([ch[1] for ch in det_list]),
+            det_list,
+            calculate_total_energy(det_list, chtype_map),
         )
     else:
         # If there is more than 1 mM, we need to find the one with the maximum energy
         max_energy = 0
-        max_mM = 0
-        max_sm = 0
+        max_mm_list = 0
+
         for sm_mM in mM_list:
-            energy = sum([ch[1] for ch in det_list if sm_mM_map[ch[2]] == sm_mM])
+            eng_ch = list(
+                filter(
+                    lambda x: ChannelType.ENERGY in chtype_map[x[2]],
+                    [ch for ch in det_list if sm_mM_map[ch[2]] == sm_mM],
+                )
+            )
+            energy = sum([ch[1] for ch in eng_ch])
             if energy > max_energy:
                 max_energy = energy
-                max_mM = sm_mM[1]
-                max_sm = sm_mM[0]
-        return max_mM, max_sm, max_energy
+                max_mm_list = [ch for ch in det_list if sm_mM_map[ch[2]] == sm_mM]
+
+        return max_mm_list, max_energy
 
 
-def calculate_total_energy(det_list: list[list]) -> float:
+def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
     """
     Calculate the total energy of the event.
 
     Parameters:
-    event: The event data.
+    det_list: The event data.
+    chtype_map: A dictionary mapping the channel type to the channel number.
 
     Returns:
     float: The total energy of the event.
     """
-    return sum([ch[1] for ch in det_list])
+    eng_ch = list(filter(lambda x: ChannelType.ENERGY in chtype_map[x[2]], det_list))
+    return sum([ch[1] for ch in eng_ch])
 
 
 def calculate_centroid(
