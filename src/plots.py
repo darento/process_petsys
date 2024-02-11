@@ -2,7 +2,7 @@ import math
 from matplotlib import pyplot as plt
 import numpy as np
 
-from src.detector_features import get_electronics_nums
+from src.utils import get_electronics_nums
 from src.fem_handler import FEMBase
 from src.fits import fit_gaussian
 
