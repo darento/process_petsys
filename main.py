@@ -32,7 +32,7 @@ from src.plots import (
     plot_floodmap,
     plot_floodmap_mM,
     plot_energy_spectrum_mM,
-    plot_single_energy_spectrum,
+    plot_single_spectrum,
     plot_event_impact,
 )
 from src.write_output import write_txt_toNN
@@ -77,7 +77,7 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    local_coord_dict, sm_mM_map, FEM_instance = map_factory(map_file)
+    local_coord_dict, sm_mM_map, chtype_map, FEM_instance = map_factory(map_file)
 
     # Plot the coordinates of the channels
     # plot_chan_position(local_coord_dict)
@@ -104,14 +104,14 @@ def main():
     for event in read_binary_file(binary_file_path, min_ch, en_min_ch):
         increment_total()
         det1, det2 = event
-        det1_en = calculate_total_energy(det1)
-        det2_en = calculate_total_energy(det2)
-        max_mM_det1, max_sm_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map)
-        max_mM_det2, max_sm_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map)
+        det1_en = calculate_total_energy(det1, chtype_map)
+        det2_en = calculate_total_energy(det2, chtype_map)
+        max_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map, chtype_map)
+        max_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map, chtype_map)
         en_filter1 = filter_total_energy(energy_det1, en_min, en_max)
         en_filter2 = filter_total_energy(energy_det2, en_min, en_max)
-        min_ch_filter1 = filter_min_ch(det1, min_ch)
-        min_ch_filter2 = filter_min_ch(det2, min_ch)
+        min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map)
+        min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map)
         single_mM_filter1 = filter_single_mM(det1, sm_mM_map)
         single_mM_filter2 = filter_single_mM(det2, sm_mM_map)
 
@@ -120,9 +120,14 @@ def main():
         if min_ch_filter1 and min_ch_filter2:
             det1_doi = calculate_DOI(det1, local_coord_dict)
             det2_doi = calculate_DOI(det2, local_coord_dict)
-            print(det1)
-            print(f"DOI: {det1_doi}")
             impact_matrix = calculate_impact_hits(det1, local_coord_dict, FEM_instance)
+            if det1_en != energy_det1:
+                print("Energy mismatch")
+                print(det1)
+                print(det1_en)
+                print(max_det1, energy_det1)
+                print(".................")
+                exit(0)
 
         if en_filter1 and en_filter2:
             increment_pf()
@@ -133,6 +138,10 @@ def main():
             x_det2, y_det2 = calculate_centroid(
                 det2, local_coord_dict, x_rtp=1, y_rtp=2
             )
+            max_sm_det1 = sm_mM_map[max_det1[0][2]][0]
+            max_mM_det1 = sm_mM_map[max_det1[0][2]][1]
+            max_sm_det2 = sm_mM_map[max_det2[0][2]][0]
+            max_mM_det2 = sm_mM_map[max_det2[0][2]][1]
 
             if (max_sm_det1, max_mM_det1) not in sm_mM_floodmap:
                 sm_mM_floodmap[(max_sm_det1, max_mM_det1)] = []
@@ -161,22 +170,6 @@ def main():
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Total events: {EVT_COUNT_T}")
     print(f"Events passing the filter: {EVT_COUNT_F}")
-
-    # plot the DOI of the events
-    for key, value in sm_mM_doi.items():
-        plot_single_energy_spectrum(value, 0, 10, key[0], key[1], show_fig=True)
-
-    """for key, value in sm_mM_floodmap.items():
-        plot_floodmap(value, key[0], key[1], show_fig=True)"""
-
-    """for key, value in sm_mM_energy.items():
-        print(value)
-        plot_single_energy_spectrum(
-            value, en_min, en_max, key[0], key[1], show_fig=True, fit_flag=True
-        )
-"""
-    # plot_floodmap_mM(sm_mM_floodmap)
-    # plot_energy_spectrum_mM(sm_mM_energy)
 
 
 if __name__ == "__main__":

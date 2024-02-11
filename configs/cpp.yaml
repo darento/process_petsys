@@ -3,7 +3,7 @@
 energy_range: [1, 200]
 
 # minimum number of channels to consider per event
-min_ch: 1
+min_ch: 0
 
 # minimum energy per channel to consider per event
 en_min_ch: 0

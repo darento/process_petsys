@@ -17,6 +17,7 @@ from typing import Callable
 from docopt import docopt
 import numpy as np
 import yaml
+from src.fem_handler import FEMBase
 
 from src.read_compact import read_binary_file
 from src.filters import filter_total_energy, filter_min_ch, filter_single_mM
@@ -30,12 +31,11 @@ from src.detector_features import (
 from src.mapping_generator import map_factory
 from src.plots import (
     plot_floodmap,
-    plot_floodmap_mM,
-    plot_energy_spectrum_mM,
     plot_single_spectrum,
     plot_event_impact,
 )
 from src.fits import fit_gaussian
+from src.utils import get_num_eng_channels
 
 # Total number of eevents
 EVT_COUNT_T = 0
@@ -66,7 +66,9 @@ def increment_pf():
 def data_and_en_dict(
     read_det_evt: Callable,
     local_coord_dict: dict,
-    FEM_instance: dict,
+    chtype_map: dict,
+    sm_mM_map: dict,
+    FEM_instance: FEMBase,
     min_ch: int,
 ) -> tuple[dict, np.ndarray]:
     """
@@ -76,7 +78,8 @@ def data_and_en_dict(
     Parameters:
     read_det_evt (Callable): A generator or iterable that yields detector events.
     local_coord_dict (dict): A dictionary mapping detector channels to local coordinates.
-    FEM_instance (dict): A dictionary representing a Finite Element Model instance.
+    chtype_map (dict): A dictionary mapping the channel type to the channel number.
+    FEM_instance (FEMBase): A dictionary representing a Finite Element Model instance.
     min_ch (int): The minimum channel number for the filter.
 
     Returns:
@@ -93,15 +96,16 @@ def data_and_en_dict(
     for event in read_det_evt:
         increment_total()
         det1, det2 = event
-        det1_en = calculate_total_energy(det1)
-        det2_en = calculate_total_energy(det2)
+        det1_en = calculate_total_energy(det1, chtype_map)
+        det2_en = calculate_total_energy(det2, chtype_map)
 
-        min_ch_filter1 = filter_min_ch(det1, min_ch)
-        min_ch_filter2 = filter_min_ch(det2, min_ch)
+        min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map)
+        min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map)
         # Write the event data to a text file
         # txt_NN_writer(det1, sm_mM_map, local_coord_dict, txt_NN_file)
         if min_ch_filter1 and min_ch_filter2:
             increment_pf()
+
             det1_doi = calculate_DOI(det1, local_coord_dict)
             det2_doi = calculate_DOI(det2, local_coord_dict)
             impact_matrix = calculate_impact_hits(det1, local_coord_dict, FEM_instance)
@@ -216,7 +220,7 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    local_coord_dict, sm_mM_map, FEM_instance = map_factory(map_file)
+    local_coord_dict, sm_mM_map, chtype_map, FEM_instance = map_factory(map_file)
 
     # Plot the coordinates of the channels
     # plot_chan_position(local_coord_dict)
@@ -235,7 +239,7 @@ def main():
     reader = read_binary_file(binary_file_path, en_min_ch)
 
     data_dict, en_matrix = data_and_en_dict(
-        reader, local_coord_dict, FEM_instance, min_ch
+        reader, local_coord_dict, chtype_map, sm_mM_map, FEM_instance, min_ch
     )
 
     en_min_peak, en_max_peak = extract_photopeak_limits(en_matrix, percentage=0.2)
