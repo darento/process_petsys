@@ -2,6 +2,8 @@ from itertools import chain
 
 import numpy as np
 
+from src.utils import get_num_eng_channels
+
 
 def filter_total_energy(
     en_total: float, en_min: float = 10, en_max: float = 100
@@ -25,7 +27,7 @@ def filter_total_energy(
         return False
 
 
-def filter_min_ch(det_list: list[list], min_ch: int) -> bool:
+def filter_min_ch(det_list: list[list], min_ch: int, chtype_map: dict) -> bool:
     """
     Filters the event based on the minimum number of channels.
 
@@ -34,11 +36,13 @@ def filter_min_ch(det_list: list[list], min_ch: int) -> bool:
     Parameters:
     det_list (list): The event data.
     min_ch (int): The minimum number of channels.
+    chtype_map (dict): A dictionary mapping the channel type to the channel number.
 
     Returns:
     bool: True if the number of channels is greater than min_ch, False otherwise.
     """
-    if len(det_list) >= min_ch:
+    num_eng_ch = get_num_eng_channels(det_list, chtype_map)
+    if num_eng_ch > min_ch:
         return True
     else:
         return False
