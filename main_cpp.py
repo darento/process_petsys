@@ -193,7 +193,7 @@ def extract_impact_info(
             continue
         impact_matrix = data["impact_matrix"]
         sorted_values = np.sort(impact_matrix, axis=None)[::-1]
-        max_values[: len(sorted_values)] += sorted_values[:n]
+        max_values[: len(sorted_values)] += sorted_values[:n] / np.max(sorted_values)
         events_passing_filter += 1
         # plot_event_impact(impact_matrix)
     print(
