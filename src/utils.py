@@ -97,7 +97,7 @@ def get_max_en_channel(
     Returns a function that selects the channel with the highest deposit from a list of channels.
 
     Parameters:
-        det_list : List of hits with [tspt, energy, chid]
+        det_list : List of hits with [tstp, energy, chid]
         chtype_map (dict): A mapping from channel names to channel types.
         chtype (ChannelType, optional): The type of channel to be compared. If None, all channels are considered. Defaults to None.
 
@@ -108,7 +108,7 @@ def get_max_en_channel(
     def _is_type(hit: list) -> bool:
         """
         Parameters:
-            hit (list): The channel to check. [tspt, energy, chid]
+            hit (list): The channel to check. [tstp, energy, chid]
         """
         return chtype in chtype_map[hit[2]]
 

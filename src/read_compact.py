@@ -40,6 +40,8 @@ def read_binary_file(
 
     Returns:
     generator: A generator that yields tuples containing the data for each event.
+               det1: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det1
+               det2: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det2
     """
     # Define the struct formats and sizes
     header_format = "B" if group_events else "2B"  # Format for the header
