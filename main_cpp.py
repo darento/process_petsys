@@ -12,6 +12,7 @@ Options:
 """
 
 
+import os
 import time
 from typing import Callable
 from docopt import docopt
@@ -100,8 +101,7 @@ def data_and_en_dict(
 
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map)
         min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map)
-        # Write the event data to a text file
-        # txt_NN_writer(det1, sm_mM_map, local_coord_dict, txt_NN_file)
+
         if min_ch_filter1 and min_ch_filter2:
             increment_pf()
 
@@ -187,6 +187,7 @@ def extract_impact_info(
     """
     max_values = np.zeros(n)
     events_passing_filter = 0
+    max_value_av = 0
     for event, data in data_dict.items():
         det1_en = data["det1_en"]
         if not filter_total_energy(det1_en, en_min_peak, en_max_peak):
@@ -194,14 +195,11 @@ def extract_impact_info(
         impact_matrix = data["impact_matrix"]
         sorted_values = np.sort(impact_matrix, axis=None)[::-1]
         max_values[: len(sorted_values)] += sorted_values[:n] / np.max(sorted_values)
+        max_value_av += sorted_values[0]
         events_passing_filter += 1
         # plot_event_impact(impact_matrix)
-    print(
-        np.array2string(
-            np.round(max_values / events_passing_filter, 3),
-            suppress_small=True,
-            precision=3,
-        )
+    return np.round(max_values / events_passing_filter, 3), np.round(
+        max_value_av / events_passing_filter, 3
     )
 
 
@@ -211,6 +209,9 @@ def main():
 
     # Read the binary file
     binary_file_path = args["INFILE"]
+
+    file_name = os.path.basename(binary_file_path)
+    file_name = file_name.replace(".ldat", "_impactArray.txt")
 
     with open(args["YAMLCONF"], "r") as f:
         config = yaml.safe_load(f)
@@ -243,7 +244,15 @@ def main():
 
     en_min_peak, en_max_peak = extract_photopeak_limits(en_matrix, percentage=0.2)
 
-    extract_impact_info(data_dict, 64, en_min_peak, en_max_peak)
+    av_impact_matrix, av_max = extract_impact_info(
+        data_dict, 64, en_min_peak, en_max_peak
+    )
+
+    # Writing the av_impact_matrix into file
+    with open(file_name, "w") as f:
+        f.write(str(av_max) + "\n")
+        for value in av_impact_matrix:
+            f.write(str(value) + "\n")
 
     # Plot the energy spectrum
     # plot_single_spectrum(
