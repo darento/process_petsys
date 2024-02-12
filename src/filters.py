@@ -2,6 +2,8 @@ from itertools import chain
 
 import numpy as np
 
+from src.utils import get_num_eng_channels
+
 
 def filter_total_energy(
     en_total: float, en_min: float = 10, en_max: float = 100
@@ -25,7 +27,7 @@ def filter_total_energy(
         return False
 
 
-def filter_min_ch(det_list: list[list], min_ch: int) -> bool:
+def filter_min_ch(det_list: list[list], min_ch: int, chtype_map: dict) -> bool:
     """
     Filters the event based on the minimum number of channels.
 
@@ -34,11 +36,13 @@ def filter_min_ch(det_list: list[list], min_ch: int) -> bool:
     Parameters:
     det_list (list): The event data.
     min_ch (int): The minimum number of channels.
+    chtype_map (dict): A dictionary mapping the channel type to the channel number.
 
     Returns:
     bool: True if the number of channels is greater than min_ch, False otherwise.
     """
-    if len(det_list) >= min_ch:
+    num_eng_ch = get_num_eng_channels(det_list, chtype_map)
+    if num_eng_ch > min_ch:
         return True
     else:
         return False
@@ -79,7 +83,7 @@ def filter_max_sm(
     """
     sm_set = set()
     for hit in chain(det1_list, det2_list):
-        sm_set.add(sm_mM_map(hit[2]))
+        sm_set.add(sm_mM_map[hit[2]])
         if len(sm_set) > max_sm:
             return False
     return True
@@ -106,7 +110,7 @@ def filter_specific_mm(
     bool: True if the specified supermodule and mini module is present in the event, False otherwise.
     """
     for hit in chain(det1_list, det2_list):
-        if sm_mM_map(hit[2]) == (sm_num, mm_num):
+        if sm_mM_map[hit[2]] == (sm_num, mm_num):
             return True
     return False
 
@@ -128,3 +132,19 @@ def filter_channel_list(
     return all(imp[0] in valid_channels for imp in det1_list) or all(
         imp[0] in valid_channels for imp in det2_list
     )
+
+
+def filter_ROI(x_pos: float, y_pos: float, x_ROI: float, y_ROI: float) -> bool:
+    """
+    Filters events based on the position of the event.
+
+    Parameters:
+    x_pos (float): The x position of the event.
+    y_pos (float): The y position of the event.
+    x_ROI (float): The x position of the region of interest.
+    y_ROI (float): The y position of the region of interest.
+
+    Returns:
+    bool: True if the event is within the region of interest, False otherwise.
+    """
+    return (x_pos > x_ROI) & (x_pos < x_ROI) & (y_pos > y_ROI) & (y_pos < y_ROI)

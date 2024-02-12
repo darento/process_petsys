@@ -1,10 +1,16 @@
 from typing import Callable, TextIO
 
-from src.detector_features import get_maxEnergy_sm_mM
+from src.utils import get_maxEnergy_sm_mM
 from src.fem_handler import FEMBase
 
 
-def write_txt_toNN(FEM_instance: FEMBase) -> Callable:
+def write_txt_toNN(
+    FEM_instance: FEMBase,
+    sm_mM_map: dict,
+    local_coord_dict: dict,
+    chtype_map: dict,
+    file_stream: TextIO,
+) -> Callable:
     """
     Write the event data to a text file.
 
@@ -27,10 +33,7 @@ def write_txt_toNN(FEM_instance: FEMBase) -> Callable:
     }
 
     def _write_txt_toNN(
-        det_event: list[list],
-        sm_mM_map: dict,
-        local_coord_dict: dict,
-        file_stream: TextIO,
+        det_list: list[list],
     ):
         """
         Write the event data to a text file.
@@ -42,12 +45,15 @@ def write_txt_toNN(FEM_instance: FEMBase) -> Callable:
         file_stream (TextIO): The file stream to write to.
         """
         # Find the maximum energy mM and sm in the event
-        max_mM, max_sm, _ = get_maxEnergy_sm_mM(det_event, sm_mM_map)
+        max_mm_list, _ = get_maxEnergy_sm_mM(det_list, sm_mM_map, chtype_map)
+
+        max_mM = sm_mM_map[max_mm_list[0][2]][1]
+        max_sm = sm_mM_map[max_mm_list[0][2]][0]
 
         # Sum rows and columns energy for the max_mM
         rows_energy = [0] * 8
         cols_energy = [0] * 8
-        for ch in det_event:
+        for ch in det_list:
             if sm_mM_map[ch[2]][1] == max_mM:
                 row_pos = x_pos[local_coord_dict[ch[2]][0]]
                 col_pos = y_pos[local_coord_dict[ch[2]][1]]

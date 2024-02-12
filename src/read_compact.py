@@ -1,8 +1,6 @@
 import struct
 from typing import Iterator, BinaryIO
 
-from src.filters import filter_min_ch
-
 
 def read_detector_evt(
     f: BinaryIO, data_format: str, data_size: int, num_lines: int, en_filter: float
@@ -30,19 +28,20 @@ def read_detector_evt(
 
 
 def read_binary_file(
-    file_path: str, min_ch: int = 0, en_filter: float = 0, group_events: bool = False
+    file_path: str, en_filter: float = 0, group_events: bool = False
 ) -> Iterator[tuple]:
     """
     Generates events from a binary file.
 
     Parameters:
     file_path (str): The path to the binary file to read.
-    min_ch (int, optional): The minimum number of channels. Defaults to 0.
     en_filter (float, optional): The energy filter threshold. Defaults to 0.
     group_events (bool, optional): Whether to group events. Defaults to True.
 
     Returns:
     generator: A generator that yields tuples containing the data for each event.
+               det1: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det1
+               det2: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det2
     """
     # Define the struct formats and sizes
     header_format = "B" if group_events else "2B"  # Format for the header
