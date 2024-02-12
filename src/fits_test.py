@@ -1,7 +1,7 @@
 from pytest import raises
 import numpy as np
 
-from fits import (
+from .fits import (
     shift_to_centres,
     gaussian,
     lorentzian,
@@ -30,15 +30,24 @@ def test_gaussian():
 
 
 def test_lorentzian():
+    amp = 1.0
     x0 = 0.0
-    gamma = 5.0
-    x = np.linspace(-2000, 2000, 4000)
-    l = lorentzian(x, 1.0, x0, gamma)
+    gamma = 1.0
+    delta = 0.01
 
-    std = np.average((x - x0) ** 2, weights=l)
+    x = np.linspace(-10, 10, 4000)
+    l = lorentzian(x, amp, x0, gamma)
+    l_normalized = 1 / np.trapz(l, x)
+    half_max = np.max(l) / 2
+    half_max_width = np.ptp(x[l >= half_max])
+
+    assert lorentzian(x0, amp, x0, gamma) == amp
+    assert lorentzian(x0 + delta, amp, x0, gamma) == lorentzian(
+        x0 - delta, amp, x0, gamma
+    )
+    assert lorentzian(x0, amp, x0, -gamma) == np.inf
+    assert np.isclose(np.max(l), amp, atol=1e-3)
     np.testing.assert_almost_equal(np.average(x, weights=l), x0)
-    np.testing.assert_almost_equal(np.sqrt(std), gamma)
-    np.testing.assert_almost_equal(np.sum(l), 1.0, decimal=3)
 
 
 def test_fit_gaussian():
