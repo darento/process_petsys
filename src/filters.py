@@ -83,7 +83,7 @@ def filter_max_sm(
     """
     sm_set = set()
     for hit in chain(det1_list, det2_list):
-        sm_set.add(sm_mM_map(hit[2]))
+        sm_set.add(sm_mM_map[hit[2]])
         if len(sm_set) > max_sm:
             return False
     return True
@@ -110,7 +110,7 @@ def filter_specific_mm(
     bool: True if the specified supermodule and mini module is present in the event, False otherwise.
     """
     for hit in chain(det1_list, det2_list):
-        if sm_mM_map(hit[2]) == (sm_num, mm_num):
+        if sm_mM_map[hit[2]] == (sm_num, mm_num):
             return True
     return False
 
