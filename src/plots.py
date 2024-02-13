@@ -1,4 +1,5 @@
 import math
+from typing import Tuple
 from matplotlib import pyplot as plt
 import numpy as np
 
@@ -79,6 +80,9 @@ def plot_floodmap(
     plt.title(f"Floodmap Representation of sm {sm}, mM {mM}")
     if show_fig:
         plt.show()
+    else:
+        plt.clf()
+        plt.close("all")
 
 
 def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
@@ -111,12 +115,11 @@ def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
 
 def plot_single_spectrum(
     hist_list: list,
-    hist_min: float,
-    hist_max: float,
     sm: int,
     mM: int,
     title: str,
     xlabel: str,
+    hist_lim: Tuple[float, float] = (0, 100),
     show_fig: bool = False,
     fit_flag: bool = False,
 ) -> None:
@@ -131,7 +134,7 @@ def plot_single_spectrum(
     """
     # Plot the energy spectrum and the Gaussian fit if the flag is set
     n, bins, _ = plt.hist(
-        hist_list, bins=100, range=(hist_min, hist_max), label=f"sm {sm}, mM {mM}"
+        hist_list, bins=100, range=(hist_lim[0], hist_lim[1]), label=f"sm {sm}, mM {mM}"
     )
 
     if fit_flag:
@@ -147,6 +150,9 @@ def plot_single_spectrum(
 
     if show_fig:
         plt.show()
+    else:
+        plt.clf()
+        plt.close("all")
 
     return n, bins
 
@@ -174,7 +180,7 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
 
         # Call the function to plot a single energy spectrum
         plot_single_spectrum(
-            energy_list, en_min, en_max, sm, mM, "Energy ", "Energy (a.u.)"
+            energy_list, sm, mM, "Energy ", "Energy (a.u.)", (en_min, en_max)
         )
 
     plt.show()
