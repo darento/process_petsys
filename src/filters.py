@@ -1,4 +1,5 @@
 from itertools import chain
+from typing import Tuple
 
 import numpy as np
 
@@ -134,17 +135,24 @@ def filter_channel_list(
     )
 
 
-def filter_ROI(x_pos: float, y_pos: float, x_ROI: float, y_ROI: float) -> bool:
+def filter_ROI(
+    x_pos: float, y_pos: float, x_ROI: Tuple[float, float], y_ROI: Tuple[float, float]
+) -> bool:
     """
     Filters events based on the position of the event.
 
     Parameters:
     x_pos (float): The x position of the event.
     y_pos (float): The y position of the event.
-    x_ROI (float): The x position of the region of interest.
-    y_ROI (float): The y position of the region of interest.
+    x_ROI (Tuple[float, float]): The x position of the region of interest.
+    y_ROI (Tuple[float, float]): The y position of the region of interest.
 
     Returns:
     bool: True if the event is within the region of interest, False otherwise.
     """
-    return (x_pos > x_ROI) & (x_pos < x_ROI) & (y_pos > y_ROI) & (y_pos < y_ROI)
+    return (
+        (x_pos > x_ROI[0])
+        & (x_pos < x_ROI[1])
+        & (y_pos > y_ROI[0])
+        & (y_pos < y_ROI[1])
+    )
