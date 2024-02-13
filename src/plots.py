@@ -79,6 +79,9 @@ def plot_floodmap(
     plt.title(f"Floodmap Representation of sm {sm}, mM {mM}")
     if show_fig:
         plt.show()
+    else:
+        plt.clf()
+        plt.close("all")
 
 
 def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
@@ -147,6 +150,9 @@ def plot_single_spectrum(
 
     if show_fig:
         plt.show()
+    else:
+        plt.clf()
+        plt.close("all")
 
     return n, bins
 
