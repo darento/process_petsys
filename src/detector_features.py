@@ -23,6 +23,7 @@ def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
 def calculate_centroid(
     det_list: list[list], local_dict: dict, x_rtp: int, y_rtp: int
 ) -> tuple:
+    # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case.
     """
     Calculate the centroid of the event.
 
@@ -57,6 +58,7 @@ def calculate_centroid(
 
 
 def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
+    # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case and slab orientation.
     """
     Calculate the depth of interaction (DOI) of the event.
 
