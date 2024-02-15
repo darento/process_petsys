@@ -7,7 +7,6 @@ from .filters import (
     filter_channel_list,
     filter_ROI,
 )
-from enum import Enum, auto
 from .mapping_generator import ChannelType
 import numpy as np
 
