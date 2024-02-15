@@ -1,6 +1,7 @@
 from collections import defaultdict
 import math
 import numpy as np
+from src.fem_handler import FEMBase
 
 from src.mapping_generator import ChannelType
 
@@ -81,7 +82,7 @@ def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
 
 
 def calculate_impact_hits(
-    det_list: list[list], local_coord_dict: dict, FEM_instance
+    det_list: list[list], local_coord_dict: dict, FEM_instance: FEMBase
 ) -> tuple:
     """
     Calculate the impact hits of the event.
