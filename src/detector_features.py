@@ -1,6 +1,7 @@
 from collections import defaultdict
 import math
 import numpy as np
+from src.fem_handler import FEMBase
 
 from src.mapping_generator import ChannelType
 
@@ -23,6 +24,7 @@ def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
 def calculate_centroid(
     det_list: list[list], local_dict: dict, x_rtp: int, y_rtp: int
 ) -> tuple:
+    # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case.
     """
     Calculate the centroid of the event.
 
@@ -57,6 +59,7 @@ def calculate_centroid(
 
 
 def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
+    # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case and slab orientation.
     """
     Calculate the depth of interaction (DOI) of the event.
 
@@ -79,7 +82,7 @@ def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
 
 
 def calculate_impact_hits(
-    det_list: list[list], local_coord_dict: dict, FEM_instance
+    det_list: list[list], local_coord_dict: dict, FEM_instance: FEMBase
 ) -> tuple:
     """
     Calculate the impact hits of the event.
