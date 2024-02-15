@@ -5,36 +5,7 @@ from .utils import (
     get_num_eng_channels,
     get_max_en_channel,
 )
-from .mapping_generator import ChannelType
-
-det_list = [
-    [1033333333333333333, 11.0, 1],
-    [1555555555555555555, 33.0, 2],
-    [4666666666666666666, 15.0, 3],
-    [7444444444444444444, 28.0, 4],
-    [1333333333333333333, 21.0, 5],
-    [4757575577777777777, 5.0, 6],
-    [5555555555555555557, 5.5, 7],
-]
-chtype_map = {
-    1: [ChannelType.TIME, ChannelType.ENERGY],
-    2: [ChannelType.TIME, ChannelType.ENERGY],
-    3: [ChannelType.TIME, ChannelType.ENERGY],
-    4: [ChannelType.TIME, ChannelType.ENERGY],
-    5: [ChannelType.TIME, ChannelType.ENERGY],
-    6: [ChannelType.TIME, ChannelType.ENERGY],
-    7: [ChannelType.TIME, ChannelType.ENERGY],
-}
-
-sm_mM_map = {
-    1: (1, 2),
-    2: (3, 4),
-    3: (5, 6),
-    4: (7, 8),
-    5: (9, 10),
-    6: (11, 12),
-    7: (13, 14),
-}
+from .variables_test import det_list, chtype_map, sm_mM_map
 
 
 def test_get_electronics_nums():

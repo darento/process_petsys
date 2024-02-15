@@ -37,9 +37,6 @@ def test_lorentzian():
 
     x = np.linspace(-10, 10, 4000)
     l = lorentzian(x, amp, x0, gamma)
-    l_normalized = 1 / np.trapz(l, x)
-    half_max = np.max(l) / 2
-    half_max_width = np.ptp(x[l >= half_max])
 
     assert lorentzian(x0, amp, x0, gamma) == amp
     assert lorentzian(x0 + delta, amp, x0, gamma) == lorentzian(
@@ -123,5 +120,4 @@ def test_mean_around_max():
     max_indx = np.argmax(bin_vals)
     np.testing.assert_allclose(x, edges[max_indx - 6 : max_indx + 6])
     np.testing.assert_allclose(y, bin_vals[max_indx - 6 : max_indx + 6])
-    # np.testing.assert_almost_equal(mean_val, edges[max_indx])
     np.testing.assert_almost_equal(wsum, np.sum(bin_vals[max_indx - 6 : max_indx + 6]))
