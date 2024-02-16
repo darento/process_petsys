@@ -43,7 +43,7 @@ def test_get_num_eng_channels():
                 f"Key: {key}, ChannelType: {channel_type}, Value: {channel_type.value}"
             )
 
-    assert get_num_eng_channels(det_list, chtype_map) == 7
+    assert get_num_eng_channels(det_list, chtype_map) == 8
 
 
 def test_get_max_en_channel():

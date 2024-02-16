@@ -24,7 +24,9 @@ def test_filter_total_energy():
 
 def test_filter_min_ch():
     assert filter_min_ch(det_list, 6, chtype_map)
-    assert not filter_min_ch(det_list, 10, chtype_map)
+    assert filter_min_ch(det_list, 7, chtype_map)
+    assert not filter_min_ch(det_list, 8, chtype_map)
+    assert not filter_min_ch(det_list, 9, chtype_map)
 
 
 def test_filter_single_mM():
