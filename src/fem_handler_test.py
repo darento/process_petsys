@@ -1,4 +1,4 @@
-from .fem_handler import FEMBase, FEM128, FEM256, get_FEM_instance
+from .fem_handler import FEM128, FEM256, get_FEM_instance
 
 
 def test_get_FEM_instance():
