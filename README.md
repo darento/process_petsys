@@ -17,10 +17,16 @@ git clone https://github.com/darento/event_petsys.git
 ```
 Then, navigate to the project directory and install the required dependencies:
 ```bash
-cd <project_directory>
-conda create --name myenv
-conda activate myenv
-pip install -r requirements.txt
+cd event_petsys/
+conda env create -f environment.yml
+```
+or, if updating the existing environment:
+```bash
+conda env update --name myenv --file environment.yml
+```
+After creating or updating the environment, you can activate it using:
+```bash
+conda activate event_petsys
 ```
 
 ## Configuration
