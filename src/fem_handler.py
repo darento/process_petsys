@@ -1,4 +1,16 @@
 class FEMBase:
+    """
+    This class represents the base class for the FEM instances.
+
+    Parameters:
+        - x_pitch (float): The pitch of the x-axis.
+        - y_pitch (float): The pitch of the y-axis.
+        - sum_rows_cols (bool): A boolean indicating whether to sum the rows and columns.
+        - channels (int): The number of channels.
+        - mM_channels (int): The number of mM channels.
+        - num_ASICS (int): The number of ASICS.
+    """
+
     def __init__(
         self,
         x_pitch: float,
@@ -16,16 +28,44 @@ class FEMBase:
         self.num_ASICS = num_ASICS
 
     def get_coordinates(self, channel_pos: int) -> tuple:
+        """
+        Returns the coordinates of a channel.
+
+        Parameters:
+            - channel_pos (int): The position of the channel.
+
+        Returns:
+        tuple: The coordinates of the channel.
+        """
         raise NotImplementedError("Subclass must implement abstract method")
 
 
 class FEM128(FEMBase):
+    """
+    This class represents the FEM128 instance.
+
+    Parameters:
+        - x_pitch (float): The pitch of the x-axis.
+        - y_pitch (float): The pitch of the y-axis.
+        - mM_channels (int): The number of mM channels.
+        - sum_rows_cols (bool): A boolean indicating whether to sum the rows and columns.
+    """
+
     def __init__(
         self, x_pitch: float, y_pitch: float, mM_channels: int, sum_rows_cols: bool
     ):
         super().__init__(x_pitch, y_pitch, sum_rows_cols, 128, mM_channels, 2)
 
     def get_coordinates(self, channel_pos: int) -> tuple:
+        """
+        Returns the coordinates of a channel.
+
+        Parameters:
+            - channel_pos (int): The position of the channel.
+
+        Returns:
+        tuple: The coordinates of the channel.
+        """
         if not self.sum_rows_cols:
             row = channel_pos // 8
             col = channel_pos % 8
@@ -38,12 +78,31 @@ class FEM128(FEMBase):
 
 
 class FEM256(FEMBase):
+    """
+    This class represents the FEM256 instance.
+
+    Parameters:
+        - x_pitch (float): The pitch of the x-axis.
+        - y_pitch (float): The pitch of the y-axis.
+        - mM_channels (int): The number of mM channels.
+        - sum_rows_cols (bool): A boolean indicating whether to sum the rows and columns.
+    """
+
     def __init__(
         self, x_pitch: float, y_pitch: float, mM_channels: int, sum_rows_cols: bool
     ):
         super().__init__(x_pitch, y_pitch, sum_rows_cols, 256, mM_channels, 4)
 
     def get_coordinates(self, channel_pos: int) -> tuple:
+        """
+        Returns the coordinates of a channel.
+
+        Parameters:
+            - channel_pos (int): The position of the channel.
+
+        Returns:
+        tuple: The coordinates of the channel.
+        """
         if not self.sum_rows_cols:
             row = channel_pos // 16
             col = channel_pos % 16
@@ -58,6 +117,19 @@ class FEM256(FEMBase):
 def get_FEM_instance(
     FEM_type: str, x_pitch: float, y_pitch: float, mM_channels: int, sum_rows_cols: bool
 ) -> FEMBase:
+    """
+    Returns the FEM instance.
+
+    Parameters:
+        - FEM_type (str): The type of FEM.
+        - x_pitch (float): The pitch of the x-axis.
+        - y_pitch (float): The pitch of the y-axis.
+        - mM_channels (int): The number of mM channels.
+        - sum_rows_cols (bool): A boolean indicating whether to sum the rows and columns.
+
+    Returns:
+    FEMBase: The FEM instance.
+    """
     if FEM_type == "FEM128":
         return FEM128(x_pitch, y_pitch, mM_channels, sum_rows_cols)
     elif FEM_type == "FEM256":
