@@ -2,10 +2,27 @@ import yaml
 
 
 class YAMLMapReader:
+    """
+    This class is responsible for reading and validating a YAML map based on a given schema.
+
+    Parameters:
+        - schema (dict): The schema of the YAML map.
+
+    """
+
     def __init__(self, schema):
         self.schema = schema
 
     def validate_yaml_map(self, yaml_map):
+        """
+        Validates the YAML map based on the schema.
+
+        Parameters:
+            - yaml_map (dict): The YAML map to validate.
+
+        Returns:
+        bool: True if the YAML map is valid, False otherwise.
+        """
         # Validate mandatory keys
         for key, value_type in self.schema["mandatory"].items():
             if key not in yaml_map:
@@ -38,6 +55,15 @@ class YAMLMapReader:
         return True
 
     def read_yaml_file(self, mapping_file):
+        """
+        Reads a YAML file and returns the loaded map.
+
+        Parameters:
+            - mapping_file (str): The path to the YAML file.
+
+        Returns:
+        dict: The loaded YAML map.
+        """
         try:
             with open(mapping_file) as map_buffer:
                 yaml_map = yaml.safe_load(map_buffer)
@@ -54,10 +80,10 @@ def get_optional_group_keys(yaml_map: dict) -> tuple:
     Determines which optional group is present in the yaml_map and returns the keys.
 
     Parameters:
-    - yaml_map (dict): The loaded YAML map.
+        - yaml_map (dict): The loaded YAML map.
 
     Returns:
-    - tuple: A tuple containing the keys of the present optional group.
+    tuple: A tuple containing the keys of the present optional group.
     """
     if "channels_j1" in yaml_map and "channels_j2" in yaml_map:
         return ("channels_j1", "channels_j2")

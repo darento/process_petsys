@@ -64,7 +64,7 @@ def map_factory(mapping_file: str) -> Tuple[dict, dict, dict, FEMBase]:
     This function reads a YAML mapping file and returns a local map and the keys of the mod_feb_map.
 
     Parameters:
-    mapping_file (str): The path to the YAML mapping file.
+        - mapping_file (str): The path to the YAML mapping file.
 
     Returns:
     Tuple[dict, dict, dict, FEMBase]: The local map, the sm_mM_map, the chtype_map, and the FEM instance.

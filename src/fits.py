@@ -10,7 +10,7 @@ def shift_to_centres(bin_low_edge: np.ndarray) -> np.ndarray:
     This function shifts the bin edges to the bin centres.
 
     Parameters:
-    bins (np.ndarray): A numpy array of the bin edges.
+        - bins (np.ndarray): A numpy array of the bin edges.
 
     Returns:
     np.ndarray: A numpy array of the bin centres.
@@ -22,19 +22,19 @@ def gaussian(
     x: float | np.ndarray, amp: float, mu: float, sigma: float
 ) -> float | np.ndarray:
     """
-    This function shifts the bin edges to the bin centres.
+    This function calculates the Gaussian distribution.
 
     Parameters:
-    bins (np.ndarray): A numpy array of the bin edges.
+        - x (float | np.ndarray): The input array or a single float number.
+        - amp (float): The amplitude of the Gaussian.
+        - mu (float): The mean of the Gaussian.
 
     Returns:
     np.ndarray: A numpy array of the bin centres.
     """
     if sigma <= 0.0:
         return np.inf
-    return (
-        amp * np.exp(-0.5 * (x - mu) ** 2 / sigma**2) / (np.sqrt(2 * np.pi) * sigma)
-    )
+    return amp * np.exp(-0.5 * (x - mu) ** 2 / sigma**2) / (np.sqrt(2 * np.pi) * sigma)
 
 
 def lorentzian(
@@ -44,10 +44,10 @@ def lorentzian(
     This function calculates the Lorentzian distribution.
 
     Parameters:
-    x (float | np.ndarray): The input array or a single float number.
-    amp (float): The amplitude of the Lorentzian.
-    x0 (float): The location parameter of the Lorentzian.
-    gamma (float): The scale parameter of the Lorentzian.
+        - x (float | np.ndarray): The input array or a single float number.
+        - amp (float): The amplitude of the Lorentzian.
+        - x0 (float): The location parameter of the Lorentzian.
+        - gamma (float): The scale parameter of the Lorentzian.
 
     Returns:
     float | np.ndarray: The calculated Lorentzian distribution.
@@ -69,12 +69,12 @@ def fit_gaussian(
     This function fits a Gaussian to the data.
 
     Parameters:
-    data (np.ndarray): A numpy array of the data.
-    bins (np.ndarray): A numpy array of the bin edges.
-    cb (int, optional): An integer that defines the range around the maximum value.
-    min_peak (int, optional): The minimum height of the peaks.
-    yerr (np.ndarray | None, optional): A numpy array of uncertainties in the data.
-    pk_finder (str, optional): The method to find the peaks in the data.
+        - data (np.ndarray): A numpy array of the data.
+        - bins (np.ndarray): A numpy array of the bin edges.
+        - cb (int, optional): An integer that defines the range around the maximum value.
+        - min_peak (int, optional): The minimum height of the peaks.
+        - yerr (np.ndarray | None, optional): A numpy array of uncertainties in the data.
+        - pk_finder (str, optional): The method to find the peaks in the data.
 
     Returns:
     tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: A tuple of five numpy arrays:
@@ -137,11 +137,11 @@ def curve_fit_fn(
     This function fits a curve to the data using the least squares method.
 
     Parameters:
-    fn (Callable): A callable function that defines the model to fit to the data.
-    x (np.ndarray): A numpy array of x-coordinates of the data.
-    y (np.ndarray): A numpy array of y-coordinates of the data.
-    yerr (np.ndarray): A numpy array of uncertainties in the y-coordinates of the data.
-    p0 (list): A list of initial guess for the parameters of `fn`.
+        - fn (Callable): A callable function that defines the model to fit to the data.
+        - x (np.ndarray): A numpy array of x-coordinates of the data.
+        - y (np.ndarray): A numpy array of y-coordinates of the data.
+        - yerr (np.ndarray): A numpy array of uncertainties in the y-coordinates of the data.
+        - p0 (list): A list of initial guess for the parameters of `fn`.
 
     Returns:
     tuple[np.ndarray, np.ndarray]: A tuple of two numpy arrays:
@@ -159,10 +159,10 @@ def mean_around_max(
     This function calculates the mean around the maximum value of the data.
 
     Parameters:
-    data (np.ndarray): A numpy array of the data.
-    bins (np.ndarray): A numpy array of the bin edges.
-    cb (int): An integer that defines the range around the maximum value.
-    yerr (np.ndarray, optional): A numpy array of uncertainties in the data.
+        - data (np.ndarray): A numpy array of the data.
+        - bins (np.ndarray): A numpy array of the bin edges.
+        - cb (int): An integer that defines the range around the maximum value.
+        - yerr (np.ndarray, optional): A numpy array of uncertainties in the data.
 
     Returns:
     tuple: A tuple of four elements:

@@ -14,8 +14,7 @@ def plot_chan_position(dict_coords: dict) -> None:
     This function plots the position of the channels on a graph.
 
     Parameters:
-    dict_coords (dict): A dictionary mapping channels to their positions.
-                        The keys are the channel names and the values are lists of coordinates [x, y].
+        - dict_coords (dict): A dictionary mapping channels to their positions. The keys are the channel names and the values are lists of coordinates [x, y].
 
     Output:
     None. This function plots a graph and does not return anything.
@@ -60,8 +59,8 @@ def plot_floodmap(
     This function plots the floodmap of a single channel on a 2D graph.
 
     Parameters:
-    xy_list (list): A list of coordinates [(x1, y1), (x2, y2), ...] for a single channel.
-    bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
+        - xy_list (list): A list of coordinates [(x1, y1), (x2, y2), ...] for a single channel.
+        - bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
 
     Output:
     None. This function plots a graph and does not return anything.
@@ -90,9 +89,8 @@ def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
     This function plots the floodmap of the channels on a 2D graph for each (sm, mM).
 
     Parameters:
-    floodmap (dict): A dictionary mapping the (sm, mM) to a list of coordinates.
-                     The keys are tuples (sm, mM) and the values are lists of coordinates [(x1, y1), (x2, y2), ...].
-    bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
+        - floodmap (dict): A dictionary mapping the (sm, mM) to a list of coordinates. The keys are tuples (sm, mM) and the values are lists of coordinates [(x1, y1), (x2, y2), ...].
+        - bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
 
     Output:
     None. This function plots a graph and does not return anything.
@@ -127,10 +125,10 @@ def plot_single_spectrum(
     This function plots the energy spectrum of a single channel.
 
     Parameters:
-    energy_list (list): A list of energies for a single channel.
-    en_min (float): The lower limit of the energy range.
-    en_max (float): The upper limit of the energy range.
-    sm, mM (int): Channel identifiers.
+        - energy_list (list): A list of energies for a single channel.
+        - en_min (float): The lower limit of the energy range.
+        - en_max (float): The upper limit of the energy range.
+        - sm, mM (int): Channel identifiers.
     """
     # Plot the energy spectrum and the Gaussian fit if the flag is set
     n, bins, _ = plt.hist(
@@ -162,8 +160,7 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
     This function plots the energy spectrum of the channels.
 
     Parameters:
-    sm_mM_energy (dict): A dictionary mapping the (sm, mM) to a list of energies.
-                         The keys are tuples (sm, mM) and the values are lists of energies.
+        - sm_mM_energy (dict): A dictionary mapping the (sm, mM) to a list of energies. The keys are tuples (sm, mM) and the values are lists of energies.
     """
     # Create a dictionary to store the count of channels at each position
     mM_dict = {}
@@ -191,7 +188,7 @@ def plot_event_impact(impact_matrix: np.ndarray) -> None:
     This function plots the impact of the event on the detector.
 
     Parameters:
-    impact_matrix (np.ndarray): A 2D NumPy array representing the impact of the event on the detector.
+        - impact_matrix (np.ndarray): A 2D NumPy array representing the impact of the event on the detector.
     """
     plt.imshow(impact_matrix, cmap="binary", interpolation="nearest")
     plt.colorbar(label="Energy")

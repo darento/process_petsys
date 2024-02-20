@@ -8,7 +8,7 @@ def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
     Calculates the electronics numbers: portID, slaveID, chipID, channelID based on the given channel id.
 
     Parameters:
-    channel_id (int): The channel id to calculate the electronics numbers from.
+        - channel_id (int): The channel id to calculate the electronics numbers from.
 
     Returns:
     tuple[int, int, int, int]: A tuple containing the portID, slaveID, chipID, and channelID.
@@ -25,10 +25,10 @@ def get_absolute_id(portID: int, slaveID: int, chipID: int, channelID: int) -> i
     Calculates the absolute channel id from the given electronics numbers.
 
     Parameters:
-    portID (int): The port id.
-    slaveID (int): The slave id.
-    chipID (int): The chip id.
-    channelID (int): The channel id.
+        - portID (int): The port id.
+        - slaveID (int): The slave id.
+        - chipID (int): The chip id.
+        - channelID (int): The channel id.
 
     Returns:
     int: The absolute channel id calculated from the electronics numbers.
@@ -41,12 +41,12 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict)
     Get the mini module with highest energy
 
     Parameters:
-    det_event (list): The event data.
-    sm_mM_map (dict): The mapping of the channels to the mod and mM.
+        - det_event (list): The event data.
+        - sm_mM_map (dict): The mapping of the channels to the mod and mM.
 
     Returns:
-    list[list]: The event data for the maximum energy miniModule and sm.
-    float: The maximum energy in the event.
+        - list[list]: The event data for the maximum energy miniModule and sm.
+        - float: The maximum energy in the event.
     """
     # First we need to find if there is more than 1 mM in the event
     mM_list = list(set([sm_mM_map[ch[2]] for ch in det_list]))
@@ -81,8 +81,8 @@ def get_num_eng_channels(det_list: list[list], chtype_map: dict) -> int:
     Counts the number of energy channels in a list.
 
     Parameters:
-        det_list (list): The list of detectors.
-        chtype_map (dict): A mapping from detector names to channel types.
+        - det_list (list): The list of detectors.
+        - chtype_map (dict): A mapping from detector names to channel types.
 
     Returns:
         int: The number of energy channels in det_list.
@@ -97,9 +97,9 @@ def get_max_en_channel(
     Returns a function that selects the channel with the highest deposit from a list of channels.
 
     Parameters:
-        det_list : List of hits with [tstp, energy, chid]
-        chtype_map (dict): A mapping from channel names to channel types.
-        chtype (ChannelType, optional): The type of channel to be compared. If None, all channels are considered. Defaults to None.
+        - det_list : List of hits with [tstp, energy, chid]
+        - chtype_map (dict): A mapping from channel names to channel types.
+        - chtype (ChannelType, optional): The type of channel to be compared. If None, all channels are considered. Defaults to None.
 
     Returns:
         list: The channel with the highest deposit.

@@ -10,11 +10,11 @@ def read_detector_evt(
     at detector level.
 
     Parameters:
-    f (file): The binary file to read from.
-    data_format (str): The format string for struct.unpack to parse the data.
-    data_size (int): The size of each data line in bytes.
-    num_lines (int): The number of data lines to read.
-    en_filter (float): The energy filter threshold.
+        - f (file): The binary file to read from.
+        - data_format (str): The format string for struct.unpack to parse the data.
+        - data_size (int): The size of each data line in bytes.
+        - num_lines (int): The number of data lines to read.
+        - en_filter (float): The energy filter threshold.
 
     Returns:
     list: A list of tuples containing the unpacked data.
@@ -34,14 +34,14 @@ def read_binary_file(
     Generates events from a binary file.
 
     Parameters:
-    file_path (str): The path to the binary file to read.
-    en_filter (float, optional): The energy filter threshold. Defaults to 0.
-    group_events (bool, optional): Whether to group events. Defaults to True.
+        - file_path (str): The path to the binary file to read.
+        - en_filter (float, optional): The energy filter threshold. Defaults to 0.
+        - group_events (bool, optional): Whether to group events. Defaults to True.
 
     Returns:
     generator: A generator that yields tuples containing the data for each event.
-               det1: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det1
-               det2: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det2
+        - det1: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det1
+        - det2: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det2
     """
     # Define the struct formats and sizes
     header_format = "B" if group_events else "2B"  # Format for the header

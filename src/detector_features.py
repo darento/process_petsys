@@ -11,8 +11,8 @@ def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
     Calculate the total energy of the event.
 
     Parameters:
-    det_list: The event data.
-    chtype_map: A dictionary mapping the channel type to the channel number.
+        - det_list: The event data.
+        - chtype_map: A dictionary mapping the channel type to the channel number.
 
     Returns:
     float: The total energy of the event.
@@ -29,9 +29,10 @@ def calculate_centroid(
     Calculate the centroid of the event.
 
     Parameters:
-    event: The event data.
-    offset_x: The offset in the x direction.
-    offset_y: The offset in the y direction.
+        - det_list: The event data.
+        - local_dict: The local coordinates of the channels.
+        - x_rtp: The power of the x coordinate.
+        - y_rtp: The power of the y coordinate.
 
     Returns:
     tuple: The centroid of the event.
@@ -64,8 +65,8 @@ def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
     Calculate the depth of interaction (DOI) of the event.
 
     Parameters:
-    event: The event data.
-    local_dict: The local coordinates of the channels.
+        - det_list: The event data.
+        - local_dict: The local coordinates of the channels.
 
     Returns:
     float: The depth of interaction (DOI) of the event.
@@ -88,9 +89,9 @@ def calculate_impact_hits(
     Calculate the impact hits of the event.
 
     Parameters:
-    det_list (list): The event data.
-    local_coord_dict (dict): The local coordinates of the channels.
-    FEM_instance (FEM): The FEM instance.
+        - det_list (list): The event data.
+        - local_coord_dict (dict): The local coordinates of the channels.
+        - FEM_instance (FEM): The FEM instance.
 
     Returns:
     tuple: The impact hits of the event.
@@ -128,11 +129,11 @@ def calculate_dt(
     Calculate the time difference between the two detectors.
 
     Parameters:
-    det1_list (list): The list of hits for detector 1.
-    det2_list (list): The list of hits for detector 2.
-    chtype_map (dict): A mapping from detector names to channel types.
-    det1_avg (float): The number of tstp channels for detector 1 to average.
-    det2_avg (float): The number of tstp channels for detector 2 to average.
+        - det1_list (list): The list of hits for detector 1.
+        - det2_list (list): The list of hits for detector 2.
+        - chtype_map (dict): A mapping from detector names to channel types.
+        - det1_avg (float): The number of tstp channels for detector 1 to average.
+        - det2_avg (float): The number of tstp channels for detector 2 to average.
 
     Returns:
     float: The time difference between the two detectors.

@@ -15,7 +15,11 @@ def write_txt_toNN(
     Write the event data to a text file.
 
     Parameters:
-    FEM_instance (FEMBase): The FEM instance.
+        - FEM_instance (FEMBase): The FEM instance.
+        - sm_mM_map (dict): The mapping of the channels to the mod and mM.
+        - local_coord_dict (dict): The local coordinates of the channels.
+        - chtype_map (dict): A dictionary mapping the channel type to the channel number.
+        - file_stream (TextIO): The file stream to write the event data to.
 
     Returns:
     Callable: The function to write the event data to a text file.
@@ -39,10 +43,7 @@ def write_txt_toNN(
         Write the event data to a text file.
 
         Parameters:
-        det_event (list): The event data.
-        sm_mM_map (dict): The mapping of the channels to the mod and mM.
-        local_coord_dict (dict): The local coordinates of the channels.
-        file_stream (TextIO): The file stream to write to.
+            - det_event (list): The event data.
         """
         # Find the maximum energy mM and sm in the event
         max_mm_list, _ = get_maxEnergy_sm_mM(det_list, sm_mM_map, chtype_map)
