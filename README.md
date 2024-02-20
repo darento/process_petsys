@@ -40,3 +40,12 @@ You can run the main script with the following command:
 ```bash
 python main.py configs\<your_config.yml>
 ```
+
+## Documentation
+Anyone can access the documentation of the code by simply compiling the docstrings from `docs/` directory such:
+```bash
+cd docs/
+make html
+```
+Go to `docs/_builds/`, and open the index.html in a browser. You are good to go :). 
+
