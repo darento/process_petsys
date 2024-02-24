@@ -135,5 +135,5 @@ def get_max_num_ch(det_list: list[list], chtype_map: dict, max_ch: int) -> list[
     return sorted(
         filter(lambda x: ChannelType.ENERGY in chtype_map[x[2]], det_list),
         key=lambda x: x[1],
-        reverse=False,
+        reverse=True,
     )[:max_ch]
