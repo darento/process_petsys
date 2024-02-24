@@ -118,3 +118,22 @@ def get_max_en_channel(
         return max(filter(filt_func, det_list), key=lambda y: y[1])
     except ValueError:
         return None
+
+
+def get_max_num_ch(det_list: list[list], chtype_map: dict, max_ch: int) -> list[list]:
+    """
+    Returns the event up to the maximum number of channel specified.
+
+    Parameters:
+        - det_list : List of hits with [tstp, energy, chid]
+        - chtype_map (dict): A mapping from channel names to channel types.
+        - max_ch (int): The maximum number of channels to return.
+
+    Returns:
+    list: The event up to the maximum number of channels specified.
+    """
+    return sorted(
+        filter(lambda x: ChannelType.ENERGY in chtype_map[x[2]], det_list),
+        key=lambda x: x[1],
+        reverse=False,
+    )[:max_ch]
