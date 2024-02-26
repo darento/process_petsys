@@ -1,5 +1,6 @@
 from typing import Callable
 from src.detector_features import calculate_total_energy
+from src.fem_handler import FEMBase
 from src.mapping_generator import ChannelType
 
 
@@ -137,3 +138,42 @@ def get_max_num_ch(det_list: list[list], chtype_map: dict, max_ch: int) -> list[
         key=lambda x: x[1],
         reverse=True,
     )[:max_ch]
+
+
+def get_neighbour_channels(
+    det_list: list[list],
+    chtype_map: dict,
+    local_coord_dict: dict,
+    neighbour_ch: int,
+    FEM_instance: FEMBase,
+) -> list[list]:
+    """
+    Return the event with the neighbour channels of the highest energy channel.
+
+    Parameters:
+        - det_list : List of hits with [tstp, energy, chid]
+        - chtype_map (dict): A mapping from channel names to channel types.
+        - local_coord_dict (dict): A dictionary mapping detector channels to local coordinates.
+        - neighbour_ch (int): The number of neighbour channels to return.
+
+    Returns:
+    list: The event with the neighbour channels of the highest energy channel.
+    """
+    max_en_ch = get_max_en_channel(det_list, chtype_map, ChannelType.ENERGY)
+    pos_max_en_ch = local_coord_dict[max_en_ch[2]]
+    neighbour_channels = []
+    for hit in det_list:
+        pos_hit = local_coord_dict[hit[2]]
+        dx = abs(pos_max_en_ch[0] - pos_hit[0])
+        dy = abs(pos_max_en_ch[1] - pos_hit[1])
+        if neighbour_ch == 1:
+            # Look only for the nearest neighbours, up, down, left and right
+            if (
+                abs(dx) <= FEM_instance.x_pitch and (pos_hit[1] == pos_max_en_ch[1])
+            ) or (abs(dy) <= FEM_instance.y_pitch and (pos_hit[0] == pos_max_en_ch[0])):
+                neighbour_channels.append(hit)
+
+        elif neighbour_ch == 2:
+            if abs(dx) <= FEM_instance.x_pitch and abs(dy) <= FEM_instance.y_pitch:
+                neighbour_channels.append(hit)
+    return neighbour_channels
