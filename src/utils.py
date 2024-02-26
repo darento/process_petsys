@@ -173,7 +173,9 @@ def get_neighbour_channels(
             ) or (abs(dy) <= FEM_instance.y_pitch and (pos_hit[0] == pos_max_en_ch[0])):
                 neighbour_channels.append(hit)
 
-        elif neighbour_ch == 2:
-            if abs(dx) <= FEM_instance.x_pitch and abs(dy) <= FEM_instance.y_pitch:
+        elif neighbour_ch >= 2:
+            if abs(dx) <= FEM_instance.x_pitch * (neighbour_ch - 1) and abs(
+                dy
+            ) <= FEM_instance.y_pitch * (neighbour_ch - 1):
                 neighbour_channels.append(hit)
     return neighbour_channels
