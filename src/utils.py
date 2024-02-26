@@ -38,7 +38,7 @@ def get_absolute_id(portID: int, slaveID: int, chipID: int, channelID: int) -> i
 
 def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict) -> int:
     """
-    Get the mini module with highest energy
+    Returns the mini module with highest energy
 
     Parameters:
         - det_event (list): The event data.
