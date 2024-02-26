@@ -121,10 +121,8 @@ def data_and_en_dict(
                 "det2_en": det2_en,
                 "det1_doi": det1_doi,
                 "det2_doi": det2_doi,
-                "x_det1": x_det1,
-                "y_det1": y_det1,
-                "x_det2": x_det2,
-                "y_det2": y_det2,
+                "xy_det1": (x_det1, y_det1),
+                "xy_det2": (x_det2, y_det2),
                 "impact_matrix": impact_matrix,
             }
         event_count += 1
@@ -157,7 +155,12 @@ def extract_photopeak_limits(
         - en_peak_max (float): The upper limit of the photopeak.
     """
     n, bins = plot_single_spectrum(
-        en_matrix[:, 0], 0, 200, 0, 0, "Detector 1 energy", "Energy (a.u.)"
+        en_matrix[:, 0],
+        1,
+        0,
+        "Detector 1 energy",
+        "Energy (a.u.)",
+        hist_lim=(0, 200),
     )
 
     _, _, pars, _, _ = fit_gaussian(n, bins)
@@ -201,6 +204,17 @@ def extract_impact_info(
     return np.round(max_values / events_passing_filter, 3), np.round(
         max_value_av / events_passing_filter, 3
     )
+
+
+def flood_map(data_dict: dict, en_min_peak: float = 0, en_max_peak: float = 1000):
+    plot_floodmap([data_dict[ev]["xy_det1"] for ev in data_dict], 0, 0, show_fig=True)
+    xy_filtered = []
+    for event, data in data_dict.items():
+        det1_en = data["det1_en"]
+        if not filter_total_energy(det1_en, en_min_peak, en_max_peak):
+            continue
+        xy_filtered.append(data["xy_det1"])
+    plot_floodmap(xy_filtered, 0, 0, show_fig=True)
 
 
 def main():
@@ -248,16 +262,13 @@ def main():
         data_dict, 64, en_min_peak, en_max_peak
     )
 
+    flood_map(data_dict, en_min_peak, en_max_peak)
+
     # Writing the av_impact_matrix into file
     with open(file_name, "w") as f:
         f.write(str(av_max) + "\n")
         for value in av_impact_matrix:
             f.write(str(value) + "\n")
-
-    # Plot the energy spectrum
-    # plot_single_spectrum(
-    #    en_matrix[:, 1], 0, 200, 0, 0, "Detector 1 energy", "Energy (a.u.)", True
-    # )
 
 
 if __name__ == "__main__":
