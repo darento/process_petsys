@@ -81,7 +81,7 @@ def plot_floodmap(
         plt.show()
     else:
         plt.clf()
-        plt.close("all")
+        plt.close()
 
 
 def plot_floodmap_mM(floodmap: dict, bins: tuple = (200, 200)) -> None:
@@ -150,7 +150,7 @@ def plot_single_spectrum(
         plt.show()
     else:
         plt.clf()
-        plt.close("all")
+        plt.close()
 
     return n, bins
 
