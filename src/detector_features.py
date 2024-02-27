@@ -84,7 +84,6 @@ def calculate_DOI(
     elif slab_orientation == "y":
         for ch in det_list:
             _, y = local_dict[ch[-1]]
-            print(y, ch[1])
             xy_pos[y] += ch[1]
     max_energy = max(xy_pos.values())
     sum_energy = sum(xy_pos.values())
