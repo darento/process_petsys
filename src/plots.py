@@ -68,6 +68,7 @@ def plot_floodmap(
     # Unpack the x and y coordinates
     x, y = zip(*xy_list)
 
+    fig = plt.figure(figsize=(10, 10))
     plt.hist2d(x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma")
 
     # Set plot properties
@@ -131,6 +132,7 @@ def plot_single_spectrum(
         - sm, mM (int): Channel identifiers.
     """
     # Plot the energy spectrum and the Gaussian fit if the flag is set
+    fig = plt.figure(figsize=(10, 10))
     n, bins, _ = plt.hist(
         hist_list, bins=100, range=(hist_lim[0], hist_lim[1]), label=f"sm {sm}, mM {mM}"
     )
