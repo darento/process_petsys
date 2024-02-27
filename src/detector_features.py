@@ -59,7 +59,9 @@ def calculate_centroid(
     return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
 
 
-def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
+def calculate_DOI(
+    det_list: list[list], local_dict: dict, slab_orientation: str
+) -> float:
     # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case and slab orientation.
     """
     Calculate the depth of interaction (DOI) of the event.
@@ -67,18 +69,25 @@ def calculate_DOI(det_list: list[list], local_dict: dict) -> float:
     Parameters:
         - det_list: The event data.
         - local_dict: The local coordinates of the channels.
+        - slab_orientation: The orientation of the slab. (x or y)
 
     Returns:
     float: The depth of interaction (DOI) of the event.
     """
     # DOI is calculated as the sum of the energies divided by the maximum energy,
-    # previosy summing the energies in the same x position
-    x_pos = defaultdict(float)
-    for ch in det_list:
-        x, _ = local_dict[ch[-1]]
-        x_pos[x] += ch[1]
-    max_energy = max(x_pos.values())
-    sum_energy = sum(x_pos.values())
+    # previosy summing the energies in the slab orientation direction.
+    xy_pos = defaultdict(float)
+    if slab_orientation == "x":
+        for ch in det_list:
+            x, _ = local_dict[ch[-1]]
+            xy_pos[x] += ch[1]
+    elif slab_orientation == "y":
+        for ch in det_list:
+            _, y = local_dict[ch[-1]]
+            print(y, ch[1])
+            xy_pos[y] += ch[1]
+    max_energy = max(xy_pos.values())
+    sum_energy = sum(xy_pos.values())
     return sum_energy / max_energy
 
 
