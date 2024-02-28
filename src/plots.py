@@ -121,6 +121,7 @@ def plot_single_spectrum(
     hist_lim: Tuple[float, float] = (0, 100),
     show_fig: bool = False,
     fit_flag: bool = False,
+    num_bins: int = 100,
 ) -> None:
     """
     This function plots the energy spectrum of a single channel.
@@ -134,7 +135,10 @@ def plot_single_spectrum(
     # Plot the energy spectrum and the Gaussian fit if the flag is set
     fig = plt.figure(figsize=(10, 10))
     n, bins, _ = plt.hist(
-        hist_list, bins=100, range=(hist_lim[0], hist_lim[1]), label=f"sm {sm}, mM {mM}"
+        hist_list,
+        bins=num_bins,
+        range=(hist_lim[0], hist_lim[1]),
+        label=f"sm {sm}, mM {mM}",
     )
 
     if fit_flag:
