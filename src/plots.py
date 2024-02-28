@@ -143,7 +143,7 @@ def plot_single_spectrum(
 
     if fit_flag:
         # Fit a Gaussian to the energy spectrum
-        x, y, _, _, _ = fit_gaussian(n, bins, cb=16)
+        x, y, _, _, _ = fit_gaussian(n, bins, cb=8)
         plt.plot(x, y, label="Gaussian fit")
 
     # Set plot properties
