@@ -242,11 +242,11 @@ def plot_xy_projection(
 
     # width = x_bin_centers[1] - x_bin_centers[0]
 
-    if projection_axis == "y":
+    if projection_axis == "x":
         h_projection = np.sum(h, axis=1)
         bin_centers = (x_edges[1:] + x_edges[:-1]) / 2
         xy_projection = "X"
-    elif projection_axis == "x":
+    elif projection_axis == "y":
         h_projection = np.sum(h, axis=0)
         bin_centers = (y_edges[1:] + y_edges[:-1]) / 2
         xy_projection = "Y"
