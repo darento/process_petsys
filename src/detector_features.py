@@ -130,6 +130,7 @@ def calculate_dt(
     det1_list: list[list],
     det2_list: list[list],
     chtype_map: dict,
+    skew_map: dict,
     det1_avg: int = 1,
     det2_avg: int = 1,
 ) -> float:
@@ -140,6 +141,7 @@ def calculate_dt(
         - det1_list (list): The list of hits for detector 1.
         - det2_list (list): The list of hits for detector 2.
         - chtype_map (dict): A mapping from detector names to channel types.
+        - skew_map (dict): A mapping from channel names to skew values.
         - det1_avg (float): The number of tstp channels for detector 1 to average.
         - det2_avg (float): The number of tstp channels for detector 2 to average.
 
@@ -147,20 +149,33 @@ def calculate_dt(
     float: The time difference between the two detectors.
     """
     # Get the time channels for each detector
-    time_ch1 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det1_list))
-    time_ch2 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det2_list))
+    time_det1 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det1_list))
+    time_det2 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det2_list))
 
     # Calculate the time difference for no average
     if det1_avg == 1 and det2_avg == 1:
-        return time_ch1[0][0] - time_ch2[0][0]
+        time_ch1 = time_det1[0][2]
+        time_ch2 = time_det2[0][2]
+        # print(time_ch1, time_ch2)
+        # print(time_det1[0][0], time_det2[0][0])
+        t1 = time_det1[0][0] - skew_map.get(time_ch1, 0)
+        t2 = time_det2[0][0] - skew_map.get(time_ch2, 0)
+        # print(t1, t2)
+        return t1 - t2
     else:
         # Check if the number of channels to average is greater than the number of channels
         # in the event
-        if det1_avg > len(time_ch1):
-            det1_avg = len(time_ch1)
-        if det2_avg > len(time_ch2):
-            det2_avg = len(time_ch2)
+        if det1_avg > len(time_det1):
+            det1_avg = len(time_det1)
+        if det2_avg > len(time_det2):
+            det2_avg = len(time_det2)
         # Calculate the average time for each detector
-        time_ch1 = sum([x[0] for x in time_ch1[0:det1_avg]]) / det1_avg
-        time_ch2 = sum([x[0] for x in time_ch2[0:det2_avg]]) / det2_avg
-        return time_ch1 - time_ch2
+        time_det1 = (
+            sum([x[0] - skew_map.get(x[2], 0) for x in time_det1[0:det1_avg]])
+            / det1_avg
+        )
+        time_det2 = (
+            sum([x[0] - skew_map.get(x[2], 0) for x in time_det2[0:det2_avg]])
+            / det2_avg
+        )
+        return time_det1 - time_det2
