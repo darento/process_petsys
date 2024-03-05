@@ -146,8 +146,12 @@ def plot_single_spectrum(
 
     if fit_flag:
         # Fit a Gaussian to the energy spectrum
-        x, y, _, _, _ = fit_gaussian(n, bins, cb=8)
-        plt.plot(x, y, label="Gaussian fit")
+        x, y, pars, _, _ = fit_gaussian(n, bins, cb=8)
+        fwhm = 2 * math.sqrt(2 * math.log(2)) * pars[2]
+        centroid = pars[1]
+        plt.plot(
+            x, y, label=f"Gaussian fit\nCentroid: {centroid:.2f}\nFWHM: {fwhm:.2f}"
+        )
 
     # Set plot properties
     plt.xlabel(f"{xlabel}")
