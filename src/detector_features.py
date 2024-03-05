@@ -169,13 +169,11 @@ def calculate_dt(
             det1_avg = len(time_det1)
         if det2_avg > len(time_det2):
             det2_avg = len(time_det2)
-        # Calculate the average time for each detector
-        time_det1 = (
-            sum([x[0] - skew_map.get(x[2], 0) for x in time_det1[0:det1_avg]])
-            / det1_avg
-        )
-        time_det2 = (
-            sum([x[0] - skew_map.get(x[2], 0) for x in time_det2[0:det2_avg]])
-            / det2_avg
-        )
+        # Calculate the weighted average time for each detector
+        time_det1 = sum(
+            [(x[0] - skew_map.get(x[2], 0)) * x[1] for x in time_det1[0:det1_avg]]
+        ) / sum([x[1] for x in time_det1[0:det1_avg]])
+        time_det2 = sum(
+            [(x[0] - skew_map.get(x[2], 0)) * x[1] for x in time_det2[0:det2_avg]]
+        ) / sum([x[1] for x in time_det2[0:det2_avg]])
         return time_det1 - time_det2
