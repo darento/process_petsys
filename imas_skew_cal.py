@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 """Extracts the photopeak from the energy per minimodule and saves it to a file.
-Usage: imas_mm_peak_cal YAMLCONF INFILE
+Usage: imas_skew_cal YAMLCONF INFILE SLAB_EN_MAP
 
 Arguments:
-    YAMLCONF  File with all parameters to take into account in the scan.
-    INFILE    Input file to be processed. Must be a compact binary file from PETsys.
+    YAMLCONF       File with all parameters to take into account in the scan.
+    INFILE         Input file to be processed. Must be a compact binary file from PETsys.
+    SLAB_EN_MAP    File with the energy per slab.
 
 Options:
     -h --help     Show this screen.    
@@ -178,8 +179,10 @@ def main():
     # Read the YAML configuration file
     args = docopt(__doc__)
 
-    # Read the binary file
+    # Data binary file
     binary_file_path = args["INFILE"]
+    # File with the energy per slab
+    slab_file_path = args["SLAB_EN_MAP"]
 
     file_name = os.path.basename(binary_file_path)
     file_name = file_name.replace(".ldat", "_impactArray.txt")
@@ -193,9 +196,6 @@ def main():
     # Get the coordinates of the channels
     local_coord_map, sm_mM_map, chtype_map, FEM_instance = map_factory(map_file)
 
-    # Plot the coordinates of the channels
-    # plot_chan_position(local_coord_map)
-
     # Read the energy range
     en_min = float(config["energy_range"][0])
     en_max = float(config["energy_range"][1])
@@ -208,6 +208,8 @@ def main():
     print(f"Minimum energy per channel: {en_min_ch}")
 
     reader = read_binary_file(binary_file_path, en_min_ch)
+
+    slab_en_map = read_slab_energy_map(slab_file_path)
 
     sm_mm_dict_energy = extract_data_dict(
         reader, local_coord_map, chtype_map, sm_mM_map, FEM_instance, min_ch

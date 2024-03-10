@@ -179,3 +179,24 @@ def get_neighbour_channels(
             ) <= FEM_instance.y_pitch * (neighbour_ch - 1):
                 neighbour_channels.append(hit)
     return neighbour_channels
+
+
+def convert_to_kev(kev_file: str, mod_func: Callable) -> Callable:
+    """
+    Return factor for conversion to keV.
+    """
+    # Ok like this? Probs need to improve file format.
+    # kev_factors = pd.read_feather(kev_file).set_index(['supermodule', 'minimodule'])
+    kev_factors = (
+        pd.read_csv(kev_file, sep="\t")
+        .set_index(["Supermod", "Minimod"])["Energy Peak"]
+        .map(lambda x: 511.0 / x)
+        .to_dict()
+    )
+
+    def _convert(id: int) -> float:
+        mods = mod_func(id)
+        return kev_factors[mods]
+        # return kev_factors.loc[mods]
+
+    return _convert
