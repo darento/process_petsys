@@ -32,7 +32,25 @@ def _get_local_mapping(
     local_map = {}
     sm_mM_map = {}
     chtype_map = {}
-
+    # energy channel mapping for sum rows and cols
+    mm_energy_map = {
+        0: 0,
+        1: 4,
+        2: 8,
+        3: 12,
+        4: 1,
+        5: 5,
+        6: 9,
+        7: 13,
+        8: 2,
+        9: 6,
+        10: 10,
+        11: 14,
+        12: 3,
+        13: 7,
+        14: 11,
+        15: 15,
+    }
     for mod, value in mod_feb_map.items():
         portID, slaveID, febport = value
         mod_min_chan = (
@@ -47,7 +65,9 @@ def _get_local_mapping(
             mM = int(i // FEM_instance.mM_channels)
             sm_mM_map[ch_1 + mod_min_chan] = (mod, mM)
             sm_mM_map[ch_2 + mod_min_chan] = (
-                (mod, mM + 1) if not FEM_instance.sum_rows_cols else (mod, mM)
+                (mod, mM + 1)
+                if not FEM_instance.sum_rows_cols
+                else (mod, mm_energy_map[mM])
             )
             if not FEM_instance.sum_rows_cols:
                 chtype_map[ch_1 + mod_min_chan] = [ChannelType.TIME, ChannelType.ENERGY]
