@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 
 """Extracts the photopeak from the energy per minimodule and saves it to a file.
-Usage: imas_skew_cal YAMLCONF INFILE SLAB_EN_MAP
+Usage: imas_skew_cal YAMLCONF SLAB_EN_MAP INFILE
 
 Arguments:
     YAMLCONF       File with all parameters to take into account in the scan.
-    INFILE         Input file to be processed. Must be a compact binary file from PETsys.
     SLAB_EN_MAP    File with the energy per slab.
+    INFILE         Input file to be processed. Must be a compact binary file from PETsys.
 
 Options:
-    -h --help     Show this screen.    
+    -h --help     Show this screen.    º
 """
 
 
@@ -43,7 +43,12 @@ from src.plots import (
     plot_event_impact,
 )
 from src.fits import fit_gaussian
-from src.utils import get_maxEnergy_sm_mM, get_num_eng_channels, get_max_en_channel
+from src.utils import (
+    convert_to_kev,
+    get_maxEnergy_sm_mM,
+    get_num_eng_channels,
+    get_max_en_channel,
+)
 
 # Total number of eevents
 EVT_COUNT_T = 0
@@ -71,108 +76,118 @@ def increment_pf():
     EVT_COUNT_F += 1
 
 
+def read_slab_energy_map(slab_file_path: str) -> dict:
+    """
+    This function reads the energy per slab from a file and returns a Callable to convert the energy to keV.
+
+    Parameters:
+    slab_file_path (str): The path to the file containing the energy per slab.
+
+    Returns:
+    Callable: A function that takes the slab number and returns the energy in keV.
+    """
+    kev_map = convert_to_kev(slab_file_path)
+    return kev_map
+
+
 def extract_data_dict(
     read_det_evt: Callable,
-    local_coord_map: dict,
     chtype_map: dict,
     sm_mM_map: dict,
-    FEM_instance: FEMBase,
+    slab_kev_fn: Callable,
     min_ch: int,
+    en_min: float,
+    en_max: float,
 ) -> tuple[dict, np.ndarray]:
     """
     This function processes the detector events and calculates the energy per minimodule.
 
     Parameters:
     read_det_evt (Callable): A generator or iterable that yields detector events.
-    local_coord_dict (dict): A dictionary mapping detector channels to local coordinates.
     chtype_map (dict): A dictionary mapping the channel type to the channel number.
-    FEM_instance (FEMBase): A dictionary representing a Finite Element Model instance.
+    sm_mM_map (dict): A dictionary mapping the minimodule to the slab and minimodule number.
+    slab_kev_map (dict): A dictionary mapping the slab number to the energy in keV.
     min_ch (int): The minimum channel number for the filter.
+    en_min (float): The minimum energy for the filter.
+    en_max (float): The maximum energy for the filter.
 
     Returns:
     dict: A dictionary containing the energy per minimodule.
     """
     event_count = 0
     start_time = time.time()
-    sm_mm_dict_count = defaultdict(int)
-    sm_mm_dict_energy = defaultdict(list)
+    slab_dict_count = defaultdict(int)
+    slab_dict_energy = defaultdict(list)
+    total_energy = []
     for event in read_det_evt:
         increment_total()
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map)
         min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map)
-        event_count += 1
-        if event_count % 100000 == 0:
+        if EVT_COUNT_T % 100000 == 0:
             count_time = time.time()
             print(
-                f"Events processed: {event_count}\tTime taken: {round(count_time - start_time,1)} seconds"
+                f"Events processed / passing filter: {EVT_COUNT_T} / {EVT_COUNT_F}\tTime taken: {round(count_time - start_time,1)} seconds"
             )
         if not (min_ch_filter1 and min_ch_filter2):
             continue
         max_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map, chtype_map)
         max_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map, chtype_map)
-        max_sm_det1 = sm_mM_map[max_det1[0][2]][0]
-        max_mM_det1 = sm_mM_map[max_det1[0][2]][1]
-        max_sm_det2 = sm_mM_map[max_det2[0][2]][0]
-        max_mM_det2 = sm_mM_map[max_det2[0][2]][1]
-        sm_mm_dict_count[(max_sm_det1, max_mM_det1)] += 1
-        sm_mm_dict_count[(max_sm_det2, max_mM_det2)] += 1
-        sm_mm_dict_energy[(max_sm_det1, max_mM_det1)].append(
-            energy_det1
-        )  # Change this line
-        sm_mm_dict_energy[(max_sm_det2, max_mM_det2)].append(
-            energy_det2
-        )  # Add this line
+        min_ch_maxdet1 = filter_min_ch(max_det1, min_ch, chtype_map)
+        min_ch_maxdet2 = filter_min_ch(max_det2, min_ch, chtype_map)
+        if not (min_ch_maxdet1 and min_ch_maxdet2):
+            continue
+        slab_det1 = get_max_en_channel(max_det1, chtype_map, ChannelType.TIME)[2]
+        slab_det2 = get_max_en_channel(max_det2, chtype_map, ChannelType.TIME)[2]
+        slab_dict_count[slab_det1] += 1
+        slab_dict_count[slab_det2] += 1
+        energy_det1_kev = slab_kev_fn(slab_det1) * energy_det1
+        energy_det2_kev = slab_kev_fn(slab_det2) * energy_det2
+        en_filter1 = filter_total_energy(energy_det1_kev, en_min, en_max)
+        en_filter2 = filter_total_energy(energy_det2_kev, en_min, en_max)
+        if not (en_filter1 and en_filter2):
+            continue
+        slab_dict_energy[slab_det1].append(energy_det1_kev)
+        slab_dict_energy[slab_det2].append(energy_det2_kev)
+        total_energy.extend((energy_det1_kev, energy_det2_kev))
         increment_pf()
 
     print("---------------------")
     end_time = time.time()
-    print(len(sm_mm_dict_count))
+    print(len(slab_dict_count))
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Total events: {EVT_COUNT_T}")
     print(f"Events passing the filter: {EVT_COUNT_F}")
-    return sm_mm_dict_energy
+    return slab_dict_energy, total_energy
 
 
-def extract_photopeak_mm(sm_mm_dict_energy: dict) -> dict:
+def extract_photopeak_slab(slab_dict_energy: dict) -> dict:
     """
     This function extracts the photopeak from the energy per minimodule.
 
     Parameters:
-    sm_mm_dict_energy (dict): A dictionary containing the energy per minimodule.
-    sm_mm_dict_count (dict): A dictionary containing the count per minimodule.
+    slab_dict_energy (dict): A dictionary containing the energy per minimodule.
+    slab_dict_photopeak (dict): A dictionary containing the count per minimodule.
 
     Returns:
     dict: A dictionary containing the photopeak per minimodule.
     """
-    sm_mm_dict_photopeak = {}
-    for key, value in sm_mm_dict_energy.items():
-        if len(value) < 100:
-            sm_mm_dict_photopeak[key] = (0, 0)
-            continue
-        n, bins = np.histogram(value, bins=200, range=(0, 200))
+    slab_dict_photopeak = {}
+    for key, value in slab_dict_energy.items():
+        # n, bins = np.histogram(value, bins=200, range=(0, 200))
+        n, bins, patches = plt.hist(value, bins=1000, range=(0, 1000))
         try:
-            x, y, pars, _, _ = fit_gaussian(n, bins)
+            x, y, pars, _, _ = fit_gaussian(n, bins, cb=16)
             mu, sigma = pars[1], pars[2]
         except RuntimeError:
             mu, sigma = 0, 0
-        sm_mm_dict_photopeak[key] = (mu, sigma)
-    return sm_mm_dict_photopeak
-
-
-def write_mm_cal(sm_mm_dict_photopeak: dict):
-    """
-    This function writes the photopeak per minimodule to a file.
-
-    Parameters:
-    sm_mm_dict_photopeak (dict): A dictionary containing the photopeak per minimodule.
-    """
-    file_name = "mm_en_cal.txt"
-    with open(file_name, "w") as f:
-        f.write("sm\tmM\tmu\tsigma\n")
-        for key, value in sorted(sm_mm_dict_photopeak.items()):
-            f.write(f"{key[0]}\t{key[1]}\t{round(value[0],3)}\t{round(value[1],3)}\n")
-    print(f"File {file_name} written.")
+            plt.legend([f"Slab: {key}\nError fitting the Gaussian"])
+            plt.show()
+        slab_dict_photopeak[key] = (mu, sigma)
+        plt.plot(x, y, "-r", label="fit")
+        plt.legend([f"Slab: {key}\nEnergy res: {round(2.35*sigma/mu*100,2)}%"])
+        plt.show()
+    return slab_dict_photopeak
 
 
 def main():
@@ -194,7 +209,7 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    local_coord_map, sm_mM_map, chtype_map, FEM_instance = map_factory(map_file)
+    _, sm_mM_map, chtype_map, _ = map_factory(map_file)
 
     # Read the energy range
     en_min = float(config["energy_range"][0])
@@ -209,14 +224,25 @@ def main():
 
     reader = read_binary_file(binary_file_path, en_min_ch)
 
-    slab_en_map = read_slab_energy_map(slab_file_path)
+    slab_kev_fn = read_slab_energy_map(slab_file_path)
 
-    sm_mm_dict_energy = extract_data_dict(
-        reader, local_coord_map, chtype_map, sm_mM_map, FEM_instance, min_ch
+    slab_dict_energy, total_energy = extract_data_dict(
+        reader, chtype_map, sm_mM_map, slab_kev_fn, min_ch, en_min, en_max
     )
 
-    sm_mm_dict_photopeak = extract_photopeak_mm(sm_mm_dict_energy)
-    write_mm_cal(sm_mm_dict_photopeak)
+    n, bins, _ = plt.hist(
+        total_energy, bins=1500, range=(0, 1500), label="Total energy"
+    )
+    x, y, pars, _, _ = fit_gaussian(n, bins, cb=16)
+    mu, sigma = pars[1], pars[2]
+    plt.plot(x, y, "-r", label="fit")
+    plt.legend([f"Energy res: {round(2.35*sigma/mu*100,2)}%"])
+    plt.xlabel("Energy (keV)")
+    plt.ylabel("Counts")
+    plt.title("Total energy")
+    plt.show()
+
+    sm_mm_dict_photopeak = extract_photopeak_slab(slab_dict_energy)
 
 
 if __name__ == "__main__":
