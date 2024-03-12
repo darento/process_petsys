@@ -40,15 +40,16 @@ def filter_min_ch(
         - det_list (list): The event data.
         - min_ch (int): The minimum number of channels.
         - chtype_map (dict): A dictionary mapping the channel type to the channel number.
+        - sum_rows_cols (bool): A flag to indicate whether to sum the rows and columns.
 
     Returns:
     bool: True if the number of channels is greater than min_ch, False otherwise.
     """
     num_eng_ch = get_num_eng_channels(det_list, chtype_map)
     if not sum_rows_cols:
-        return num_eng_ch > min_ch
+        return num_eng_ch >= min_ch
     else:
-        if min_ch < num_eng_ch < len(det_list):
+        if min_ch <= num_eng_ch < len(det_list):
             return True
         else:
             return False
