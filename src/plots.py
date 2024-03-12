@@ -53,22 +53,31 @@ def plot_chan_position(dict_coords: dict) -> None:
 
 
 def plot_floodmap(
-    xy_list: list, sm: int, mM: int, bins: tuple = (200, 200), show_fig: bool = False
+    xy_list: list,
+    sm: int,
+    mM: int,
+    bins: tuple = (200, 200),
+    fig_num: int = 0,
+    show_fig: int = 0,
 ) -> None:
     """
     This function plots the floodmap of a single channel on a 2D graph.
 
     Parameters:
-        - xy_list (list): A list of coordinates [(x1, y1), (x2, y2), ...] for a single channel.
+        - xy_list (list): A list of coordinates [(x1, y1), (x2, y2), ...].
+        - sm (int): The super module number.
+        - mM (int): The mini module number.
         - bins (tuple, optional): A tuple specifying the number of bins in the x and y directions.
+        - fig_num (int, optional): The figure number. Defaults to 0.
+        - show_fig (int, optional): A flag to show the figure. Defaults to 0.
 
     Output:
-    None. This function plots a graph and does not return anything.
+    h, x_edges, y_edges: The 2D histogram and the bin edges.
     """
     # Unpack the x and y coordinates
     x, y = zip(*xy_list)
 
-    fig = plt.figure(figsize=(10, 10))
+    fig = plt.figure(num=fig_num, figsize=(10, 10))
     h, x_edges, y_edges, _ = plt.hist2d(
         x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma"
     )
@@ -80,9 +89,9 @@ def plot_floodmap(
     plt.xlim([0, 26])  # replace min_x, max_x with your desired values
     plt.ylim([0, 26])
     plt.title(f"Floodmap Representation of sm {sm}, mM {mM}")
-    if show_fig:
+    if show_fig == 1:
         plt.show()
-    else:
+    elif show_fig == 0:
         plt.clf()
         plt.close()
     return h, x_edges, y_edges
@@ -122,21 +131,29 @@ def plot_single_spectrum(
     title: str,
     xlabel: str,
     hist_lim: Tuple[float, float] = (0, 100),
-    show_fig: bool = False,
-    fit_flag: bool = False,
+    fig_num: int = 0,
+    show_fig: int = 0,
     num_bins: int = 250,
 ) -> None:
     """
     This function plots any kind if histogram.
 
     Parameters:
-        - energy_list (list): A list of energies for a single channel.
-        - en_min (float): The lower limit of the energy range.
-        - en_max (float): The upper limit of the energy range.
-        - sm, mM (int): Channel identifiers.
+        - hist_list (list): A list of energies.
+        - sm (int): The super module number.
+        - mM (int): The mini module number.
+        - title (str): The title of the plot.
+        - xlabel (str): The label for the x-axis.
+        - hist_lim (tuple, optional): The limits for the histogram. Defaults to (0, 100).
+        - fig_num (int, optional): The figure number. Defaults to 0.
+        - show_fig (int, optional): A flag to show the figure. Defaults to 0.
+        - num_bins (int, optional): The number of bins for the histogram. Defaults to 250.
+
+    Output:
+    n, bins: The histogram and the bin edges.
     """
     # Plot the energy spectrum and the Gaussian fit if the flag is set
-    fig = plt.figure(figsize=(10, 10))
+    fig = plt.figure(num=fig_num, figsize=(10, 10))
     n, bins, _ = plt.hist(
         hist_list,
         bins=num_bins,
@@ -144,22 +161,15 @@ def plot_single_spectrum(
         label=f"sm {sm}, mM {mM}",
     )
 
-    if fit_flag:
-        # Fit a Gaussian to the energy spectrum
-        x, y, pars, _, _ = fit_gaussian(n, bins, cb=8)
-        plt.plot(x, y, label="Gaussian fit")
-        en_res = pars[2] * 2.355 / pars[1] * 100
-        print(f"Energy resolution: {round(en_res,2)} %")
-
     # Set plot properties
     plt.xlabel(f"{xlabel}")
     plt.ylabel("Counts")
     plt.title(f"{title} Spectrum of sm {sm}, mM {mM}")
     plt.legend()
 
-    if show_fig:
+    if show_fig == 1:
         plt.show()
-    else:
+    elif show_fig == 0:
         plt.clf()
         plt.close()
 
@@ -195,7 +205,6 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
             "Energy (a.u.)",
             (en_min, en_max),
             show_fig=True,
-            fit_flag=True,
         )
 
     # plt.show()
@@ -218,7 +227,8 @@ def plot_xy_projection(
     x_edges: np.ndarray,
     y_edges: np.ndarray,
     projection_axis: str = "y",
-    show_fig: bool = False,
+    fig_num: int = 0,
+    show_fig: int = 0,
 ) -> None:
     """
     This function plots the 1D projection of the 2D histogram for the ROI.
@@ -228,6 +238,7 @@ def plot_xy_projection(
         - x_edges (np.ndarray): The bin edges for the x-axis.
         - y_edges (np.ndarray): The bin edges for the y-axis.
         - projection_axis (str, optional): The axis along which to project the histogram. Defaults to "y".
+        - fig_num (int, optional): The figure number. Defaults to 0.
         - show_fig (bool, optional): A flag to show the figure. Defaults to False.
 
     Returns:
@@ -235,21 +246,6 @@ def plot_xy_projection(
         - np.ndarray: The bin centers for the 1D projection.
     """
     # TODO: Maybe ROI directly here instead on the data filter?
-
-    # Find the indices of the y bins that correspond to the ROI
-    # y_min_index = np.searchsorted(y_edges, 11.5, side="right") - 1
-    # y_max_index = np.searchsorted(y_edges, 14.0, side="right") - 1
-    # Find the indices of the x bins that correspond to the ROI
-    # x_min_index = np.searchsorted(x_edges, 0, side="right") - 1
-    # x_max_index = np.searchsorted(x_edges, 16, side="right") - 1
-
-    # Sum the 2D histogram 'h' over the y-axis within the ROI to get a 1D projection
-    # h_projection = np.sum(h[x_min_index:x_max_index, y_min_index:y_max_index], axis=1)
-
-    # The x-values for the projection are the center of the x-bins
-    # x_bin_centers = (x_edges[x_min_index:x_max_index]) / 2
-
-    # width = x_bin_centers[1] - x_bin_centers[0]
 
     if projection_axis == "x":
         h_projection = np.sum(h, axis=1)
@@ -262,13 +258,14 @@ def plot_xy_projection(
     width = bin_centers[1] - bin_centers[0]
 
     # Now we can plot the 1D projection
+    fig = plt.figure(num=fig_num, figsize=(10, 10))
     plt.bar(bin_centers, h_projection, width=width, align="center")
     plt.xlabel(f"{xy_projection} position (mm)")
     plt.ylabel("Summed counts in ROI")
     plt.title("1D Projection of 2D Histogram")
-    if show_fig:
+    if show_fig == 1:
         plt.show()
-    else:
+    elif show_fig == 0:
         plt.clf()
         plt.close()
     return bin_centers, h_projection
