@@ -28,7 +28,9 @@ def filter_total_energy(
         return False
 
 
-def filter_min_ch(det_list: list[list], min_ch: int, chtype_map: dict) -> bool:
+def filter_min_ch(
+    det_list: list[list], min_ch: int, chtype_map: dict, sum_rows_cols: bool
+) -> bool:
     """
     Filters the event based on the minimum number of channels.
 
@@ -43,10 +45,13 @@ def filter_min_ch(det_list: list[list], min_ch: int, chtype_map: dict) -> bool:
     bool: True if the number of channels is greater than min_ch, False otherwise.
     """
     num_eng_ch = get_num_eng_channels(det_list, chtype_map)
-    if min_ch < num_eng_ch < len(det_list):
-        return True
+    if not sum_rows_cols:
+        return num_eng_ch > min_ch
     else:
-        return False
+        if min_ch < num_eng_ch < len(det_list):
+            return True
+        else:
+            return False
 
 
 def filter_single_mM(det_list: list[list], sm_mM_map: dict) -> bool:
