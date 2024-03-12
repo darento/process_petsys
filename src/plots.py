@@ -124,10 +124,10 @@ def plot_single_spectrum(
     hist_lim: Tuple[float, float] = (0, 100),
     show_fig: bool = False,
     fit_flag: bool = False,
-    num_bins: int = 100,
+    num_bins: int = 250,
 ) -> None:
     """
-    This function plots the energy spectrum of a single channel.
+    This function plots any kind if histogram.
 
     Parameters:
         - energy_list (list): A list of energies for a single channel.
@@ -147,11 +147,9 @@ def plot_single_spectrum(
     if fit_flag:
         # Fit a Gaussian to the energy spectrum
         x, y, pars, _, _ = fit_gaussian(n, bins, cb=8)
-        fwhm = 2 * math.sqrt(2 * math.log(2)) * pars[2]
-        centroid = pars[1]
-        plt.plot(
-            x, y, label=f"Gaussian fit\nCentroid: {centroid:.2f}\nFWHM: {fwhm:.2f}"
-        )
+        plt.plot(x, y, label="Gaussian fit")
+        en_res = pars[2] * 2.355 / pars[1] * 100
+        print(f"Energy resolution: {round(en_res,2)} %")
 
     # Set plot properties
     plt.xlabel(f"{xlabel}")
@@ -186,14 +184,21 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
             fig_number += 1
 
         # chipID figure
-        fig = plt.figure(mM_dict[(sm, mM)], figsize=(10, 10))
+        # fig = plt.figure(mM_dict[(sm, mM)], figsize=(10, 10))
 
         # Call the function to plot a single energy spectrum
         plot_single_spectrum(
-            energy_list, sm, mM, "Energy ", "Energy (a.u.)", (en_min, en_max)
+            energy_list,
+            sm,
+            mM,
+            "Energy ",
+            "Energy (a.u.)",
+            (en_min, en_max),
+            show_fig=True,
+            fit_flag=True,
         )
 
-    plt.show()
+    # plt.show()
 
 
 def plot_event_impact(impact_matrix: np.ndarray) -> None:
