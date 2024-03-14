@@ -59,6 +59,40 @@ def calculate_centroid(
     return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
 
 
+def calculate_centroid_sum(
+    det_list: list[list], local_map: dict, chtype_map: dict, x_rtp: int, y_rtp: int
+) -> tuple:
+    """
+    Calculate the centroid of the event.
+
+    Parameters:
+        - det_list: The event data.
+        - local_map: The local coordinates of the channels.
+        - chtype_map: A dictionary mapping the channel type to the channel number.
+        - x_rtp: The power of the x coordinate.
+        - y_rtp: The power of the y coordinate.
+
+    Returns:
+    tuple: The centroid of the event.
+    """
+    powers = [x_rtp, y_rtp]
+    offsets = [0.00001, 0.00001]
+
+    sum_xy = [0.0, 0.0]
+    weights_xy = [0.0, 0.0]
+
+    # Calculate the centroid of the event based on the local coordinates of the channels
+    # and the energy deposited in each channel
+    for hit in det_list:
+        ch = hit[-1]
+        en_t = chtype_map[ch][0].value - 1
+        pos = local_map[ch][en_t]
+        weight = (hit[1] + offsets[en_t]) ** powers[en_t]
+        sum_xy[en_t] += weight * pos
+        weights_xy[en_t] += weight
+    return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
+
+
 def calculate_DOI(
     det_list: list[list], local_dict: dict, slab_orientation: str
 ) -> float:
