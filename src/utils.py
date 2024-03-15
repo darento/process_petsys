@@ -182,25 +182,14 @@ def get_neighbour_channels(
     return neighbour_channels
 
 
-def convert_to_kev(kev_file: str) -> Callable:
-    """
-    Returns a function that takes ID as argument and return keV factor.
+class KevConverter:
+    def __init__(self, kev_file: str):
+        self.kev_factors = (
+            pd.read_csv(kev_file, sep="\t")
+            .set_index("ID")["mu"]
+            .map(lambda x: 511.0 / x if x != 0 else 1.0)
+            .to_dict()
+        )
 
-    Parameters:
-        - kev_file (str): The path to the file containing the energy per slab.
-
-    Returns:
-    Callable: A function that takes ID as argument and return keV factor
-    """
-    # Ok like this? Probs need to improve file format it only works for ID: peak energy
-    kev_factors = (
-        pd.read_csv(kev_file, sep="\t")
-        .set_index("ID")["mu"]
-        .map(lambda x: 511.0 / x if x != 0 else 1.0)
-        .to_dict()
-    )
-
-    def _convert(id: int) -> float:
-        return kev_factors[id]
-
-    return _convert
+    def convert(self, id: int) -> float:
+        return self.kev_factors[id]
