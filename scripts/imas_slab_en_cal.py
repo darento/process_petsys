@@ -88,8 +88,6 @@ def extract_data_dict(
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
         min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map, sum_rows_cols)
-        if EVT_COUNT_T > 100000:
-            break
         if EVT_COUNT_T % 100000 == 0:
             count_time = time.time()
             print(
