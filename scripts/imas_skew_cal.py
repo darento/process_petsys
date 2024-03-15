@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """Extracts the photopeak from the energy per minimodule and saves it to a file.
-Usage: imas_skew_cal YAMLCONF SLAB_EN_MAP INFILE
+Usage: imas_skew_cal YAMLCONF SLAB_EN_MAP INFILES ...
 
 Arguments:
     YAMLCONF       File with all parameters to take into account in the scan.
@@ -23,25 +23,23 @@ import numpy as np
 import yaml
 from scipy.spatial.transform import Rotation as R
 from scipy.constants import c as c_vac
+from multiprocessing import cpu_count, get_context
 
-from src.detector_features import calculate_centroid, calculate_centroid_sum
+from src.detector_features import calculate_centroid_sum
 
 from src.fem_handler import FEMBase
 from src.read_compact import read_binary_file
 from src.filters import (
-    filter_max_sm,
     filter_total_energy,
     filter_min_ch,
-    filter_single_mM,
 )
 
 from src.mapping_generator import ChannelType, map_factory
 
 from src.fits import fit_gaussian
 from src.utils import (
-    convert_to_kev,
+    KevConverter,
     get_maxEnergy_sm_mM,
-    get_num_eng_channels,
     get_max_en_channel,
 )
 
@@ -69,20 +67,6 @@ def increment_pf():
     """
     global EVT_COUNT_F
     EVT_COUNT_F += 1
-
-
-def read_slab_energy_map(slab_file_path: str) -> dict:
-    """
-    This function reads the energy per slab from a file and returns a Callable to convert the energy to keV.
-
-    Parameters:
-    slab_file_path (str): The path to the file containing the energy per slab.
-
-    Returns:
-    Callable: A function that takes the slab number and returns the energy in keV.
-    """
-    kev_map = convert_to_kev(slab_file_path)
-    return kev_map
 
 
 def sm_map_gen(ring_r: float, ring_z: list, ring_yx: dict) -> dict:
@@ -170,7 +154,7 @@ def cylinder_intersection_check(
     dt1 = line_length * (2 * t1 - 1) / c_mm_per_ps
     dt2 = line_length * (2 * t2 - 1) / c_mm_per_ps
     # print(f"line_length: {line_length}")
-    # print(f"dt_t1: {dt_t1} - dt_t2: {dt_t2}")
+    # print(f"dt_t1: {dt1} - dt_t2: {dt2}")
     # print(f"t1: {t1}, t2: {t2}")
     # print(f" t1 + t2 = {t1 + t2}")
 
@@ -257,8 +241,8 @@ def extract_data_dict(
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
         min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map, sum_rows_cols)
-        if EVT_COUNT_T > 1000000:
-            break
+        # if EVT_COUNT_T > 1000000:
+        #     break
         if EVT_COUNT_T % 100000 == 0:
             count_time = time.time()
             print(
@@ -314,16 +298,24 @@ def extract_data_dict(
         )
         if not intersection:
             continue
-        dt = tch_det1[0] - tch_det2[0]
+        dt = tch_det2[0] - tch_det1[0]
         dt1_error = dt - dt1_teoric
         dt2_error = dt - dt2_teoric
 
         dt_ch_dict[slab_det1].append(dt1_error)
-        # dt_ch_dict[slab_det2].append(-dt1_error)
+        dt_ch_dict[slab_det2].append(-dt1_error)
         dt_ch_dict[slab_det1].append(dt2_error)
-        # dt_ch_dict[slab_det2].append(-dt2_error)
+        dt_ch_dict[slab_det2].append(-dt2_error)
 
         # print(f"dt_system: {dt}")
+        # print(f"dt1_teoric: {dt1_teoric} - dt2_teoric: {dt2_teoric}")
+        # print(f"dt1_error: {dt1_error} - dt2_error: {dt2_error}")
+        # print(f"slab_det1: {slab_det1} - slab_det2: {slab_det2}")
+        # print(
+        #     f"energy_det1_kev: {energy_det1_kev} - energy_det2_kev: {energy_det2_kev}"
+        # )
+        # print(f"sm1: {sm1} - sm2: {sm2}")
+        # print(f"line_start: {line_start} - line_end: {line_end}")
         # crossing_visualization(intersection, pipe_radius, line_start, line_end)
         # print("---------------------")
         # slab_dict_energy[slab_det1].append(energy_det1_kev)
@@ -350,17 +342,52 @@ def extract_data_dict(
     return dt_ch_dict
 
 
+def process_file(
+    binary_file_path: str,
+    FEM_instance: FEMBase,
+    chtype_map: dict,
+    sm_mM_map: dict,
+    local_map: dict,
+    sm_center_map: dict,
+    kev_converter: Callable,
+    min_ch: int,
+    en_min: float,
+    en_max: float,
+    pipe_radius: float,
+) -> dict:
+    """
+    This function processes the binary file and returns a dictionary of dt values for each slab.
+    """
+
+    print(f"Processing file: {binary_file_path}")
+    # Read the binary file
+    reader = read_binary_file(binary_file_path)
+    slab_kev_fn = kev_converter.convert
+    # Extract the data dictionary
+    dt_ch_dict = extract_data_dict(
+        reader,
+        FEM_instance,
+        chtype_map,
+        sm_mM_map,
+        local_map,
+        sm_center_map,
+        slab_kev_fn,
+        min_ch,
+        en_min,
+        en_max,
+        pipe_radius,
+    )
+    return dt_ch_dict
+
+
 def main():
     # Read the YAML configuration file
     args = docopt(__doc__)
 
     # Data binary file
-    binary_file_path = args["INFILE"]
+    binary_file_paths = args["INFILES"]
     # File with the energy per slab
     slab_file_path = args["SLAB_EN_MAP"]
-
-    file_name = os.path.basename(binary_file_path)
-    file_name = file_name.replace(".ldat", "_impactArray.txt")
 
     with open(args["YAMLCONF"], "r") as f:
         config = yaml.safe_load(f)
@@ -392,27 +419,38 @@ def main():
     ring_yx = config["ring_yx"]
     sm_center_map = sm_map_gen(ring_r, ring_z, ring_yx)
 
-    reader = read_binary_file(binary_file_path, en_min_ch)
+    kev_converter = KevConverter(slab_file_path)
 
-    slab_kev_fn = read_slab_energy_map(slab_file_path)
+    with get_context("spawn").Pool(processes=cpu_count()) as pool:
+        args_list = [
+            (
+                binary_file_path,
+                FEM_instance,
+                chtype_map,
+                sm_mM_map,
+                local_map,
+                sm_center_map,
+                kev_converter,
+                min_ch,
+                en_min,
+                en_max,
+                pipe_radius,
+            )
+            for binary_file_path in binary_file_paths
+        ]
+        results = pool.starmap(process_file, args_list)
 
-    dt_ch_dict = extract_data_dict(
-        reader,
-        FEM_instance,
-        chtype_map,
-        sm_mM_map,
-        local_map,
-        sm_center_map,
-        slab_kev_fn,
-        min_ch,
-        en_min,
-        en_max,
-        pipe_radius,
-    )
+    dt_ch_dict = defaultdict(list)
+    for result in results:
+        if isinstance(result, Exception):
+            print(f"Exception in child process: {result}")
+        else:
+            for key, value in result.items():
+                dt_ch_dict[key].extend(value)
 
     for ch, dt_list in dt_ch_dict.items():
         n, bins, _ = plt.hist(
-            dt_list, bins=250, range=(-5000, 5000), label=f"Slab {ch}"
+            dt_list, bins=200, range=(-10000, 10000), label=f"Slab {ch}"
         )
         # x, y, pars, _, _ = fit_gaussian(n, bins, cb=4)
         # mu, sigma = pars[1], pars[2]

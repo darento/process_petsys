@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """Extracts the photopeak from the energy per minimodule and saves it to a file.
-Usage: imas_slab_en_cal YAMLCONF INFILE
+Usage: imas_slab_en_cal YAMLCONF INFILES ...
 
 Arguments:
     YAMLCONF  File with all parameters to take into account in the scan.
@@ -14,6 +14,7 @@ Options:
 
 from collections import defaultdict
 from itertools import chain
+from multiprocessing import cpu_count, get_context
 import os
 import time
 from typing import Callable
@@ -63,6 +64,7 @@ def extract_data_dict(
     chtype_map: dict,
     sm_mM_map: dict,
     min_ch: int,
+    sum_rows_cols: bool,
 ) -> tuple[dict, np.ndarray]:
     """
     This function processes the detector events and calculates the energy per minimodule.
@@ -84,8 +86,10 @@ def extract_data_dict(
     for event in read_det_evt:
         increment_total()
         det1, det2 = event
-        min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map)
-        min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map)
+        min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
+        min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map, sum_rows_cols)
+        if EVT_COUNT_T > 100000:
+            break
         if EVT_COUNT_T % 100000 == 0:
             count_time = time.time()
             print(
@@ -95,8 +99,8 @@ def extract_data_dict(
             continue
         max_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map, chtype_map)
         max_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map, chtype_map)
-        min_ch_maxdet1 = filter_min_ch(max_det1, min_ch, chtype_map)
-        min_ch_maxdet2 = filter_min_ch(max_det2, min_ch, chtype_map)
+        min_ch_maxdet1 = filter_min_ch(max_det1, min_ch, chtype_map, sum_rows_cols)
+        min_ch_maxdet2 = filter_min_ch(max_det2, min_ch, chtype_map, sum_rows_cols)
         if not (min_ch_maxdet1 and min_ch_maxdet2):
             continue
         slab_det1 = get_max_en_channel(max_det1, chtype_map, ChannelType.TIME)[2]
@@ -145,19 +149,48 @@ def extract_photopeak_slab(slab_dict_energy: dict) -> dict:
     return slab_dict_photopeak
 
 
-def write_mm_cal(slab_dict_photopeak: dict):
+def write_mm_cal(slab_dict_photopeak: dict, chtype_map: dict):
     """
     This function writes the photopeak per minimodule to a file.
 
     Parameters:
     slab_dict_photopeak (dict): A dictionary containing the photopeak per minimodule.
     """
+    time_channels = [
+        ch for ch in chtype_map.keys() if ChannelType.TIME in chtype_map[ch]
+    ]
     file_name = "slab_en_cal.txt"
     with open(file_name, "w") as f:
         f.write("ID\tmu\tsigma\n")
-        for key, value in sorted(slab_dict_photopeak.items()):
-            f.write(f"{key}\t{round(value[0],3)}\t{round(value[1],3)}\n")
+        for tch in sorted(time_channels):
+            if tch in slab_dict_photopeak.keys():
+                f.write(
+                    f"{tch}\t{round(slab_dict_photopeak[tch][0],3)}\t{round(slab_dict_photopeak[tch][1],3)}\n"
+                )
+            else:
+                f.write(f"{tch}\t0\t0\n")
     print(f"File {file_name} written.")
+
+
+def process_file(
+    binary_file_path: str,
+    chtype_map: dict,
+    sm_mM_map: dict,
+    min_ch: int,
+    sum_rows_cols: bool,
+) -> dict:
+    """
+    This function processes the binary file and returns a dictionary of energy list values for each slab.
+    """
+
+    print(f"Processing file: {binary_file_path}")
+    # Read the binary file
+    reader = read_binary_file(binary_file_path)
+    # Extract the data dictionary
+    slab_dict_energy = extract_data_dict(
+        reader, chtype_map, sm_mM_map, min_ch, sum_rows_cols
+    )
+    return slab_dict_energy
 
 
 def main():
@@ -165,10 +198,7 @@ def main():
     args = docopt(__doc__)
 
     # Read the binary file
-    binary_file_path = args["INFILE"]
-
-    file_name = os.path.basename(binary_file_path)
-    file_name = file_name.replace(".ldat", "_impactArray.txt")
+    binary_file_paths = args["INFILES"]
 
     with open(args["YAMLCONF"], "r") as f:
         config = yaml.safe_load(f)
@@ -177,12 +207,9 @@ def main():
     map_file = config["map_file"]
 
     # Get the coordinates of the channels
-    _, sm_mM_map, chtype_map, _ = map_factory(map_file)
+    _, sm_mM_map, chtype_map, FEM_instance = map_factory(map_file)
 
-    # Read the energy range
-    en_min = float(config["energy_range"][0])
-    en_max = float(config["energy_range"][1])
-    print(f"Energy range: {en_min} - {en_max}")
+    sum_rows_cols = FEM_instance.sum_rows_cols
 
     min_ch = int(config["min_ch"])
     print(f"Minimum number of channels: {min_ch}")
@@ -190,12 +217,23 @@ def main():
     en_min_ch = float(config["en_min_ch"])
     print(f"Minimum energy per channel: {en_min_ch}")
 
-    reader = read_binary_file(binary_file_path, en_min_ch)
+    with get_context("spawn").Pool(processes=cpu_count()) as pool:
+        args_list = [
+            (binary_file_path, chtype_map, sm_mM_map, min_ch, sum_rows_cols)
+            for binary_file_path in binary_file_paths
+        ]
+        results = pool.starmap(process_file, args_list)
 
-    slab_dict_energy = extract_data_dict(reader, chtype_map, sm_mM_map, min_ch)
+    slab_dict_energy = defaultdict(list)
+    for result in results:
+        if isinstance(result, Exception):
+            print(f"Exception in child process: {result}")
+        else:
+            for key, value in result.items():
+                slab_dict_energy[key].extend(value)
 
-    slab_dict_energy = extract_photopeak_slab(slab_dict_energy)
-    write_mm_cal(slab_dict_energy)
+    slab_dict_photopeak = extract_photopeak_slab(slab_dict_energy)
+    write_mm_cal(slab_dict_photopeak, chtype_map)
 
 
 if __name__ == "__main__":
