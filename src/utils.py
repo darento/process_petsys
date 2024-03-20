@@ -48,7 +48,7 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict)
 
     Returns:
         - list[list]: The event data for the maximum energy miniModule and sm.
-        - float: The maximum energy in the event.
+        - float: The energy in the minimodule with highest energy.
     """
     # First we need to find if there is more than 1 mM in the event
     mM_list = list(set([sm_mM_map[ch[2]] for ch in det_list]))
@@ -61,7 +61,7 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict)
     else:
         # If there is more than 1 mM, we need to find the one with the maximum energy
         max_energy = 0
-        max_mm_list = 0
+        max_mm_evt = 0
 
         for sm_mM in mM_list:
             eng_ch = list(
@@ -73,9 +73,9 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict)
             energy = sum([ch[1] for ch in eng_ch])
             if energy > max_energy:
                 max_energy = energy
-                max_mm_list = [ch for ch in det_list if sm_mM_map[ch[2]] == sm_mM]
+                max_mm_evt = [ch for ch in det_list if sm_mM_map[ch[2]] == sm_mM]
 
-        return max_mm_list, max_energy
+        return max_mm_evt, max_energy
 
 
 def get_num_eng_channels(det_list: list[list], chtype_map: dict) -> int:
@@ -180,6 +180,18 @@ def get_neighbour_channels(
             ) <= FEM_instance.y_pitch * (neighbour_ch - 1):
                 neighbour_channels.append(hit)
     return neighbour_channels
+
+
+def read_skew(skew_file: str):
+    """
+    This function reads the skew file and returns a dictionary with the skew values.
+    """
+    skew_dict = {}
+    with open(skew_file, "r") as f:
+        for line in f:
+            ch, skew = line.split()
+            skew_dict[int(ch)] = float(skew)
+    return skew_dict
 
 
 class KevConverter:

@@ -169,10 +169,11 @@ def mean_around_max(
         - None: The function seems to be incomplete, so it's unclear what the first three elements of the tuple should be.
         - yerr: A numpy array of uncertainties in the data around the maximum value.
     """
+    bin_centres = shift_to_centres(bins)
     max_indx = np.argmax(data)
     first_bin = max(max_indx - cb, 0)
-    last_bin = min(max_indx + cb, len(bins))
-    x = bins[first_bin:last_bin]
+    last_bin = min(max_indx + cb, len(bin_centres))
+    x = bin_centres[first_bin:last_bin]
     y = data[first_bin:last_bin]
     if sum(y) <= 0:
         return None, None, None, None

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """Extracts the photopeak from the energy per minimodule and saves it to a file.
-Usage: imas_skew_cal YAMLCONF SLAB_EN_MAP INFILES ...
+Usage: imas_skew_cal [--it NITER] [--firstit FITER] [--sk SKEW] [-r] YAMLCONF SLAB_EN_MAP INFILES ...
 
 Arguments:
     YAMLCONF       File with all parameters to take into account in the scan.
@@ -9,12 +9,18 @@ Arguments:
     INFILE         Input file to be processed. Must be a compact binary file from PETsys.
 
 Options:
-    -h --help     Show this screen.    º
+    --it NITER       Number of iterations to perform [default: 3].
+    --firstit FITER  First iteration to be used in the calculation [default: 0].
+    --sk SKEW        Existing skew file to be used if FITER != 0.
+    -r               Recalculate skew from it 0 assuming dt files available.
+    -h --help        Show this screen.   
 """
 
 
 from collections import defaultdict
 import os
+import pickle
+import re
 import time
 from typing import Callable
 from docopt import docopt
@@ -36,14 +42,15 @@ from src.filters import (
 
 from src.mapping_generator import ChannelType, map_factory
 
-from src.fits import fit_gaussian
+from src.fits import fit_gaussian, mean_around_max, shift_to_centres
 from src.utils import (
     KevConverter,
     get_maxEnergy_sm_mM,
     get_max_en_channel,
+    read_skew,
 )
 
-# Total number of eevents
+# Total number of events
 EVT_COUNT_T = 0
 # Events passing the filter
 EVT_COUNT_F = 0
@@ -71,15 +78,7 @@ def increment_pf():
 
 def sm_map_gen(ring_r: float, ring_z: list, ring_yx: dict) -> dict:
     """
-    This function generates the centre position of the minimodules in polar coordinates.
-
-    Parameters:
-        - ring_r (float): The radius of the ring.
-        - ring_z (float): The z coordinate of the ring.
-        - ring_yx (dict): A dictionary containing the y and x coordinates of the ring.
-
-    Returns:
-        dict: A dictionary containing the centre position of the minimodules in polar coordinates.
+    This function generates a map of the centre position of the supermodules in polar coordinates.
     """
     sm_center_map = {}
     for i, rz in enumerate(ring_z):
@@ -95,31 +94,21 @@ def sm_map_gen(ring_r: float, ring_z: list, ring_yx: dict) -> dict:
 
 def sm_centre_pos(sm_r: float, sm_yx: list[float, float]) -> Callable:
     """
-    This function returns the centre position of a minimodule in polar coordinates.
-
-    Parameters:
-        - sm (int): The minimodule number.
-        - sm_r (float): The radius of the minimodule.
-        - sm_yx (dict): A dictionary containing the y and x coordinates of the minimodule.
-
-    Returns:
-        - sm_r (float): The radius of the minimodule.
-        - sm_yx[sm] (np.ndarray): The y and x coordinates of the minimodule.
+    This function returns the centre radial and angular position of the center of the supermodule.
     """
     return sm_r, np.arctan2(*sm_yx)
 
 
 def local_to_global(x, y, sm_glob_par):
-
+    """
+    This function converts local coordinates to global coordinates.
+    """
     x_center, y_center = 48, 48
     x -= x_center
     y -= sm_glob_par["sm_z"] + y_center
-    # print(f"x: {x}, y: {y}")
     sm_rot = R.from_euler("z", sm_glob_par["sm_ang"])
     local_coords = np.array([sm_glob_par["sm_r"], x, -y])
-    # print(f"Local: {local_coords}")
     global_coords = sm_rot.apply(local_coords)
-    # print(f"Global: {global_coords}")
 
     return global_coords[0], global_coords[1], global_coords[2]
 
@@ -129,15 +118,7 @@ def cylinder_intersection_check(
     line_start: np.ndarray, line_end: np.ndarray, radius: float
 ) -> bool:
     """
-    This function checks if a line intersects a cylinder.
-
-    Parameters:
-        - line_start (np.ndarray): The starting point of the line.
-        - line_end (np.ndarray): The ending point of the line.
-        - radius (float): The radius of the cylinder.
-
-    Returns:
-        bool: True if the line intersects the cylinder, False otherwise.
+    This function checks if a line intersects the virtual cylinder along the pipe rotation
     """
     c_mm_per_ps = c_vac * 1000 / 1e12
     line_length = np.linalg.norm(line_end - line_start)
@@ -148,17 +129,13 @@ def cylinder_intersection_check(
     discriminant = B**2 - 4 * A * C
     if discriminant < 0:
         return False, 0, 0
-    t1 = (-B + np.sqrt(discriminant)) / (2 * A)
-    t2 = (-B - np.sqrt(discriminant)) / (2 * A)
+    t1 = (-B - np.sqrt(discriminant)) / (2 * A)
+    t2 = (-B + np.sqrt(discriminant)) / (2 * A)
 
-    dt1 = line_length * (2 * t1 - 1) / c_mm_per_ps
-    dt2 = line_length * (2 * t2 - 1) / c_mm_per_ps
-    # print(f"line_length: {line_length}")
-    # print(f"dt_t1: {dt1} - dt_t2: {dt2}")
-    # print(f"t1: {t1}, t2: {t2}")
-    # print(f" t1 + t2 = {t1 + t2}")
+    tof1 = int(line_length * (2 * t1 - 1) / c_mm_per_ps)
+    tof2 = int(line_length * (2 * t2 - 1) / c_mm_per_ps)
 
-    return (0 <= t1 <= 1) or (0 <= t2 <= 1), dt1, dt2
+    return (0 <= t1 <= 1) or (0 <= t2 <= 1), tof1, tof2
 
 
 def crossing_visualization(
@@ -168,7 +145,7 @@ def crossing_visualization(
     line_end: np.ndarray,
 ):
     height = 720.0
-    # Visualization
+
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
     # Cylinder
@@ -189,15 +166,11 @@ def crossing_visualization(
         linewidth=3,
         label="Line",
     )
-    # Setting labels
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
-    # Title
     ax.set_title(f'Line Intersection with Cylinder: {"Yes" if intersection else "No"}')
-    # Legend
     ax.legend()
-    # Show plot
     plt.show()
 
 
@@ -215,34 +188,24 @@ def extract_data_dict(
     pipe_radius: float,
 ) -> tuple[dict, np.ndarray]:
     """
-    This function processes the detector events and calculates the energy per minimodule.
-
-    Parameters:
-        - read_det_evt (Callable): A generator or iterable that yields detector events.
-        - FEM_instance (FEMBase): A dictionary representing a Finite Element Model instance.
-        - chtype_map (dict): A dictionary mapping the channel type to the channel number.
-        - sm_mM_map (dict): A dictionary mapping the channel number to the minimodule number.
-        - local_map (dict): A dictionary mapping the channel number to the local coordinates.
-        - sm_center_map (dict): A dictionary containing the centre position of the minimodules in polar coordinates.
-        - slab_kev_fn (Callable): A function that takes the slab number and returns the energy in keV.
-        - min_ch (int): The minimum channel number for the filter.
-        - en_min (float): The minimum energy for the filter.
-        - en_max (float): The maximum energy for the filter.
-        - pipe_radius (float): The radius of the pipe.
-
-    Returns:
-        NONE
+    This function processes the detector events and returns a dictionary of dt values for each slab
+    after comparing the time difference between the two detectors with the theoretical time difference.
     """
+    global EVT_COUNT_T
+    global EVT_COUNT_F
+    EVT_COUNT_T = 0
+    EVT_COUNT_F = 0
     start_time = time.time()
-    dt_ch_dict = defaultdict(list)
+    dt_evt_dict = defaultdict(list)
     sum_rows_cols = FEM_instance.sum_rows_cols
+    total_energy = []
     for event in read_det_evt:
         increment_total()
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
         min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map, sum_rows_cols)
-        # if EVT_COUNT_T > 1000000:
-        #     break
+        if EVT_COUNT_T > 10000000:
+            break
         if EVT_COUNT_T % 100000 == 0:
             count_time = time.time()
             print(
@@ -256,16 +219,17 @@ def extract_data_dict(
         min_ch_maxdet2 = filter_min_ch(max_det2, min_ch, chtype_map, sum_rows_cols)
         if not (min_ch_maxdet1 and min_ch_maxdet2):
             continue
+        # Time channel maximum energy det1 (tstp, en, chID)
         tch_det1 = get_max_en_channel(max_det1, chtype_map, ChannelType.TIME)
+        # Time channel maximum energy det2 (tstp, en, chID)
         tch_det2 = get_max_en_channel(max_det2, chtype_map, ChannelType.TIME)
-        slab_det1 = tch_det1[2]
-        slab_det2 = tch_det2[2]
-        # slab_dict_count[slab_det1] += 1
-        # slab_dict_count[slab_det2] += 1
+        slab_det1 = tch_det1[2]  # Time channel ID det1
+        slab_det2 = tch_det2[2]  # Time channel ID det2
         energy_det1_kev = slab_kev_fn(slab_det1) * energy_det1
         energy_det2_kev = slab_kev_fn(slab_det2) * energy_det2
         en_filter1 = filter_total_energy(energy_det1_kev, en_min, en_max)
         en_filter2 = filter_total_energy(energy_det2_kev, en_min, en_max)
+        # total_energy.extend((energy_det1_kev, energy_det2_kev))
         if not (en_filter1 and en_filter2):
             continue
 
@@ -278,7 +242,6 @@ def extract_data_dict(
         sm1 = sm_mM_map[slab_det1][0]
         sm2 = sm_mM_map[slab_det2][0]
         # print(f"tch_det1 {tch_det1} - tch_det2 {tch_det2}")
-        # print(f"sm1 {sm1} - sm2 {sm2}")
         # print(
         #     f"sm_center_map[sm1] {sm_center_map[sm1]} - sm_center_map[sm2] {sm_center_map[sm2]}"
         # )
@@ -287,28 +250,29 @@ def extract_data_dict(
         x_glob2, y_glob2, z_glob2 = local_to_global(x_det2, y_det2, sm_center_map[sm2])
         line_start = np.array([x_glob1, y_glob1, z_glob1])
         line_end = np.array([x_glob2, y_glob2, z_glob2])
-        # print(
-        #     f"x_glob1 {x_glob1}, y_glob1 {y_glob1}, z_glob1 {z_glob1} - x_glob2 {x_glob2}, y_glob2 {y_glob2}, z_glob2 {z_glob2}"
-        # )
-
-        intersection, dt1_teoric, dt2_teoric = cylinder_intersection_check(
+        intersection, dt1_theoric, dt2_theoric = cylinder_intersection_check(
             line_start,
             line_end,
             pipe_radius,
         )
+
         if not intersection:
             continue
-        dt = tch_det2[0] - tch_det1[0]
-        dt1_error = dt - dt1_teoric
-        dt2_error = dt - dt2_teoric
 
-        dt_ch_dict[slab_det1].append(dt1_error)
-        dt_ch_dict[slab_det2].append(-dt1_error)
-        dt_ch_dict[slab_det1].append(dt2_error)
-        dt_ch_dict[slab_det2].append(-dt2_error)
+        dt = tch_det1[0] - tch_det2[0]
+        dt1_error = dt - dt1_theoric
+        dt2_error = dt - dt2_theoric
 
-        # print(f"dt_system: {dt}")
-        # print(f"dt1_teoric: {dt1_teoric} - dt2_teoric: {dt2_teoric}")
+        dt_evt_dict[slab_det1].append((slab_det2, dt1_error, True))
+        dt_evt_dict[slab_det1].append((slab_det2, dt2_error, True))
+        dt_evt_dict[slab_det2].append((slab_det1, -dt1_error, False))
+        dt_evt_dict[slab_det2].append((slab_det1, -dt2_error, False))
+
+        # list
+        # ID1: (ID2, dt1error, flag), (ID2, dt2error, flag), ............
+
+        # print(f"dt_system: {dt1} - {dt2}")
+        # print(f"dt1_teoric: {dt1_theoric} - dt2_teoric: {dt2_theoric}")
         # print(f"dt1_error: {dt1_error} - dt2_error: {dt2_error}")
         # print(f"slab_det1: {slab_det1} - slab_det2: {slab_det2}")
         # print(
@@ -318,28 +282,24 @@ def extract_data_dict(
         # print(f"line_start: {line_start} - line_end: {line_end}")
         # crossing_visualization(intersection, pipe_radius, line_start, line_end)
         # print("---------------------")
-        # slab_dict_energy[slab_det1].append(energy_det1_kev)
-        # slab_dict_energy[slab_det2].append(energy_det2_kev)
         # total_energy.extend((energy_det1_kev, energy_det2_kev))
-        # max_sm_det1 = sm_mM_map[max_det1[0][2]][0]
-        # max_sm_det2 = sm_mM_map[max_det2[0][2]][0]
-        # flood_dict[max_sm_det1].append((x_det1, y_det1))
-        # flood_dict[max_sm_det2].append((x_det2, y_det2))
         increment_pf()
-
-    # for key, value in flood_dict.items():
-    #     x, y = zip(*value)
-    #     plt.hist2d(x, y, bins=[500, 500], range=[[0, 105], [0, 105]], cmap="plasma")
-    #     plt.colorbar()
-    #     plt.title(f"SM: {key}")
-    #     plt.show()
+    # n, bins, _ = plt.hist(total_energy, bins=1000, range=(0, 1000))
+    # x, y, pars, _, _ = fit_gaussian(n, bins, cb=16)
+    # mu, sigma = pars[1], pars[2]
+    # plt.plot(x, y, "-r", label="fit")
+    # plt.legend([f"Energy res: {round(2.35*sigma/mu*100,2)}%"])
+    # plt.xlabel("Energy (keV)")
+    # plt.ylabel("Counts")
+    # plt.title("Total energy")
+    # plt.show()
 
     print("---------------------")
     end_time = time.time()
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Total events: {EVT_COUNT_T}")
     print(f"Events passing the filter: {EVT_COUNT_F}")
-    return dt_ch_dict
+    return dt_evt_dict
 
 
 def process_file(
@@ -364,7 +324,7 @@ def process_file(
     reader = read_binary_file(binary_file_path)
     slab_kev_fn = kev_converter.convert
     # Extract the data dictionary
-    dt_ch_dict = extract_data_dict(
+    dt_evt_dict = extract_data_dict(
         reader,
         FEM_instance,
         chtype_map,
@@ -377,15 +337,183 @@ def process_file(
         en_max,
         pipe_radius,
     )
-    return dt_ch_dict
+    return dt_evt_dict
+
+
+def write_dt_to_bin(dt_evt_dict: dict, bin_name: str):
+    """
+    This function writes the slab_det1, slab_det2, and dt1_error values to a binary file.
+    """
+    with open(bin_name, "wb") as f:
+        pickle.dump(dt_evt_dict, f)
+
+
+def read_bin_to_dt(bin_name: str):
+    """
+    This function reads the slab_det1, slab_det2, and dt1_error values from a binary file.
+    """
+    start_time = time.time()
+    with open(bin_name, "rb") as f:
+        dt_evt_dict = pickle.load(f)
+    end_time = time.time()
+    print(f"Time taken to read bin file: {end_time - start_time} seconds")
+    return dt_evt_dict
+
+
+def read_skew_init(chtype_map: dict, relax_factor: float = 1.0):
+    """
+    This function reads the skew init file and returns a dictionary with the skew values with a relax factor.
+    """
+    skew_init_dict = {}
+    with open("skew_1ASIC_init.txt", "r") as f:
+        for line in f:
+            ch, skew = line.split()
+            skew_init_dict[int(ch)] = float(skew) * relax_factor
+    skew_dict = {}
+    for ch, ch_type in chtype_map.items():
+        if ChannelType.TIME in ch_type:
+            ch_init = ch % 64
+            skew_dict[ch] = skew_init_dict[ch_init]
+    return skew_dict
+
+
+def skew_calc(
+    dt_evt_dict: dict,
+    skew_map: dict,
+    niter: int,
+    firstit: int,
+    mon_id: list,
+    relax_factor: float,
+):
+    """
+    This function calculates the skew for each channel.
+    """
+    print(f"Number of keys: {len(dt_evt_dict)}")
+    mon_path = "skew_mon/"
+    if not os.path.exists(mon_path):
+        os.makedirs(mon_path)
+    freq_num_ev = defaultdict(int)
+    for it in range(firstit, niter):
+        print(f"Iteration: {it}")
+        # data_ch_numCoincCh = defaultdict(int)
+        for ch, coinc_ch_dt_list in dt_evt_dict.items():
+            # Check how many channels are coincident with each channel and store the number
+            # data_ch_numCoincCh[ch] = defaultdict(int)
+            # freq_num_ev[ch] = len(coinc_ch_dt_list)
+            for coinc_ch, _, _ in coinc_ch_dt_list:
+                data_ch_numCoincCh[ch][coinc_ch] += 1
+            ref_skew = skew_map[ch]
+
+            # Plotting before iterations (optional)
+            if ch in mon_id and it == firstit:
+                dt_values = np.array([dt for _, dt, _ in coinc_ch_dt_list])
+                n, bins = np.histogram(dt_values, bins=100, range=(-10000, 10000))
+                bin_centers = (bins[:-1] + bins[1:]) / 2  # compute bin centers
+                plt.bar(
+                    bin_centers,
+                    n,
+                    width=np.diff(bins),
+                    label=f"Slab {ch} monitoring\nNum. counts: {len(dt_values)}",
+                )
+                plt.xlabel("Time difference (ps)")
+                plt.ylabel("Counts")
+                plt.title(f"Time ch {ch} before iterations")
+                plt.legend()
+                plt.savefig(f"{mon_path}skew_{it}_ch{ch}_before.png")
+                plt.clf()
+
+            coinc_ch_dt_list = [
+                (
+                    coinc_ch,
+                    (
+                        dt + ref_skew - skew_map[coinc_ch]
+                        if flag
+                        else dt - ref_skew + skew_map[coinc_ch]
+                    ),
+                    flag,
+                )
+                for coinc_ch, dt, flag in coinc_ch_dt_list
+            ]
+            dt_evt_dict[ch] = coinc_ch_dt_list
+
+            # Calculate histogram
+            dt_values = np.array([dt for _, dt, _ in coinc_ch_dt_list])
+            n, bins = np.histogram(dt_values, bins=100, range=(-10000, 10000))
+
+            # Fit Gaussian
+            # try:
+            #     x, y, pars, _, _ = fit_gaussian(n, bins, cb=8)
+            #     mu, sigma = pars[1], pars[2]
+            # except RuntimeError:
+            #     peak_mean, *_ = mean_around_max(n, shift_to_centres(bins), 6)
+            #     mu = peak_mean if peak_mean else 0
+            peak_mean, *_ = mean_around_max(n, bins, 6)
+            mu = peak_mean if peak_mean else 0
+            # Update skew_map
+            skew_map[ch] += mu * (-relax_factor)
+
+            # Plotting (optional)
+            if ch in mon_id:
+                bin_centers = (bins[:-1] + bins[1:]) / 2  # compute bin centers
+                plt.bar(
+                    bin_centers,
+                    n,
+                    width=np.diff(bins),
+                    label=f"Slab {ch} monitoring\nNum. counts: {len(dt_values)}",
+                )
+                # plt.plot(x, y, "-r", label="fit")
+                # plt.legend([f"Centroid {round(mu,2)}"])
+                plt.axvline(
+                    mu, color="r", linestyle="--", label=f"Centroid {round(mu,2)}"
+                )
+                plt.xlabel("Time difference (ps)")
+                plt.ylabel("Counts")
+                plt.title(f"Time ch {ch}")
+                plt.legend()
+                plt.savefig(f"{mon_path}skew_{it}_ch{ch}.png")
+                plt.clf()
+
+        # freq_dict_num_ch = defaultdict(int)
+        # freq_dict_num_ev_per_ch = []
+        # for ch, coinc_ch in data_ch_numCoincCh.items():
+        #     freq_dict_num_ch[ch] = len(coinc_ch)
+        #     freq_dict_num_ev_per_ch.extend([num_ev for num_ev in coinc_ch.values()])
+
+        # total_num_ev = sum(freq_dict_num_ev_per_ch)
+        # print(f"Total number of events: {total_num_ev}")
+
+        # plt.hist(freq_num_ev.values(), bins=100)
+        # plt.xlabel("Total number of events per channel")
+        # plt.ylabel("Counts")
+        # plt.show()
+
+        # plt.hist(freq_dict_num_ch.values(), bins=100)
+        # plt.xlabel("Number of coincident channels")
+        # plt.ylabel("Counts")
+        # plt.show()
+
+        # plt.hist(freq_dict_num_ev_per_ch, bins=11, range=(0, 10))
+        # plt.xlabel("Number of events per coincident channel")
+        # plt.ylabel("Counts")
+        # plt.show()
+
+        # exit(0)
+        with open(f"{mon_path}skew_{it}.txt", "w") as f:
+            for ch, skew in sorted(skew_map.items()):
+                f.write(f"{ch} {skew}\n")
 
 
 def main():
     # Read the YAML configuration file
     args = docopt(__doc__)
+    niter = int(args["--it"])
+    print(f"Number of iterations: {niter}")
+    firstit = int(args["--firstit"])
 
     # Data binary file
-    binary_file_paths = args["INFILES"]
+    input_file_paths = args["INFILES"]
+    file_name = os.path.basename(input_file_paths[0])
+    bin_name = re.sub(r"_\d+\.ldat$", "_dt.pickle", file_name)
     # File with the energy per slab
     slab_file_path = args["SLAB_EN_MAP"]
 
@@ -409,6 +537,12 @@ def main():
     en_min_ch = float(config["en_min_ch"])
     print(f"Minimum energy per channel: {en_min_ch}")
 
+    relax_factor = float(config["relax_factor"])
+    print(f"Relax factor: {relax_factor}")
+
+    mon_id = config["mon_id"]
+    print(f"Monitoring channels: {mon_id}")
+
     # Pipe rotation information
     pipe_radius = float(config["pipe_radius"])
     print(f"Pipe radius: {pipe_radius}")
@@ -421,45 +555,47 @@ def main():
 
     kev_converter = KevConverter(slab_file_path)
 
-    with get_context("spawn").Pool(processes=cpu_count()) as pool:
-        args_list = [
-            (
-                binary_file_path,
-                FEM_instance,
-                chtype_map,
-                sm_mM_map,
-                local_map,
-                sm_center_map,
-                kev_converter,
-                min_ch,
-                en_min,
-                en_max,
-                pipe_radius,
-            )
-            for binary_file_path in binary_file_paths
-        ]
-        results = pool.starmap(process_file, args_list)
-
-    dt_ch_dict = defaultdict(list)
-    for result in results:
-        if isinstance(result, Exception):
-            print(f"Exception in child process: {result}")
+    if firstit != 0:
+        skew_map = read_skew(args["--sk"])
+    else:
+        if args["--sk"] == "skew_1ASIC.txt":
+            skew_map = read_skew_init(chtype_map, relax_factor)
         else:
-            for key, value in result.items():
-                dt_ch_dict[key].extend(value)
-
-    for ch, dt_list in dt_ch_dict.items():
-        n, bins, _ = plt.hist(
-            dt_list, bins=200, range=(-10000, 10000), label=f"Slab {ch}"
-        )
-        # x, y, pars, _, _ = fit_gaussian(n, bins, cb=4)
-        # mu, sigma = pars[1], pars[2]
-        # plt.plot(x, y, "-r", label="fit")
-        # plt.legend([f"Energy res: {round(2.35*sigma/mu*100,2)}%"])
-        plt.xlabel("Time difference (ps)")
-        plt.ylabel("Counts")
-        plt.title(f"Time ch {ch}")
-        plt.show()
+            skew_map = {
+                ch: 0
+                for ch, ch_type in chtype_map.items()
+                if ChannelType.TIME in ch_type
+            }
+        if not args["-r"]:
+            with get_context("spawn").Pool(processes=cpu_count()) as pool:
+                args_list = [
+                    (
+                        binary_file_path,
+                        FEM_instance,
+                        chtype_map,
+                        sm_mM_map,
+                        local_map,
+                        sm_center_map,
+                        kev_converter,
+                        min_ch,
+                        en_min,
+                        en_max,
+                        pipe_radius,
+                    )
+                    for binary_file_path in input_file_paths
+                ]
+                results = pool.starmap(process_file, args_list)
+            dt_evt_dict = defaultdict(list)
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f"Exception in child process: {result}")
+                else:
+                    for key, value in result.items():
+                        dt_evt_dict[key].extend(value)
+            write_dt_to_bin(dt_evt_dict, bin_name)
+        else:
+            dt_evt_dict = read_bin_to_dt(bin_name)
+    skew_calc(dt_evt_dict, skew_map, niter, firstit, mon_id, relax_factor)
 
 
 if __name__ == "__main__":

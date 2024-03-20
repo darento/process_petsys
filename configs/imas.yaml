@@ -1,6 +1,6 @@
 # tuple of (min, max) total energy to consider per event.
 # if None (default), no cut is applied  
-energy_range: [400, 620]
+energy_range: [450, 570]
 
 # minimum number of channels to consider per event 
 min_ch: 5
@@ -11,8 +11,14 @@ en_min_ch: 0.2
 # path to map file
 map_file: maps/imas_map.yaml
 
+# Relax factor to apply for skew iteration process
+relax_factor: 0.5
+
+# monitor time channels list to track skew calibration over iterations
+mon_id: [0, 4923, 134572, 265872]
+
 # pipe rotation size
-pipe_radius: 329.4 # mm
+pipe_radius: 321.0 # mm
 
 # Ring R and supermodule centre YXZ
 ring_r: 410.0
