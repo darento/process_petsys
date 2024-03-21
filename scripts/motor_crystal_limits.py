@@ -67,11 +67,13 @@ def increment_pf():
     """
     global EVT_COUNT_F
     EVT_COUNT_F += 1
-    
+
+
 def reset_total():
     global EVT_COUNT_T
     EVT_COUNT_T = 0
-    
+
+
 def reset_pf():
     global EVT_COUNT_F
     EVT_COUNT_F = 0
@@ -79,8 +81,9 @@ def reset_pf():
 
 def count_events(
     read_det_evt: Callable,
-    chtype_map: dict,    
+    chtype_map: dict,
     min_ch: int,
+    sum_rows_cols: bool,
 ) -> tuple[dict, np.ndarray]:
     """
     This function processes detector events, filters them based on energy and minimum channel,
@@ -90,7 +93,7 @@ def count_events(
     read_det_evt (Callable): A generator or iterable that yields detector events.
     min_ch (int): The minimum channel number for the filter.
 
-    Returns:    
+    Returns:
     """
     event_count = 0
     data_dict = {}
@@ -98,14 +101,14 @@ def count_events(
     start_time = time.time()
     for event in read_det_evt:
         increment_total()
-        det1, det2 = event       
+        det1, det2 = event
 
-        min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map)
-        min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map)
+        min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
+        min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map, sum_rows_cols)
 
         if min_ch_filter1 and min_ch_filter2:
             increment_pf()
-        event_count += 1            
+        event_count += 1
         if event_count % 10000 == 0:
             print(f"Events processed: {event_count}")
         pass
@@ -131,6 +134,7 @@ def main():
 
     # Get the coordinates of the channels
     local_coord_dict, sm_mM_map, chtype_map, FEM_instance = map_factory(map_file)
+    sum_rows_cols = FEM_instance.sum_rows_cols
 
     # Plot the coordinates of the channels
     # plot_chan_position(local_coord_dict)
@@ -151,7 +155,6 @@ def main():
     accumulated_en_matrix = []
     evt_count = 0
 
-
     pos_list = []
     ev_count_list = []
     for infile in infiles:
@@ -164,24 +167,24 @@ def main():
         file_name = file_name.replace(".ldat", "_impactArray.txt")
 
         reader = read_binary_file(binary_file_path, en_min_ch)
-        
-        pos_num = int([split for split in file_name.split("_") if "pos" in split][0].replace("pos",""))
-        ev_counts = count_events(reader, chtype_map, min_ch)
-        
+
+        pos_num = int(
+            [split for split in file_name.split("_") if "pos" in split][0].replace(
+                "pos", ""
+            )
+        )
+        ev_counts = count_events(reader, chtype_map, min_ch, sum_rows_cols)
+
         pos_list.append(pos_num)
         ev_count_list.append(ev_counts)
         reset_total()
         reset_pf()
-    
+
     plt.plot(pos_list, ev_count_list, "o")
     plt.xlabel("Position number")
     plt.ylabel("Number of counts")
     plt.show()
-	
-	
-
 
 
 if __name__ == "__main__":
     main()
-
