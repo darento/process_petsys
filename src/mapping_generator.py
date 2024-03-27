@@ -10,6 +10,64 @@ class ChannelType(Enum):
     ENERGY = auto()
 
 
+# Global values for module placement in mm
+class TbpetGeom:
+    def __init__(self) -> None:
+        self.sm_per_ring = 24
+        self.mm_spacing = 0.205
+        self.mm_edge = 25.805
+        self.slab_width = 3.2
+        self.mM_energyMapping = {
+            0: 0,
+            1: 4,
+            2: 8,
+            3: 12,
+            4: 1,
+            5: 5,
+            6: 9,
+            7: 13,
+            8: 2,
+            9: 6,
+            10: 10,
+            11: 14,
+            12: 3,
+            13: 7,
+            14: 11,
+            15: 15,
+        }
+        self.sm_edge_x = 4 * self.mm_edge
+        self.sm_edge_y = 4 * self.mm_edge
+
+
+class BrainGeom:
+    def __init__(self) -> None:
+        self.sm_per_ring = 20
+        self.mm_spacing = 0.205
+        self.mm_edge = 25.805
+        self.slab_width = 3.2
+        self.mM_energyMapping = {ch: ch for ch in range(16)}
+        self.sm_edge_x = 2 * self.mm_edge
+        self.sm_edge_y = 8 * self.mm_edge
+
+
+def _channel_sm_coordinate(
+    ch_per_mm: int, mm_rowcol: int, ch_indx: int, chtype: ChannelType, geom: TbpetGeom
+) -> tuple[float, float]:
+    """
+    mm_rowcol : Either row or col depending on type: TIME row, ENERGY col.
+    ch_indx   : index along row/column
+    """
+    mm_shift = geom.mm_spacing * ((31 - ch_indx) // 8)
+    ch_start = (geom.slab_width + geom.mm_spacing) / 2
+    row_idx = 31 - ch_indx
+    local_fine = round(ch_start + mm_shift + geom.slab_width * row_idx, 3)
+    local_coarse = round(geom.mm_edge * (3.5 - mm_rowcol), 3)
+    if chtype is ChannelType.TIME:
+        # local y course, local_x fine
+        return local_fine, local_coarse, row_idx % ch_per_mm
+    return local_coarse, local_fine, row_idx % ch_per_mm
+
+
 def _get_local_mapping(
     mod_feb_map: dict,
     channels_1: list,
@@ -33,24 +91,14 @@ def _get_local_mapping(
     sm_mM_map = {}
     chtype_map = {}
     # energy channel mapping for sum rows and cols
-    mm_energy_map = {
-        0: 0,
-        1: 4,
-        2: 8,
-        3: 12,
-        4: 1,
-        5: 5,
-        6: 9,
-        7: 13,
-        8: 2,
-        9: 6,
-        10: 10,
-        11: 14,
-        12: 3,
-        13: 7,
-        14: 11,
-        15: 15,
-    }
+    if FEM_instance.sum_rows_cols:
+        # geom = input("Enter the geometry (IMAS or BRAIN): ")
+        geom = "IMAS"
+        if geom.upper() == "IMAS":
+            system_geom = TbpetGeom()
+        elif geom.upper() == "BRAIN":
+            system_geom = BrainGeom()
+
     for mod, value in mod_feb_map.items():
         portID, slaveID, febport = value
         mod_min_chan = (
@@ -60,22 +108,37 @@ def _get_local_mapping(
             # if sum_rows_cols is True, the number of channels is divided by 2 as we have half the number of channels per ASIC
             # for ch_1 and ch_2
             loc_x, loc_y = FEM_instance.get_coordinates(i)
-            local_map[ch_1 + mod_min_chan] = (loc_x, loc_y)
-            local_map[ch_2 + mod_min_chan] = (loc_x, loc_y)
             mM = int(i // FEM_instance.mM_channels)
             sm_mM_map[ch_1 + mod_min_chan] = (mod, mM)
             sm_mM_map[ch_2 + mod_min_chan] = (
                 (mod, mM + 1)
                 if not FEM_instance.sum_rows_cols
-                else (mod, mm_energy_map[mM])
+                else (mod, system_geom.mM_energyMapping[mM])
             )
             if not FEM_instance.sum_rows_cols:
                 chtype_map[ch_1 + mod_min_chan] = [ChannelType.TIME, ChannelType.ENERGY]
                 chtype_map[ch_2 + mod_min_chan] = [ChannelType.TIME, ChannelType.ENERGY]
+                local_map[ch_1 + mod_min_chan] = (loc_x, loc_y)
+                local_map[ch_2 + mod_min_chan] = (loc_x, loc_y)
             else:
                 chtype_map[ch_1 + mod_min_chan] = [ChannelType.TIME]
                 chtype_map[ch_2 + mod_min_chan] = [ChannelType.ENERGY]
-
+                loc_x, loc_y, slab_idx = _channel_sm_coordinate(
+                    FEM_instance.mM_channels,
+                    i // 32,
+                    i % 32,
+                    ChannelType.TIME,
+                    system_geom,
+                )
+                local_map[ch_1 + mod_min_chan] = (loc_x, loc_y, slab_idx)
+                loc_x, loc_y, slab_idx = _channel_sm_coordinate(
+                    FEM_instance.mM_channels,
+                    i // 32,
+                    i % 32,
+                    ChannelType.ENERGY,
+                    system_geom,
+                )
+                local_map[ch_2 + mod_min_chan] = (loc_x, loc_y, slab_idx)
     return local_map, sm_mM_map, chtype_map
 
 
