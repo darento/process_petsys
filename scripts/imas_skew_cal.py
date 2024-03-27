@@ -12,7 +12,7 @@ Options:
     --it NITER       Number of iterations to perform [default: 3].
     --firstit FITER  First iteration to be used in the calculation [default: 0].
     --sk SKEW        Existing skew file to be used if FITER != 0.
-    -r               Recalculate skew from it 0 assuming dt files available.
+    -r               Recalculate skew from it 0 assuming dt pickle file available.
     -h --help        Show this screen.   
 """
 
@@ -129,6 +129,33 @@ def cylinder_intersection_check(
     discriminant = B**2 - 4 * A * C
     if discriminant < 0:
         return False, 0, 0
+
+    # Assuming scanner_center is a numpy array representing the coordinates of the scanner center
+    scanner_center = np.array([0, 0, 0])
+
+    # Calculate vectors
+    vec_center_to_start = line_start - scanner_center
+    vec_center_to_end = line_end - scanner_center
+
+    # Normalize vectors
+    vec_center_to_start /= np.linalg.norm(vec_center_to_start)
+    vec_center_to_end /= np.linalg.norm(vec_center_to_end)
+
+    # Calculate angle in radians
+    angle_rad = np.arccos(
+        np.clip(np.dot(vec_center_to_start, vec_center_to_end), -1.0, 1.0)
+    )
+
+    # Convert angle to degrees
+    angle_deg = np.degrees(angle_rad)
+
+    # print(f"Angle deviation: {angle_deg} degrees")
+
+    ang_acceptance = 20
+
+    if angle_deg < 180 - ang_acceptance:
+        return False, 0, 0
+
     t1 = (-B - np.sqrt(discriminant)) / (2 * A)
     t2 = (-B + np.sqrt(discriminant)) / (2 * A)
 
@@ -146,7 +173,7 @@ def crossing_visualization(
 ):
     height = 720.0
 
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection="3d")
     # Cylinder
     z = np.linspace(-height / 2, height / 2, 100)
@@ -204,8 +231,8 @@ def extract_data_dict(
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
         min_ch_filter2 = filter_min_ch(det2, min_ch, chtype_map, sum_rows_cols)
-        if EVT_COUNT_T > 10000000:
-            break
+        # if EVT_COUNT_T > 300000000:
+        #     break
         if EVT_COUNT_T % 100000 == 0:
             count_time = time.time()
             print(
@@ -268,10 +295,7 @@ def extract_data_dict(
         dt_evt_dict[slab_det2].append((slab_det1, -dt1_error, False))
         dt_evt_dict[slab_det2].append((slab_det1, -dt2_error, False))
 
-        # list
-        # ID1: (ID2, dt1error, flag), (ID2, dt2error, flag), ............
-
-        # print(f"dt_system: {dt1} - {dt2}")
+        # print(f"dt_system: {dt}")
         # print(f"dt1_teoric: {dt1_theoric} - dt2_teoric: {dt2_theoric}")
         # print(f"dt1_error: {dt1_error} - dt2_error: {dt2_error}")
         # print(f"slab_det1: {slab_det1} - slab_det2: {slab_det2}")
@@ -395,13 +419,13 @@ def skew_calc(
     freq_num_ev = defaultdict(int)
     for it in range(firstit, niter):
         print(f"Iteration: {it}")
-        # data_ch_numCoincCh = defaultdict(int)
+        data_ch_numCoincCh = defaultdict(int)
         for ch, coinc_ch_dt_list in dt_evt_dict.items():
             # Check how many channels are coincident with each channel and store the number
             # data_ch_numCoincCh[ch] = defaultdict(int)
             # freq_num_ev[ch] = len(coinc_ch_dt_list)
-            for coinc_ch, _, _ in coinc_ch_dt_list:
-                data_ch_numCoincCh[ch][coinc_ch] += 1
+            # for coinc_ch, _, _ in coinc_ch_dt_list:
+            #     data_ch_numCoincCh[ch][coinc_ch] += 1
             ref_skew = skew_map[ch]
 
             # Plotting before iterations (optional)
@@ -441,14 +465,14 @@ def skew_calc(
             n, bins = np.histogram(dt_values, bins=100, range=(-10000, 10000))
 
             # Fit Gaussian
-            # try:
-            #     x, y, pars, _, _ = fit_gaussian(n, bins, cb=8)
-            #     mu, sigma = pars[1], pars[2]
-            # except RuntimeError:
-            #     peak_mean, *_ = mean_around_max(n, shift_to_centres(bins), 6)
-            #     mu = peak_mean if peak_mean else 0
-            peak_mean, *_ = mean_around_max(n, bins, 6)
-            mu = peak_mean if peak_mean else 0
+            try:
+                x, y, pars, _, _ = fit_gaussian(n, bins, cb=8)
+                mu, sigma = pars[1], pars[2]
+            except RuntimeError:
+                peak_mean, *_ = mean_around_max(n, shift_to_centres(bins), 6)
+                mu = peak_mean if peak_mean else 0
+            # peak_mean, *_ = mean_around_max(n, bins, 6)
+            # mu = peak_mean if peak_mean else 0
             # Update skew_map
             skew_map[ch] += mu * (-relax_factor)
 
@@ -497,7 +521,6 @@ def skew_calc(
         # plt.ylabel("Counts")
         # plt.show()
 
-        # exit(0)
         with open(f"{mon_path}skew_{it}.txt", "w") as f:
             for ch, skew in sorted(skew_map.items()):
                 f.write(f"{ch} {skew}\n")
