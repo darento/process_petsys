@@ -10,6 +10,26 @@ import keras
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 
+def read_category_file(filename: str) -> dict:
+    """
+    Reads a category file and returns a dictionary with the category mapping.
+
+    Parameters:
+        - filename (str): The name of the category file.
+
+    Returns:
+    dict: A dictionary with the category mapping.
+    """
+    cat_dict = {}
+    line_struct = "i, i"
+    b_iter = np.nditer(np.memmap(filename, np.dtype(line_struct), mode="r"))
+    for line in b_iter:
+        slab_id = int(line["f0"])
+        cat_val = int(line["f1"])
+        cat_dict[slab_id] = cat_val
+    return cat_dict
+
+
 class SlabSystem:
     def __init__(self, system_type="DEV-IM"):
         self.select(system_type)
@@ -221,11 +241,20 @@ def _xy_local(
 
 
 def _predict(
-    slab_ids: np.ndarray, evts: np.ndarray, NN, local_pos_dict: dict, loc_trans: bool
+    slab_ids: np.ndarray,
+    evts: np.ndarray,
+    NN: SlabNN,
+    local_pos_dict: dict,
+    loc_trans: bool,
+    cat_xy: np.ndarray,
+    cat_doi: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     # Cats all 0 for now.
-    categories = np.zeros_like(evts["slab_idx"])
-    mm_y, doi = NN.predict([categories, evts["Esignals"], categories, evts["Esignals"]])
+    if cat_xy is None:
+        cat_xy = np.zeros_like(evts["slab_idx"])
+    if cat_doi is None:
+        cat_doi = np.zeros_like(evts["slab_idx"])
+    mm_y, doi = NN.predict([cat_xy, evts["Esignals"], cat_doi, evts["Esignals"]])
     local_pos = np.asarray(
         tuple(
             map(
@@ -241,9 +270,15 @@ def _predict(
 
 
 def _predict_wrapper(
-    slab_ids: np.ndarray, evts: np.ndarray, NN, local_pos_dict: dict, loc_trans: bool
+    slab_ids: np.ndarray,
+    evts: np.ndarray,
+    NN: SlabNN,
+    local_pos_dict: dict,
+    loc_trans: bool,
+    cat_xy: np.ndarray = None,
+    cat_doi: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    return _predict(slab_ids, evts, NN, local_pos_dict, loc_trans)
+    return _predict(slab_ids, evts, NN, local_pos_dict, loc_trans, cat_xy, cat_doi)
 
 
 def neural_net_pcalc(
@@ -262,5 +297,8 @@ def neural_net_pcalc(
     NN.build_combined(y_file, doi_file, print_model=False)
 
     return partial(
-        _predict_wrapper, NN=NN, local_pos_dict=local_pos_dict, loc_trans=loc_trans
+        _predict_wrapper,
+        NN=NN,
+        local_pos_dict=local_pos_dict,
+        loc_trans=loc_trans,
     )

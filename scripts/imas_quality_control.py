@@ -24,6 +24,7 @@ from matplotlib.colors import LogNorm
 import numpy as np
 import pandas as pd
 import yaml
+from tqdm import tqdm
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
@@ -33,7 +34,7 @@ from src.filters import filter_min_ch
 from src.mapping_generator import ChannelType, map_factory
 from src.fits import fit_gaussian
 from src.utils import get_max_en_channel, get_maxEnergy_sm_mM
-from src.slab_nn import neural_net_pcalc
+from src.slab_nn import neural_net_pcalc, read_category_file
 
 
 # Total number of eevents
@@ -70,19 +71,11 @@ def extract_data_dict(
     min_ch: int,
     sum_rows_cols: bool,
     positions_pred: Callable,
+    cat_map_XY: dict,
+    cat_map_DOI: dict,
 ) -> tuple[dict, np.ndarray]:
     """
-    This function processes the detector events and calculates the energy per minimodule.
-
-    Parameters:
-    read_det_evt (Callable): A generator or iterable that yields detector events.
-    local_coord_dict (dict): A dictionary mapping detector channels to local coordinates.
-    chtype_map (dict): A dictionary mapping the channel type to the channel number.
-    FEM_instance (FEMBase): A dictionary representing a Finite Element Model instance.
-    min_ch (int): The minimum channel number for the filter.
-
-    Returns:
-    dict: A dictionary containing the energy per minimodule.
+    This function processes the detector events and generates all the necessary dictionaries for the quality control.
     """
     bunch_size = 10000
     event_count = 0
@@ -97,10 +90,13 @@ def extract_data_dict(
     # two columns with np.float32
     rtp_type = np.dtype([("x_rtp", np.float32), ("y_rtp", np.float32)])
     flood_rtp = np.zeros(bunch_size, rtp_type)
+    cat_type = np.dtype([("Y", np.float32), ("DOI", np.float32)])
+    cat_events = np.zeros(bunch_size, cat_type)
     chan_en_cnt = 0
     for event in read_det_evt:
         increment_total()
-        if EVT_COUNT_F > 1000000:
+        # break to limit the number of events
+        if EVT_COUNT_F > 2000000:
             break
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
@@ -112,6 +108,7 @@ def extract_data_dict(
             )
         if not (min_ch_filter1 and min_ch_filter2):
             continue
+        # Get the mm with the maximum energy for each detector
         max_det1, energy_det1 = get_maxEnergy_sm_mM(det1, sm_mM_map, chtype_map)
         max_det2, energy_det2 = get_maxEnergy_sm_mM(det2, sm_mM_map, chtype_map)
         min_ch_maxdet1 = filter_min_ch(max_det1, min_ch, chtype_map, sum_rows_cols)
@@ -119,6 +116,7 @@ def extract_data_dict(
         if not (min_ch_maxdet1 and min_ch_maxdet2):
             continue
         increment_pf()
+        # Get the slab index (time channel) with the maximum energy in each detector
         slab_det1 = get_max_en_channel(max_det1, chtype_map, ChannelType.TIME)[2]
         slab_det2 = get_max_en_channel(max_det2, chtype_map, ChannelType.TIME)[2]
         slab_dict_count[slab_det1] += 1
@@ -137,9 +135,31 @@ def extract_data_dict(
         flood_rtp[chan_en_cnt * 2 + 1]["x_rtp"] = x_det2
         flood_rtp[chan_en_cnt * 2 + 1]["y_rtp"] = y_det2
 
+        # Fill the category per each of of the 10k events in the bunch
+        try:
+            cat_events[chan_en_cnt * 2]["Y"] = cat_map_XY[slab_det1]
+        except KeyError:
+            cat_events[chan_en_cnt * 2]["Y"] = 0
+
+        try:
+            cat_events[chan_en_cnt * 2]["DOI"] = cat_map_DOI[slab_det1]
+        except KeyError:
+            cat_events[chan_en_cnt * 2]["DOI"] = 0
+
+        try:
+            cat_events[chan_en_cnt * 2 + 1]["Y"] = cat_map_XY[slab_det2]
+        except KeyError:
+            cat_events[chan_en_cnt * 2 + 1]["Y"] = 0
+
+        try:
+            cat_events[chan_en_cnt * 2 + 1]["DOI"] = cat_map_DOI[slab_det2]
+        except KeyError:
+            cat_events[chan_en_cnt * 2 + 1]["DOI"] = 0
+
         en_ch_det1 = filter(lambda x: ChannelType.ENERGY in chtype_map[x[2]], max_det1)
         en_ch_det2 = filter(lambda x: ChannelType.ENERGY in chtype_map[x[2]], max_det2)
 
+        # Fill the energy signals per each of the 10k events in the bunch
         for hit in en_ch_det1:
             pos = local_map[hit[2]][2]
             channel_energies[chan_en_cnt * 2]["slab_idx"] = slab_det1
@@ -153,9 +173,13 @@ def extract_data_dict(
             event_energies[chan_en_cnt * 2 + 1] = energy_det2
             energy_ch_count[hit[2]] += 1
 
+        # If the bunch is full, predict the positions
         if chan_en_cnt == bunch_size / 2 - 1:
             predicted_xy, doi = positions_pred(
-                channel_energies["slab_idx"], channel_energies
+                channel_energies["slab_idx"],
+                channel_energies,
+                cat_xy=cat_events["Y"],
+                cat_doi=cat_events["DOI"],
             )
             for slab_id, xy, xyrtp, en in zip(
                 channel_energies["slab_idx"], predicted_xy, flood_rtp, event_energies
@@ -178,15 +202,9 @@ def extract_data_dict(
 def extract_photopeak_slab(slab_dict_energy: dict) -> dict:
     """
     This function extracts the photopeak from the energy per minimodule.
-
-    Parameters:
-    slab_dict_energy (dict): A dictionary containing the energy per minimodule.
-
-    Returns:
-    dict: A dictionary containing the photopeak per minimodule.
     """
     slab_dict_photopeak = {}
-    for key, value in slab_dict_energy.items():
+    for key, value in tqdm(slab_dict_energy.items(), desc="Slab progress"):
         n, bins = np.histogram(value, bins=200, range=(0, 200))
         # n, bins, patches = plt.hist(value, bins=200, range=(0, 200))
         try:
@@ -208,13 +226,10 @@ def slab_eval(
 ) -> None:
     """
     This function evaluates the slab performance and if the channel is present or not in the system.
-
-    Parameters:
-    slab_dict_photopeak (dict): A dictionary containing the photopeak per minimodule.
     """
     imas_lim_eres = 20
     time_channels = [
-        ch for ch in chtype_map.keys() if ChannelType.TIME in chtype_map[ch]
+        ch for ch in sorted(chtype_map.keys()) if ChannelType.TIME in chtype_map[ch]
     ]
     non_working_tch = []
     out_of_range_tch = []
@@ -234,29 +249,22 @@ def slab_eval(
     print(f"Number of missing time channels: {len(non_working_tch)}")
     print(f"Number of time channels out of range: {len(out_of_range_tch)}")
 
-    # We will save the missing time  channels to a file with the sm, mm and channel number
-    with open(f"{eval_dir}missing_time_channels.txt", "w") as f:
-        f.write(f"SM\tmm\ttch\n")
-        for tch in non_working_tch:
-            # Write the header
-            f.write(f"{tch[0]}\t{tch[1]}\t{tch[2]}\n")
-
-    # We will save the time channels out of range to a file with the sm, mm, channel number and energy resolution
-    with open(f"{eval_dir}low_ER_slabs.txt", "w") as f:
-        f.write(f"SM\tmm\ttch\tER\n")
-        for tch in out_of_range_tch:
-            f.write(f"{tch[0]}\t{tch[1]}\t{tch[2]}\t{round(tch[3],2)}\n")
-
     # Create a DataFrame for all time channels
     df_all = pd.DataFrame(time_channels, columns=["tch"])
     df_all["SM"] = df_all["tch"].map(lambda x: sm_mM_map[x][0])
     df_all["mm"] = df_all["tch"].map(lambda x: sm_mM_map[x][1])
+    df_all["Centroid"] = df_all["tch"].map(
+        lambda x: slab_dict_photopeak.get(x, [0, 0])[0]
+    )
+    df_all["FWHM"] = df_all["tch"].map(
+        lambda x: 2.35 * slab_dict_photopeak.get(x, [0, 0])[1]
+    )
     df_all["Status"] = "Good"
     df_all.loc[df_all["tch"].isin([x[0] for x in non_working_tch]), "Status"] = (
         "Missing"
     )
     df_all.loc[df_all["tch"].isin([x[0] for x in out_of_range_tch]), "Status"] = (
-        "Low energy resolution"
+        "Poor energy resolution"
     )
 
     # Create DataFrames for missing and out of range time channels
@@ -264,15 +272,15 @@ def slab_eval(
     df_out_of_range = pd.DataFrame(out_of_range_tch, columns=["tch", "SM", "mm", "ER"])
 
     # Save the DataFrames to an Excel file
-    with pd.ExcelWriter(f"{eval_dir}time_channels.xlsx") as writer:
+    with pd.ExcelWriter(f"{eval_dir}time_channels_QC.xlsx") as writer:
         df_all.to_excel(writer, sheet_name="All time channels", index=False)
         df_missing.to_excel(writer, sheet_name="Missing time channels", index=False)
         df_out_of_range.to_excel(
-            writer, sheet_name="Low energy resolution channels", index=False
+            writer, sheet_name="Poor energy resolution channels", index=False
         )
 
     # Load the workbook and get the sheet for all time channels
-    wb = load_workbook(f"{eval_dir}time_channels.xlsx")
+    wb = load_workbook(f"{eval_dir}time_channels_QC.xlsx")
     sheet = wb["All time channels"]
 
     # Define the fill colors
@@ -285,21 +293,69 @@ def slab_eval(
     for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
         if row[3].value == "Missing":
             row[3].fill = red_fill
-        elif row[3].value == "Low energy resolution":
+        elif row[3].value == "Poor energy resolution":
             row[3].fill = orange_fill
 
     # Save the workbook
-    wb.save(f"{eval_dir}time_channels.xlsx")
+    wb.save(f"{eval_dir}time_channels_QC.xlsx")
+
+
+def energy_eval(
+    energy_ch_dict: dict, chtype_map: dict, sm_mM_map: dict, eval_dir: str
+) -> None:
+    """
+    This function evaluates the energy channels and if the channel is present or not in the system.
+    """
+    energy_channels = [
+        ch for ch in sorted(chtype_map.keys()) if ChannelType.ENERGY in chtype_map[ch]
+    ]
+    non_working_ech = []
+    for ech in sorted(energy_channels):
+        if ech not in energy_ch_dict.keys():
+            non_working_ech.append((ech, *sm_mM_map[ech]))
+    print(f"Number of missing energy channels: {len(non_working_ech)}")
+
+    # Create a DataFrame for all energy channels
+    df_all = pd.DataFrame(energy_channels, columns=["ech"])
+    df_all["SM"] = df_all["ech"].map(lambda x: sm_mM_map[x][0])
+    df_all["mm"] = df_all["ech"].map(lambda x: sm_mM_map[x][1])
+    df_all["Status"] = "Good"
+    df_all.loc[df_all["ech"].isin([x[0] for x in non_working_ech]), "Status"] = (
+        "Missing"
+    )
+    # Create DataFrames for missing and out of range energy channels
+    df_missing = pd.DataFrame(non_working_ech, columns=["ech", "SM", "mm"])
+    # Save the DataFrames to an Excel file
+    with pd.ExcelWriter(f"{eval_dir}energy_channels_QC.xlsx") as writer:
+        df_all.to_excel(writer, sheet_name="All energy channels", index=False)
+        df_missing.to_excel(writer, sheet_name="Missing energy channels", index=False)
+
+    # Load the workbook and get the sheet for all energy channels
+    wb = load_workbook(f"{eval_dir}energy_channels_QC.xlsx")
+    sheet = wb["All energy channels"]
+
+    # Define the fill colors
+    red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+
+    # Apply the fill colors to the cells
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        if row[3].value == "Missing":
+            row[3].fill = red_fill
+
+    # Save the workbook
+    wb.save(f"{eval_dir}energy_channels_QC.xlsx")
 
 
 def flood_map_eval(sm_flood: dict, slab_dict_photopeak: dict, eval_dir: str) -> None:
+    """
+    This function creates the flood map representation of the system.
+    """
     fig1, axs1 = plt.subplots(5, 24, figsize=(100, 20), sharex=True, sharey=True)
     axs1 = axs1.ravel()  # Flatten the array of axes
     fig2, axs2 = plt.subplots(5, 24, figsize=(100, 20), sharex=True, sharey=True)
     axs2 = axs2.ravel()  # Flatten the array of axes
 
-    for sm, flood in sorted(sm_flood.items()):
-        print(f"Generating sm {sm} flood maps...")
+    for sm, flood in tqdm(sorted(sm_flood.items()), desc="SM progress"):
         i = sm
         x, y, xrtp, yrtp, slab_id, en = zip(*flood)
         x_filtered = []
@@ -339,7 +395,7 @@ def flood_map_eval(sm_flood: dict, slab_dict_photopeak: dict, eval_dir: str) -> 
         plt.xlim([0, 108])
         plt.ylim([0, 108])
         plt.title(f"Floodmap Representation of sm {sm} NN", fontsize=16)
-        plt.savefig(f"{eval_dir}floodmap_sm{sm}.png", dpi=300)
+        plt.savefig(f"{eval_dir}floodmapCAT_sm{sm}.png", dpi=300)
         plt.close()  # Close the individual plot
 
         # Create the individual plot for the rtp positions
@@ -358,7 +414,7 @@ def flood_map_eval(sm_flood: dict, slab_dict_photopeak: dict, eval_dir: str) -> 
         plt.xlim([0, 108])
         plt.ylim([0, 108])
         plt.title(f"Floodmap Representation of sm {sm} RTP", fontsize=16)
-        plt.savefig(f"{eval_dir}floodmap_sm{sm}_rtp.png", dpi=300)
+        plt.savefig(f"{eval_dir}floodmap_smCAT{sm}_rtp.png", dpi=300)
         plt.close()  # Close the individual plot
 
         # Add the data to the combined plot with rtp
@@ -391,34 +447,20 @@ def flood_map_eval(sm_flood: dict, slab_dict_photopeak: dict, eval_dir: str) -> 
     plt.figure(fig1.number)
     plt.subplots_adjust(wspace=0, hspace=0)
     plt.tight_layout()
-    plt.savefig(f"{eval_dir}floodmap_fullIMAS.png", dpi=300)
+    plt.savefig(f"{eval_dir}floodmapCAT_fullIMAS.png", dpi=300)
 
     plt.figure(fig2.number)
     plt.subplots_adjust(wspace=0, hspace=0)
     plt.tight_layout()
-    plt.savefig(f"{eval_dir}floodmap_fullIMAS_rtp.png", dpi=300)
-
-
-def energy_eval(
-    energy_ch_dict: dict, chtype_map: dict, sm_mM_map: dict, eval_dir: str
-) -> None:
-    energy_channels = [
-        ch for ch in chtype_map.keys() if ChannelType.ENERGY in chtype_map[ch]
-    ]
-    non_working_ech = []
-    for ech in sorted(energy_channels):
-        if ech not in energy_ch_dict.keys():
-            non_working_ech.append((ech, *sm_mM_map[ech]))
-    print(f"Number of missing energy channels: {len(non_working_ech)}")
-    with open(f"{eval_dir}missing_energy_channels.txt", "w") as f:
-        f.write(f"SM\tmm\tech\n")
-        for ech in non_working_ech:
-            f.write(f"{ech[0]}\t{ech[1]}\t{ech[2]}\n")
+    plt.savefig(f"{eval_dir}floodmapCAT_fullIMAS_rtp.png", dpi=300)
 
 
 def initialize_nn(local_map: dict) -> Callable:
-    nn_yfile = "/scratch/imas_files_cal/IMASNoCatY.h5"
-    nn_doifile = "/scratch/imas_files_cal/IMASNoCatDOI.h5"
+    """
+    This function initializes the neural network for the position prediction.
+    """
+    nn_yfile = "/scratch/imas_files_cal/IMASY.h5"
+    nn_doifile = "/scratch/imas_files_cal/IMASDOI.h5"
     positions_pred = neural_net_pcalc("IMAS", nn_yfile, nn_doifile, local_map)
     return positions_pred
 
@@ -431,6 +473,8 @@ def process_file(
     min_ch: int,
     sum_rows_cols: bool,
     positions_pred: Callable,
+    cat_map_XY: dict,
+    cat_map_DOI: dict,
 ) -> dict:
     """
     This function processes the binary file and returns a dictionary of energy list values for each slab.
@@ -441,7 +485,15 @@ def process_file(
     reader = read_binary_file(binary_file_path)
     # Extract the data dictionary
     slab_dict_energy = extract_data_dict(
-        reader, chtype_map, sm_mM_map, local_map, min_ch, sum_rows_cols, positions_pred
+        reader,
+        chtype_map,
+        sm_mM_map,
+        local_map,
+        min_ch,
+        sum_rows_cols,
+        positions_pred,
+        cat_map_XY,
+        cat_map_DOI,
     )
     return slab_dict_energy
 
@@ -470,6 +522,10 @@ def main():
     en_min_ch = float(config["en_min_ch"])
     print(f"Minimum energy per channel: {en_min_ch}")
 
+    cat_map_XY = read_category_file("/scratch/imas_files_cal/CategoryMapRTPY.bin")
+    cat_map_DOI = read_category_file("/scratch/imas_files_cal/CategoryMapRTPDOI.bin")
+    print(f"Category maps read.")
+
     positions_pred = initialize_nn(local_map)
 
     with get_context("spawn").Pool(processes=cpu_count()) as pool:
@@ -482,6 +538,8 @@ def main():
                 min_ch,
                 sum_rows_cols,
                 positions_pred,
+                cat_map_XY,
+                cat_map_DOI,
             )
             for binary_file_path in binary_file_paths
         ]
@@ -492,7 +550,7 @@ def main():
     energy_ch_dict = defaultdict(int)
     total_number_events = 0
     print(f"Processing results. Adding to the final dictionary, please wait...")
-    for result in results:
+    for result in tqdm(results):
         if isinstance(result, Exception):
             print(f"Exception in child process: {result}")
         else:
