@@ -134,7 +134,7 @@ def extract_photopeak_slab(slab_dict_energy: dict) -> dict:
         n, bins = np.histogram(value, bins=200, range=(0, 200))
         # n, bins, patches = plt.hist(value, bins=200, range=(0, 200))
         try:
-            x, y, pars, _, _ = fit_gaussian(n, bins)
+            x, y, pars, _, _ = fit_gaussian(n, bins, cb=6)
             mu, sigma = pars[1], pars[2]
         except RuntimeError:
             mu, sigma = 0, 0
@@ -147,7 +147,7 @@ def extract_photopeak_slab(slab_dict_energy: dict) -> dict:
     return slab_dict_photopeak
 
 
-def write_mm_cal(slab_dict_photopeak: dict, chtype_map: dict):
+def write_slab_cal(slab_dict_photopeak: dict, chtype_map: dict):
     """
     This function writes the photopeak per minimodule to a file.
 
@@ -157,7 +157,7 @@ def write_mm_cal(slab_dict_photopeak: dict, chtype_map: dict):
     time_channels = [
         ch for ch in chtype_map.keys() if ChannelType.TIME in chtype_map[ch]
     ]
-    file_name = "slab_en_cal.txt"
+    file_name = "slab_en_cal_pointSources.txt"
     with open(file_name, "w") as f:
         f.write("ID\tmu\tsigma\n")
         for tch in sorted(time_channels):
@@ -231,7 +231,7 @@ def main():
                 slab_dict_energy[key].extend(value)
 
     slab_dict_photopeak = extract_photopeak_slab(slab_dict_energy)
-    write_mm_cal(slab_dict_photopeak, chtype_map)
+    write_slab_cal(slab_dict_photopeak, chtype_map)
 
 
 if __name__ == "__main__":
