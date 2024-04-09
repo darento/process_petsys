@@ -1,5 +1,8 @@
+import os
 import struct
 from typing import Iterator, BinaryIO
+
+from tqdm import tqdm
 
 
 def read_detector_evt(
@@ -49,21 +52,44 @@ def read_binary_file(
     header_size = struct.calcsize(header_format)
     data_size = struct.calcsize(data_format)
 
+    total_size = os.path.getsize(file_path)
+    read_size = 0
+    # Initialize the last printed percentage
+    last_printed_percentage = 0
+
     with open(file_path, "rb") as f:
-        while True:
-            header_data = f.read(header_size)
-            if not header_data:
-                break
-            header = struct.unpack(header_format, header_data)
+        with tqdm(
+            total=total_size, unit="B", unit_scale=True, desc="File read progress"
+        ) as pbar:
+            while True:
+                header_data = f.read(header_size)
+                if not header_data:
+                    break
+                header = struct.unpack(header_format, header_data)
 
-            det1 = read_detector_evt(f, data_format, data_size, header[0], en_filter)
-            det2 = (
-                read_detector_evt(f, data_format, data_size, header[1], en_filter)
-                if not group_events
-                else []
-            )
+                # Update the read size
+                read_size += header_size
+                pbar.update(header_size)
 
-            yield det1, det2
+                det1 = read_detector_evt(
+                    f, data_format, data_size, header[0], en_filter
+                )
+                det2 = (
+                    read_detector_evt(f, data_format, data_size, header[1], en_filter)
+                    if not group_events
+                    else []
+                )
+                # Update the read size
+                read_size += header[0] * data_size + (
+                    header[1] * data_size if not group_events else 0
+                )
+
+                pbar.update(
+                    header[0] * data_size
+                    + (header[1] * data_size if not group_events else 0)
+                )
+
+                yield det1, det2
 
 
 if __name__ == "__main__":
