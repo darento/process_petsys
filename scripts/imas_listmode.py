@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 
 """Extracts the photopeak from the energy per minimodule and saves it to a file.
-Usage: imas_quality_control YAMLCONF INFILES ...
+Usage: imas_quality_control [-d] YAMLCONF SLAB_EN_MAP INFILES ...
 
 Arguments:
-    YAMLCONF  File with all parameters to take into account in the scan.
-    INFILE    Input file to be processed. Must be a compact binary file from PETsys.
+    YAMLCONF     File with all parameters to take into account in the scan.
+    SLAB_EN_MAP  File with the energy per slab.
+    INFILE       Input file to be processed. Must be a compact binary file from PETsys.
 
 Options:
+    -d --debug    Debug mode. 
     -h --help     Show this screen.    
 """
 
 
 from collections import defaultdict
-from itertools import chain
+import logging
 from multiprocessing import cpu_count, get_context
 import os
 import time
-from typing import Callable
+from typing import BinaryIO, Callable, Tuple
 from docopt import docopt
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
@@ -25,12 +27,12 @@ import numpy as np
 import pandas as pd
 import yaml
 from tqdm import tqdm
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from natsort import natsorted
+import shutil
 
-from src.detector_features import calculate_centroid_sum, calculate_total_energy
+from src.listmode import CoincidenceV5, LMHeader
 from src.read_compact import read_binary_file
-from src.filters import filter_min_ch
+from src.filters import filter_min_ch, filter_total_energy
 from src.mapping_generator import ChannelType, map_factory
 from src.fits import fit_gaussian
 from src.utils import KevConverter, get_max_en_channel, get_maxEnergy_sm_mM
@@ -63,42 +65,107 @@ def increment_pf():
     EVT_COUNT_F += 1
 
 
-def extract_data_dict(
+def reset_globals():
+    global EVT_COUNT_T
+    global EVT_COUNT_F
+    EVT_COUNT_T = 0
+    EVT_COUNT_F = 0
+
+
+def extract_pair_map(pair_path: str) -> dict:
+    pair_cols = ["p", "s0", "s1"]
+    pair_map = (
+        pd.read_csv(pair_path, sep="\t", names=pair_cols)
+        .set_index(pair_cols[1:])
+        .to_dict()["p"]
+    )
+    return pair_map
+
+
+def get_pixels(
+    pos_x: float, pos_y: float, bins_x: np.ndarray, bins_y: np.ndarray
+) -> Tuple[int, int]:
+    return (
+        np.searchsorted(bins_x, pos_x, side="right") - 1,
+        np.searchsorted(bins_y, pos_y, side="right") - 1,
+    )
+
+
+def write_header(
+    bin_out: BinaryIO,
+    xpixels: np.ndarray,
+    ypixels: np.ndarray,
+) -> None:
+    """
+    Write the LMHeader object to file.
+    """
+    sec = "header"
+    header = LMHeader(
+        identifier="IMAS".encode("utf-8"),
+        acqTime=10,
+        isotope="Na22".encode("utf-8"),
+        detectorSizeX=103.22,
+        detectorSizeY=103.22,
+        startTime=0,
+        measurementTime=10,
+        moduleNumber=120,
+        ringNumber=5,
+        ringDistance=820,
+        detectorPixelSizeX=np.diff(xpixels)[0],
+        detectorPixelSizeY=np.diff(ypixels)[0],
+        version=(9, 5),
+        detectorPixelsX=xpixels.size - 1,
+        detectorPixelsY=ypixels.size - 1,
+    )
+    bin_out.write(header)
+
+
+def nn_lm_loop(
     read_det_evt: Callable,
     chtype_map: dict,
     sm_mM_map: dict,
     local_map: dict,
+    pair_map: dict,
     min_ch: int,
+    en_min: float,
+    en_max: float,
     sum_rows_cols: bool,
     positions_pred: Callable,
     cat_map_XY: dict,
     cat_map_DOI: dict,
     slab_kev_fn: Callable,
+    xpixels: np.ndarray,
+    ypixels: np.ndarray,
+    lm_file_io: BinaryIO,
+    debug_flag: bool,
 ) -> tuple[dict, np.ndarray]:
     """
     This function processes the detector events and generates all the necessary dictionaries for the quality control.
     """
     bunch_size = 10000
-    event_count = 0
     start_time = time.time()
-    energy_ch_count = defaultdict(int)
-    slab_dict_count = defaultdict(int)
-    slab_dict_energy = defaultdict(list)
-    sm_flood = defaultdict(list)
+
     infer_type = np.dtype([("slab_idx", np.int32), ("Esignals", np.float32, 8)])
     channel_energies = np.zeros(bunch_size, infer_type)
-    event_energies = np.zeros(bunch_size, np.float32)
-    # two columns with np.float32
-    rtp_type = np.dtype([("x_rtp", np.float32), ("y_rtp", np.float32)])
-    flood_rtp = np.zeros(bunch_size, rtp_type)
+
     cat_type = np.dtype([("Y", np.float32), ("DOI", np.float32)])
     cat_events = np.zeros(bunch_size, cat_type)
-    total_energy_kev = []
+
+    coincidences = np.zeros(bunch_size // 2, CoincidenceV5)
+
+    swap_list = []
+
+    for coincidence in coincidences:
+        coincidence["amount"] = 1.0
+
     chan_en_cnt = 0
+    if debug_flag:
+        total_energy_kev = []
+        sm_flood = defaultdict(list)
     for event in read_det_evt:
         increment_total()
         # break to limit the number of events
-        if EVT_COUNT_F > 1000000:
+        if EVT_COUNT_T > 500000 and debug_flag:
             break
         det1, det2 = event
         min_ch_filter1 = filter_min_ch(det1, min_ch, chtype_map, sum_rows_cols)
@@ -117,27 +184,34 @@ def extract_data_dict(
         min_ch_maxdet2 = filter_min_ch(max_det2, min_ch, chtype_map, sum_rows_cols)
         if not (min_ch_maxdet1 and min_ch_maxdet2):
             continue
-        increment_pf()
+
         # Get the slab index (time channel) with the maximum energy in each detector
-        slab_det1 = get_max_en_channel(max_det1, chtype_map, ChannelType.TIME)[2]
-        slab_det2 = get_max_en_channel(max_det2, chtype_map, ChannelType.TIME)[2]
+        time_info_det1 = get_max_en_channel(max_det1, chtype_map, ChannelType.TIME)
+        time_info_det2 = get_max_en_channel(max_det2, chtype_map, ChannelType.TIME)
+        slab_det1 = time_info_det1[2]
+        slab_det2 = time_info_det2[2]
         energy_det1_kev = slab_kev_fn(slab_det1) * energy_det1
         energy_det2_kev = slab_kev_fn(slab_det2) * energy_det2
-        slab_dict_count[slab_det1] += 1
-        slab_dict_count[slab_det2] += 1
-        slab_dict_energy[slab_det1].append(energy_det1)
-        slab_dict_energy[slab_det2].append(energy_det2)
+        en_filter1 = filter_total_energy(energy_det1_kev, en_min, en_max)
+        en_filter2 = filter_total_energy(energy_det2_kev, en_min, en_max)
+        if not (en_filter1 and en_filter2):
+            continue
+        sm_det1 = sm_mM_map[slab_det1][0]
+        sm_det2 = sm_mM_map[slab_det2][0]
+        try:
+            pair_sms = (sm_det1, sm_det2)
+            pair = pair_map[pair_sms]
+            swap = False
+        except KeyError:
+            try:
+                pair_sms = (sm_det2, sm_det1)
+                pair = pair_map[pair_sms]
+                swap = True
+            except KeyError:
+                continue
+        increment_pf()
 
-        x_det1, y_det1 = calculate_centroid_sum(
-            max_det1, local_map, chtype_map, x_rtp=1, y_rtp=2
-        )
-        x_det2, y_det2 = calculate_centroid_sum(
-            max_det2, local_map, chtype_map, x_rtp=1, y_rtp=2
-        )
-        flood_rtp[chan_en_cnt * 2]["x_rtp"] = x_det1
-        flood_rtp[chan_en_cnt * 2]["y_rtp"] = y_det1
-        flood_rtp[chan_en_cnt * 2 + 1]["x_rtp"] = x_det2
-        flood_rtp[chan_en_cnt * 2 + 1]["y_rtp"] = y_det2
+        time_min = min(time_info_det1[0], time_info_det2[0])
 
         # Fill the category per each of of the 10k events in the bunch
         try:
@@ -168,73 +242,112 @@ def extract_data_dict(
             pos = local_map[hit[2]][2]
             channel_energies[chan_en_cnt * 2]["slab_idx"] = slab_det1
             channel_energies[chan_en_cnt * 2]["Esignals"][pos] = hit[1]
-            event_energies[chan_en_cnt * 2] = energy_det1
-            energy_ch_count[hit[2]] += 1
         for hit in en_ch_det2:
             pos = local_map[hit[2]][2]
             channel_energies[chan_en_cnt * 2 + 1]["slab_idx"] = slab_det2
             channel_energies[chan_en_cnt * 2 + 1]["Esignals"][pos] = hit[1]
-            event_energies[chan_en_cnt * 2 + 1] = energy_det2
-            energy_ch_count[hit[2]] += 1
+
+        coincidences[chan_en_cnt]["time"] = time_min
+        coincidences[chan_en_cnt]["pair"] = pair
+
+        if not swap:
+            coincidences[chan_en_cnt]["energy1"] = round(energy_det1_kev)
+            coincidences[chan_en_cnt]["energy2"] = round(energy_det2_kev)
+            coincidences[chan_en_cnt]["dt"] = round(
+                time_info_det1[0] - time_info_det2[0]
+            )
+        else:
+            coincidences[chan_en_cnt]["energy1"] = round(energy_det2_kev)
+            coincidences[chan_en_cnt]["energy2"] = round(energy_det1_kev)
+            coincidences[chan_en_cnt]["dt"] = round(
+                time_info_det2[0] - time_info_det1[0]
+            )
+        swap_list.append(swap)
 
         # If the bunch is full, predict the positions
         if chan_en_cnt == bunch_size / 2 - 1:
-            predicted_xy, doi = positions_pred(
+            predicted_xy, predicted_doi = positions_pred(
                 channel_energies["slab_idx"],
                 channel_energies,
                 cat_xy=cat_events["Y"],
                 cat_doi=cat_events["DOI"],
             )
-            for slab_id, xy, xyrtp, en in zip(
-                channel_energies["slab_idx"], predicted_xy, flood_rtp, event_energies
-            ):
-                sm = sm_mM_map[slab_id][0]
-                sm_flood[sm].append((xy[0], xy[1], xyrtp[0], xyrtp[1], slab_id, en))
+            if debug_flag:
+                for (
+                    slab_id,
+                    xy,
+                ) in zip(channel_energies["slab_idx"], predicted_xy):
+                    sm = sm_mM_map[slab_id][0]
+                    sm_flood[sm].append((xy[0], xy[1]))
+            for coin in range(chan_en_cnt):
+                pixels = tuple(
+                    map(
+                        lambda xy: get_pixels(*xy, xpixels, ypixels),
+                        predicted_xy[2 * coin : 2 * coin + 2],
+                    )
+                )
+                if not swap_list[coin]:
+                    coincidences[coin]["xPosition1"] = pixels[0][0]
+                    coincidences[coin]["yPosition1"] = pixels[0][1]
+                    coincidences[coin]["zPosition1"] = predicted_doi[2 * coin]
+                    coincidences[coin]["xPosition2"] = pixels[1][0]
+                    coincidences[coin]["yPosition2"] = pixels[1][1]
+                    coincidences[coin]["zPosition2"] = predicted_doi[2 * coin + 1]
+                else:
+                    coincidences[coin]["xPosition1"] = pixels[1][0]
+                    coincidences[coin]["yPosition1"] = pixels[1][1]
+                    coincidences[coin]["zPosition1"] = predicted_doi[2 * coin + 1]
+                    coincidences[coin]["xPosition2"] = pixels[0][0]
+                    coincidences[coin]["yPosition2"] = pixels[0][1]
+                    coincidences[coin]["zPosition2"] = predicted_doi[2 * coin]
+
+                # print(coincidences[coin])
+                # exit(0)
+                lm_file_io.write(coincidences[coin])
+
+            # Reset the bunch
             channel_energies = np.zeros(bunch_size, infer_type)
-            flood_rtp = np.zeros(bunch_size, rtp_type)
+            cat_events = np.zeros(bunch_size, cat_type)
+            coincidences = np.zeros(bunch_size // 2, CoincidenceV5)
+            swap_list = []
             chan_en_cnt = 0
         chan_en_cnt += 1
-        total_energy_kev.extend((energy_det1_kev, energy_det2_kev))
+        if debug_flag:
+            total_energy_kev.extend((energy_det1_kev, energy_det2_kev))
 
+    if debug_flag:
+        debug_plots(total_energy_kev, sm_flood)
+
+    print("---------------------")
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time} seconds")
+    print(f"Total events: {EVT_COUNT_T}")
+    print(f"Events passing the filter: {EVT_COUNT_F}")
+    return EVT_COUNT_F
+
+
+def debug_plots(total_energy_kev: list, sm_flood: dict):
     n, bins, _ = plt.hist(total_energy_kev, bins=1500, range=(0, 1500))
-    # x, y, pars, _, _ = fit_gaussian(n, bins, cb=16)
-    # mu, sigma = pars[1], pars[2]
-    # plt.plot(x, y, "-r", label="fit")
-    # plt.legend([f"Energy res: {round(2.35*sigma/mu*100,2)}%"])
+    x, y, pars, _, _ = fit_gaussian(n, bins, cb=16)
+    mu, sigma = pars[1], pars[2]
+    plt.plot(x, y, "-r", label="fit")
+    plt.legend([f"Energy res: {round(2.35*sigma/mu*100,2)}%"])
     plt.xlabel("Energy (keV)")
     plt.ylabel("Counts")
     plt.title("Total energy")
     plt.show()
 
-    print("---------------------")
-    end_time = time.time()
-    print(len(slab_dict_count))
-    print(f"Time taken: {end_time - start_time} seconds")
-    print(f"Total events: {EVT_COUNT_T}")
-    print(f"Events passing the filter: {EVT_COUNT_F}")
-    return slab_dict_energy, sm_flood, energy_ch_count, EVT_COUNT_F
-
-
-def extract_photopeak_slab(slab_dict_energy: dict) -> dict:
-    """
-    This function extracts the photopeak from the energy per minimodule.
-    """
-    slab_dict_photopeak = {}
-    for key, value in tqdm(slab_dict_energy.items(), desc="Slab progress"):
-        n, bins = np.histogram(value, bins=200, range=(0, 200))
-        # n, bins, patches = plt.hist(value, bins=200, range=(0, 200))
-        try:
-            x, y, pars, _, _ = fit_gaussian(n, bins)
-            mu, sigma = pars[1], pars[2]
-        except RuntimeError:
-            mu, sigma = 0, 0
-            # plt.legend([f"Slab: {key}\nError fitting the Gaussian"])
-            # plt.show()
-        slab_dict_photopeak[key] = (mu, sigma)
-        # plt.plot(x, y, "-r", label="fit")
-        # plt.legend([f"Slab: {key}\nEnergy res: {round(2.35*sigma/mu*100,2)}%"])
-        # plt.show()
-    return slab_dict_photopeak
+    for sm, flood in sm_flood.items():
+        plt.hist2d(
+            *zip(*flood),
+            bins=(200, 200),
+            range=[[0, 108], [0, 108]],
+            cmap="jet",
+            norm=LogNorm(),
+        )
+        plt.colorbar()
+        plt.title(f"SM {sm}")
+        plt.show()
 
 
 def initialize_nn(local_map: dict) -> Callable:
@@ -252,34 +365,52 @@ def process_file(
     chtype_map: dict,
     sm_mM_map: dict,
     local_map: dict,
+    pair_map: dict,
     min_ch: int,
+    en_min: float,
+    en_max: float,
     sum_rows_cols: bool,
     positions_pred: Callable,
     cat_map_XY: dict,
     cat_map_DOI: dict,
     slab_kev_fn: Callable,
+    xpixels: np.ndarray,
+    ypixels: np.ndarray,
+    lm_dir: str,
+    debug_flag: bool,
 ) -> dict:
     """
     This function processes the binary file and returns a dictionary of energy list values for each slab.
     """
-
+    reset_globals()
     print(f"Processing file: {binary_file_path}")
     # Read the binary file
     reader = read_binary_file(binary_file_path)
+
+    lm_file = lm_dir + os.path.basename(binary_file_path).replace(".ldat", ".lm")
+    lm_file_io = open(lm_file, "wb")
     # Extract the data dictionary
-    slab_dict_energy = extract_data_dict(
+    slab_dict_energy = nn_lm_loop(
         reader,
         chtype_map,
         sm_mM_map,
         local_map,
+        pair_map,
         min_ch,
+        en_min,
+        en_max,
         sum_rows_cols,
         positions_pred,
         cat_map_XY,
         cat_map_DOI,
         slab_kev_fn,
+        xpixels,
+        ypixels,
+        lm_file_io,
+        debug_flag,
     )
-    return slab_dict_energy
+    lm_file_io.close()
+    return slab_dict_energy, lm_file
 
 
 def main():
@@ -291,6 +422,14 @@ def main():
 
     with open(args["YAMLCONF"], "r") as f:
         config = yaml.safe_load(f)
+
+    # Debug mode
+    if args["--debug"]:
+        debug_flag = True
+        print("Debug mode enabled")
+    else:
+        debug_flag = False
+        print("Debug mode disabled")
 
     # Read the mapping file
     map_file = config["map_file"]
@@ -306,56 +445,96 @@ def main():
     en_min_ch = float(config["en_min_ch"])
     print(f"Minimum energy per channel: {en_min_ch}")
 
-    cat_map_XY = read_category_file("/scratch/imas_files_cal/CategoryMapRTPY.bin")
-    cat_map_DOI = read_category_file("/scratch/imas_files_cal/CategoryMapRTPDOI.bin")
+    # Read the energy range
+    en_min = float(config["energy_range"][0])
+    en_max = float(config["energy_range"][1])
+    print(f"Energy range: {en_min} - {en_max}")
+
+    pair_path = "/scratch/imas_files_cal/1DAQ/pares_5SR.txt"
+    pair_map = extract_pair_map(pair_path)
+
+    cat_map_XY = read_category_file("/scratch/imas_files_cal/1DAQ/CategoryMapRTPY.bin")
+    cat_map_DOI = read_category_file(
+        "/scratch/imas_files_cal/1DAQ/CategoryMapRTPDOI.bin"
+    )
     print(f"Category maps read.")
+
+    pixels_x = (0, 103.22, 101)
+    pixels_y = (0, 103.22, 101)
+    xpixels = np.linspace(*pixels_x[:2], int(pixels_x[2]))
+    ypixels = np.linspace(*pixels_y[:2], int(pixels_y[2]))
 
     positions_pred = initialize_nn(local_map)
 
-    slab_file_path = "slab_en_cal.txt"
+    slab_file_path = args["SLAB_EN_MAP"]
     kev_converter = KevConverter(slab_file_path)
 
-    with get_context("spawn").Pool(processes=cpu_count()) as pool:
+    lm_dir = "/mnt/data/000_samba_lin/LaFe_acquisitions_win/LMs/"
+    if not os.path.exists(lm_dir):
+        os.makedirs(lm_dir)
+    num_cpu_used = 13
+    with get_context("spawn").Pool(processes=num_cpu_used) as pool:
         args_list = [
             (
                 binary_file_path,
                 chtype_map,
                 sm_mM_map,
                 local_map,
+                pair_map,
                 min_ch,
+                en_min,
+                en_max,
                 sum_rows_cols,
                 positions_pred,
                 cat_map_XY,
                 cat_map_DOI,
                 kev_converter.convert,
+                xpixels,
+                ypixels,
+                lm_dir,
+                debug_flag,
             )
             for binary_file_path in binary_file_paths
         ]
         results = pool.starmap(process_file, args_list)
 
-    slab_dict_energy = defaultdict(list)
-    sm_dict_flood = defaultdict(list)
-    energy_ch_dict = defaultdict(int)
     total_number_events = 0
-    print(f"Processing results. Adding to the final dictionary, please wait...")
+    lm_files = []
+    print(f"Compiling all lms into a single one, please wait...")
     for result in tqdm(results):
         if isinstance(result, Exception):
             print(f"Exception in child process: {result}")
         else:
-            slab_dict, sm_dict, energy_dict, evt_filtered = result
+            evt_filtered, lm_path = result
             total_number_events += evt_filtered
-            for key, value in slab_dict.items():
-                slab_dict_energy[key].extend(value)
-            for key, value in sm_dict.items():
-                sm_dict_flood[key].extend(value)
-            for key, value in energy_dict.items():
-                energy_ch_dict[key] += value
+            lm_files.append(lm_path)
+    # Sort the filenames in natural order
+    lm_files = natsorted(lm_files)
+    final_lm_name = "_".join(lm_files[0].split("_")[:-1]) + "_all.lm"
+    log_lm_name = "_".join(lm_files[0].split("_")[:-1]) + "_log.txt"
+    logging.basicConfig(filename=log_lm_name, level=logging.INFO)
 
-    print(f"Total number of events processed: {total_number_events}")
+    # Open the final output file
+    with open(final_lm_name, "wb") as outfile:
+        # Write header
+        write_header(outfile, xpixels, ypixels)
+        # Iterate over the sorted filenames
+        for filename in lm_files:
+            # Log the input file name and size
+            file_size_mb = os.path.getsize(filename) / (1024 * 1024)
+            logging.info(f"Input file: {filename}, size: {file_size_mb:.2f} MB")
+            # Open each file and copy its contents to the final output file
+            with open(filename, "rb") as infile:
+                shutil.copyfileobj(infile, outfile)
+            # Delete the file
+            os.remove(filename)
 
-    eval_dir = "imas_LMs/"
-    if not os.path.exists(eval_dir):
-        os.makedirs(eval_dir)
+    # Log the final output file name
+    final_file_size_mb = os.path.getsize(final_lm_name) / (1024 * 1024)
+    logging.info(
+        f"Final output file: {final_lm_name}, size: {final_file_size_mb:.2f} MB"
+    )
+    print(f"Total number of events processed to LM: {total_number_events}")
 
 
 if __name__ == "__main__":
