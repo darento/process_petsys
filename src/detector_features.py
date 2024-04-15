@@ -211,3 +211,56 @@ def calculate_dt(
             [(x[0] - skew_map.get(x[2], 0)) * x[1] for x in time_det2[0:det2_avg]]
         ) / sum([x[1] for x in time_det2[0:det2_avg]])
         return time_det1 - time_det2
+
+
+def calculate_dt_singlehit(
+    det1_list: list[list],
+    det2_list: list[list],
+    chtype_map: dict,
+    skew_map: dict,
+    det1_Ntstp: int = 1,
+    det2_Ntstp: int = 1,
+) -> float:
+    """
+    Calculate the time difference between two detectors using one timestamp each.
+    det1_Ntstp and det2_Ntstp give the timestamp number to consider for each detector
+
+    ! this is needed to evaluate and correct for time walk before performing the average
+
+    Parameters:
+        - det1_list (list): The list of hits for detector 1.
+        - det2_list (list): The list of hits for detector 2.
+        - chtype_map (dict): A mapping from detector names to channel types.
+        - skew_map (dict): A mapping from channel names to skew values.
+        - det1_Ntstp (float): The tstp number to consider for detector 1.
+        - det2_Ntstp (float): The tstp number to consider for detector 2.
+
+    Returns:
+    float: The time difference between the det1_Ntstp timestamp of detector 1 and det2_Ntstp timestamp of detector 2,
+    and the energy collected by the det1_Ntstp and the det2_Ntstp channels.
+    """
+    # Get the time channels for each detector
+    #
+
+    event_det1 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det1_list))
+    event_det2 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det2_list))
+
+    det1_tstp_idx = det1_Ntstp - 1
+    det2_tstp_idx = det2_Ntstp - 1
+
+    # Check if the timestamp number exist or it's larger than the number of channel of the event
+
+    if det1_tstp_idx >= len(event_det1):
+        det1_tstp_idx = len(event_det1) - 1
+    if det2_tstp_idx >= len(event_det2):
+        det2_tstp_idx = len(event_det2) - 1
+
+    time_ch1 = event_det1[det1_tstp_idx][2]
+    time_ch2 = event_det2[det2_tstp_idx][2]
+    t1 = event_det1[det1_tstp_idx][0] - skew_map.get(time_ch1, 0)
+    t2 = event_det2[det2_tstp_idx][0] - skew_map.get(time_ch2, 0)
+
+    en_det1_ch = event_det1[det1_tstp_idx][1]
+    en_det2_ch = event_det2[det2_tstp_idx][1]
+
+    return t1 - t2, en_det1_ch, en_det2_ch
