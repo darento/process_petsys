@@ -65,7 +65,7 @@ class CoincidenceV3(Structure):
 
 class CoincidenceV5(Structure):
     _fields_ = [
-        ("time", c_double),
+        ("time", c_float),
         ("energy1", c_ushort),
         ("energy2", c_ushort),
         ("amount", c_float),
