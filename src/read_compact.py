@@ -54,8 +54,6 @@ def read_binary_file(
 
     total_size = os.path.getsize(file_path)
     read_size = 0
-    # Initialize the last printed percentage
-    last_printed_percentage = 0
 
     with open(file_path, "rb") as f:
         with tqdm(
