@@ -113,7 +113,7 @@ def fit_gaussian(
                 err = np.sqrt(y, out=np.abs(y).astype("float"), where=y >= 0)
             else:
                 err = yerr[min_indx:max_indx]
-    else:
+    elif pk_finder == "max":
         mu0, wsum, x, y, err = mean_around_max(data, bin_centres, cb, yerr)
 
     if mu0 is None:
@@ -176,7 +176,7 @@ def mean_around_max(
     x = bin_centres[first_bin:last_bin]
     y = data[first_bin:last_bin]
     if sum(y) <= 0:
-        return None, None, None, None
+        return None, None, None, None, None
     if yerr is not None:
         yerr = yerr[first_bin:last_bin]
     else:
