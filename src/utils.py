@@ -195,13 +195,28 @@ def read_skew(skew_file: str):
 
 
 class KevConverter:
-    def __init__(self, kev_file: str):
-        self.kev_factors = (
-            pd.read_csv(kev_file, sep="\t")
-            .set_index("ID")["mu"]
-            .map(lambda x: 511.0 / x if x != 0 else 1.0)
-            .to_dict()
-        )
+    def __init__(self, kev_file: str, file_type: str):
+        if file_type == "mu":
+            self.kev_factors = (
+                pd.read_csv(kev_file, sep="\t").set_index("ID")["mu"].to_dict()
+            )
+            self.convert = self.convert_mu
+        elif file_type == "poly":
+            self.poly_coeffs = (
+                pd.read_csv(kev_file, sep="\t")
+                .set_index("ID")[["coef0", "coef1", "coef2"]]
+                .to_dict("index")
+            )
+            self.convert = self.convert_poly
+        else:
+            raise ValueError(f"Unknown file type: {file_type}")
 
-    def convert(self, id: int) -> float:
-        return self.kev_factors[id]
+    def convert_mu(self, id: int, energy: float) -> float:
+        mu = self.kev_factors[id]
+
+        return 511.0 / mu * energy if mu != 0 else 0
+
+    def convert_poly(self, id: int, energy: float) -> float:
+        coeffs = self.poly_coeffs[id]
+
+        return coeffs["coef0"] * energy**2 + coeffs["coef1"] * energy + coeffs["coef2"]
