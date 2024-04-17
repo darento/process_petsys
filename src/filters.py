@@ -5,8 +5,6 @@ import numpy as np
 
 from src.utils import get_num_eng_channels
 
-"ghost:filter_total_energy"
-
 
 def filter_total_energy(
     en_total: float, en_min: float = 10, en_max: float = 100
