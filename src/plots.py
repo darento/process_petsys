@@ -1,12 +1,14 @@
 import math
 from typing import Tuple
 from matplotlib import pyplot as plt
-from matplotlib.colors import LogNorm
 import numpy as np
 
 from src.utils import get_electronics_nums
 from src.fem_handler import FEMBase
 from src.fits import fit_gaussian
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.colors as mcolors
 
 
 def plot_chan_position(dict_coords: dict) -> None:
@@ -60,7 +62,6 @@ def plot_floodmap(
     bins: tuple = (200, 200),
     fig_num: int = 0,
     show_fig: int = 0,
-    norm_hist: bool = False,
 ) -> None:
     """
     This function plots the floodmap of a single channel on a 2D graph.
@@ -78,13 +79,17 @@ def plot_floodmap(
     """
     # Unpack the x and y coordinates
     x, y = zip(*xy_list)
+    cmap = plt.cm.plasma
+    contrast_factor = 0.5
 
-    if norm_hist:
-        norm_factor = LogNorm()
+    # Creamos un nuevo colormap con el contraste ajustado
+    new_colors = cmap(np.linspace(0, 1, 256))
+    new_colors = new_colors**contrast_factor
+    new_cmap = mcolors.ListedColormap(new_colors)
 
     fig = plt.figure(num=fig_num, figsize=(10, 10))
     h, x_edges, y_edges, _ = plt.hist2d(
-        x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma", norm=norm_factor
+        x, y, bins=bins, range=[[0, 26], [0, 26]], cmap=new_cmap
     )
 
     # Set plot properties
@@ -99,6 +104,8 @@ def plot_floodmap(
     elif show_fig == 0:
         plt.clf()
         plt.close()
+    elif show_fig == 2:
+        pass
     return h, x_edges, y_edges
 
 
@@ -215,16 +222,25 @@ def plot_energy_spectrum_mM(sm_mM_energy, en_min=0, en_max=100):
     # plt.show()
 
 
-def plot_event_impact(impact_matrix: np.ndarray) -> None:
+def plot_event_impact(
+    impact_matrix: np.ndarray, fig_num: int, show_fig: int = 1
+) -> None:
     """
     This function plots the impact of the event on the detector.
 
     Parameters:
         - impact_matrix (np.ndarray): A 2D NumPy array representing the impact of the event on the detector.
     """
+    fig = plt.figure(num=fig_num, figsize=(10, 10))
     plt.imshow(impact_matrix, cmap="binary", interpolation="nearest")
     plt.colorbar(label="Energy")
-    plt.show()
+    if show_fig == 1:
+        plt.show()
+    elif show_fig == 0:
+        plt.clf()
+        plt.close()
+    elif show_fig == 2:
+        pass
 
 
 def plot_xy_projection(
@@ -268,7 +284,9 @@ def plot_xy_projection(
     plt.xlabel(f"{xy_projection} position (mm)")
     plt.ylabel("Summed counts in ROI")
     plt.title("1D Projection of 2D Histogram")
-    if show_fig == 1:
+    if show_fig == 2:
+        pass
+    elif show_fig == 1:
         plt.show()
     elif show_fig == 0:
         plt.clf()
