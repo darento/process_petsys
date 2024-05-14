@@ -203,7 +203,7 @@ def get_timestamp_sorted(det_list: list[list], skew_dict: dict) -> list[list]:
     list: The event sorted by timestamp.
     """
     return sorted(
-        [[hit[0] - skew_dict.get([hit[2]], 0), hit[1], hit[2]] for hit in det_list],
+        [[hit[0] - skew_dict.get(hit[2], 0), hit[1], hit[2]] for hit in det_list],
         key=lambda x: x[0],
     )
 
