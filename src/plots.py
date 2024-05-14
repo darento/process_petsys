@@ -1,6 +1,7 @@
 import math
 from typing import Tuple
 from matplotlib import pyplot as plt
+from matplotlib.colors import LogNorm
 import numpy as np
 
 from src.utils import get_electronics_nums
@@ -59,6 +60,7 @@ def plot_floodmap(
     bins: tuple = (200, 200),
     fig_num: int = 0,
     show_fig: int = 0,
+    norm_hist: bool = False,
 ) -> None:
     """
     This function plots the floodmap of a single channel on a 2D graph.
@@ -77,9 +79,12 @@ def plot_floodmap(
     # Unpack the x and y coordinates
     x, y = zip(*xy_list)
 
+    if norm_hist:
+        norm_factor = LogNorm()
+
     fig = plt.figure(num=fig_num, figsize=(10, 10))
     h, x_edges, y_edges, _ = plt.hist2d(
-        x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma"
+        x, y, bins=bins, range=[[0, 26], [0, 26]], cmap="plasma", norm=norm_factor
     )
 
     # Set plot properties
