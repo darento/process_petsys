@@ -182,6 +182,20 @@ def get_neighbour_channels(
     return neighbour_channels
 
 
+def get_timestamp_sorted(det_list: list[list], skew_dict: dict) -> list[list]:
+    """
+    Returns the event sorted by timestamp.
+
+    Parameters:
+        - det_list : List of hits with [tstp, energy, chid]
+        - skew_dict (dict): A dictionary with the skew values.
+
+    Returns:
+    list: The event sorted by timestamp.
+    """
+    return sorted(det_list, key=lambda x: x[0] - skew_dict[x[2]])
+
+
 def read_skew(skew_file: str):
     """
     This function reads the skew file and returns a dictionary with the skew values.
