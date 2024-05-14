@@ -147,6 +147,7 @@ def get_neighbour_channels(
     local_coord_dict: dict,
     neighbour_ch: int,
     FEM_instance: FEMBase,
+    zero_neighbour_xy: str = "x",
 ) -> list[list]:
     """
     Return the event with the neighbour channels of the highest energy channel.
@@ -167,7 +168,15 @@ def get_neighbour_channels(
         pos_hit = local_coord_dict[hit[2]]
         dx = abs(pos_max_en_ch[0] - pos_hit[0])
         dy = abs(pos_max_en_ch[1] - pos_hit[1])
-        if neighbour_ch == 1:
+        if neighbour_ch == 0:
+            # Look only for the nearest neighbour, up, down, or left and right
+            if zero_neighbour_xy == "x":
+                if abs(dx) <= FEM_instance.x_pitch and (pos_hit[1] == pos_max_en_ch[1]):
+                    neighbour_channels.append(hit)
+            elif zero_neighbour_xy == "y":
+                if abs(dy) <= FEM_instance.y_pitch and (pos_hit[0] == pos_max_en_ch[0]):
+                    neighbour_channels.append(hit)
+        elif neighbour_ch == 1:
             # Look only for the nearest neighbours, up, down, left and right
             if (
                 abs(dx) <= FEM_instance.x_pitch and (pos_hit[1] == pos_max_en_ch[1])
