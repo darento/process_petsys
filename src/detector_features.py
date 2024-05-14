@@ -164,7 +164,6 @@ def calculate_dt(
     det1_list: list[list],
     det2_list: list[list],
     chtype_map: dict,
-    skew_map: dict,
     det1_avg: int = 1,
     det2_avg: int = 1,
 ) -> float:
@@ -192,8 +191,8 @@ def calculate_dt(
         time_ch2 = time_det2[0][2]
         # print(time_ch1, time_ch2)
         # print(time_det1[0][0], time_det2[0][0])
-        t1 = time_det1[0][0] - skew_map.get(time_ch1, 0)
-        t2 = time_det2[0][0] - skew_map.get(time_ch2, 0)
+        t1 = time_det1[0][0]
+        t2 = time_det2[0][0]
         # print(t1, t2)
         return t1 - t2
     else:
@@ -204,12 +203,12 @@ def calculate_dt(
         if det2_avg > len(time_det2):
             det2_avg = len(time_det2)
         # Calculate the weighted average time for each detector
-        time_det1 = sum(
-            [(x[0] - skew_map.get(x[2], 0)) * x[1] for x in time_det1[0:det1_avg]]
-        ) / sum([x[1] for x in time_det1[0:det1_avg]])
-        time_det2 = sum(
-            [(x[0] - skew_map.get(x[2], 0)) * x[1] for x in time_det2[0:det2_avg]]
-        ) / sum([x[1] for x in time_det2[0:det2_avg]])
+        time_det1 = sum([x[0] * x[1] for x in time_det1[0:det1_avg]]) / sum(
+            [x[1] for x in time_det1[0:det1_avg]]
+        )
+        time_det2 = sum([x[0] * x[1] for x in time_det2[0:det2_avg]]) / sum(
+            [x[1] for x in time_det2[0:det2_avg]]
+        )
         return time_det1 - time_det2
 
 
