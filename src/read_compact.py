@@ -25,7 +25,8 @@ def read_detector_evt(
     try:
         data = [struct.unpack(data_format, f.read(data_size)) for _ in range(num_lines)]
     except struct.error:
-        pass
+        print("Error reading data")
+        return []
 
     return [evt_ch for evt_ch in data if evt_ch[1] >= en_filter]
 
