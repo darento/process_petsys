@@ -11,6 +11,26 @@ import numpy as np
 import matplotlib.colors as mcolors
 
 
+def config_plot(size_figure=(5, 5), style="default", font_size=16):
+    """
+    Configures the global style of the plots.
+
+    Parameters:
+        - size_figure (tuple, optional): Size of the figure in inches (width, height).
+        - style (str, optional): Style of matplotlib to use.
+        - font_size (int, optional): Global font size.
+    """
+    plt.style.use(style)
+    plt.rcParams["figure.figsize"] = size_figure
+    plt.rcParams["font.size"] = font_size
+    # plt.rcParams["axes.grid"] = True  # Enables the grid by default
+    plt.rcParams["grid.linestyle"] = "--"  # Grid line style
+    plt.rcParams["grid.color"] = "gray"  # Grid color
+    plt.rcParams["grid.linewidth"] = 1.5  # Grid line width
+    plt.rcParams["axes.edgecolor"] = "black"  # Axes edge color
+    plt.rcParams["axes.linewidth"] = 1.5  # Axes edge width
+
+
 def plot_chan_position(dict_coords: dict) -> None:
     # TODO: Save figure per chipID ? Is it useful?
     """
@@ -280,7 +300,15 @@ def plot_xy_projection(
 
     # Now we can plot the 1D projection
     fig = plt.figure(num=fig_num, figsize=(10, 10))
-    plt.bar(bin_centers, h_projection, width=width, align="center")
+    plt.bar(
+        bin_centers,
+        h_projection,
+        width=width,
+        align="center",
+        color="none",
+        edgecolor="black",
+        linewidth=1,
+    )
     plt.xlabel(f"{xy_projection} position (mm)")
     plt.ylabel("Summed counts in ROI")
     plt.title("1D Projection of 2D Histogram")
