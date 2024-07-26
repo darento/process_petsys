@@ -191,7 +191,7 @@ def get_neighbour_channels(
     return neighbour_channels
 
 
-def apply_skew(det_list: list[list], skew_dict: dict) -> list[list]:
+def apply_skew(det_list: list[list], chtype_map: dict, skew_dict: dict) -> list[list]:
     """
     Applies the skew per channel to the event.
 
@@ -202,7 +202,14 @@ def apply_skew(det_list: list[list], skew_dict: dict) -> list[list]:
     Returns:
     list: The event with the skew applied.
     """
-    return [[hit[0] - skew_dict.get(hit[2], 0), hit[1], hit[2]] for hit in det_list]
+    return [
+        (
+            (hit[0] - skew_dict.get(hit[-1], 0), *hit[1:])
+            if ChannelType.TIME in chtype_map[hit[-1]]
+            else hit
+        )
+        for hit in det_list
+    ]
 
 
 def get_timestamp_sorted(det_list: list[list]) -> list[list]:
