@@ -4,7 +4,6 @@ import numpy as np
 from src.fem_handler import FEMBase
 
 from src.mapping_generator import ChannelType
-from src.utils import get_max_en_channel
 
 
 def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
@@ -116,7 +115,10 @@ def calculate_DOI(
     """
 
     def calculate_DOI_sum_rows_cols(det_list, chtype_map: dict):
-        max_energy = get_max_en_channel(det_list, chtype_map, ChannelType.ENERGY)[1]
+        max_energy = max(
+            (hit[1] for hit in det_list if ChannelType.ENERGY in chtype_map[hit[-1]]),
+            default=0,
+        )
         sum_energy = calculate_total_energy(det_list, chtype_map)
         return sum_energy / max_energy
 
