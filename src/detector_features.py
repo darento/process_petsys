@@ -4,6 +4,7 @@ import numpy as np
 from src.fem_handler import FEMBase
 
 from src.mapping_generator import ChannelType
+from src.utils import get_max_en_channel
 
 
 def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
@@ -94,9 +95,12 @@ def calculate_centroid_sum(
 
 
 def calculate_DOI(
-    det_list: list[list], local_dict: dict, slab_orientation: str
+    det_list: list[list],
+    local_dict: dict,
+    sum_rows_cols: bool,
+    chtype_map: dict,
+    slab_orientation: str = "x",
 ) -> float:
-    # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case and slab orientation.
     """
     Calculate the depth of interaction (DOI) of the event.
 
@@ -104,24 +108,36 @@ def calculate_DOI(
         - det_list: The event data.
         - local_dict: The local coordinates of the channels.
         - slab_orientation: The orientation of the slab. (x or y)
+        - sum_rows_cols: A boolean indicating whether to sum the rows and columns.
+        - chtype_map: A dictionary mapping the channel type to the channel number.
 
     Returns:
     float: The depth of interaction (DOI) of the event.
     """
-    # DOI is calculated as the sum of the energies divided by the maximum energy,
-    # previosy summing the energies in the slab orientation direction.
-    xy_pos = defaultdict(float)
-    if slab_orientation == "x":
-        for ch in det_list:
-            x, _ = local_dict[ch[-1]]
-            xy_pos[x] += ch[1]
-    elif slab_orientation == "y":
-        for ch in det_list:
-            _, y = local_dict[ch[-1]]
-            xy_pos[y] += ch[1]
-    max_energy = max(xy_pos.values())
-    sum_energy = sum(xy_pos.values())
-    return sum_energy / max_energy
+
+    def calculate_DOI_sum_rows_cols(det_list, chtype_map: dict):
+        max_energy = get_max_en_channel(det_list, chtype_map, ChannelType.ENERGY)[1]
+        sum_energy = calculate_total_energy(det_list, chtype_map)
+        return sum_energy / max_energy
+
+    def calculate_DOI_sum_xy(det_list, local_dict, slab_orientation):
+        xy_pos = defaultdict(float)
+        if slab_orientation == "x":
+            for ch in det_list:
+                x, _ = local_dict[ch[-1]]
+                xy_pos[x] += ch[1]
+        elif slab_orientation == "y":
+            for ch in det_list:
+                _, y = local_dict[ch[-1]]
+                xy_pos[y] += ch[1]
+        max_energy = max(xy_pos.values())
+        sum_energy = sum(xy_pos.values())
+        return sum_energy / max_energy
+
+    if sum_rows_cols:
+        return calculate_DOI_sum_rows_cols(det_list, chtype_map)
+    else:
+        return calculate_DOI_sum_xy(det_list, local_dict, slab_orientation)
 
 
 def calculate_impact_hits(
