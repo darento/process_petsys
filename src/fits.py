@@ -61,7 +61,7 @@ def fit_gaussian(
     data: np.ndarray,
     bins: np.ndarray,
     cb: int = 8,
-    min_peak: int = 20,
+    min_peak: int = 50,
     yerr: np.ndarray | None = None,
     pk_finder: str = "max",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

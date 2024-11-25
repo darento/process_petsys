@@ -38,9 +38,9 @@ class SlabSystem:
     def select(self, system_type):
         match system_type:
             case "IMAS":
-                self.set_specs(8, 8, 1, 5, 5 * 24 * 16, 25.6)
+                self.set_specs(8, 8, 1, 5, 5 * 24 * 16, 26.0)
             case "IMAS-1ring":
-                self.set_specs(8, 8, 1, 1, 24 * 16, 25.6)
+                self.set_specs(8, 8, 1, 1, 24 * 16, 26.0)
             case "EBRAIN":
                 self.set_specs(16, 8, 2, 8 * 40, 26.0)
             case "ERC":
