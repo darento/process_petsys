@@ -3,6 +3,43 @@ import pandas as pd
 from src.detector_features import calculate_total_energy
 from src.fem_handler import FEMBase
 from src.mapping_generator import ChannelType
+import ctypes
+from multiprocessing import Value
+
+# Initialize shared memory variables
+EVT_COUNT_T = Value(ctypes.c_int, 0)  # Total number of events
+EVT_COUNT_F = Value(ctypes.c_int, 0)  # Events passing the filter
+
+
+def increment_total():
+    """
+    Increments the total event count.
+
+    This function is used to keep track of the total number of events processed.
+    It safely increments the shared counter.
+    """
+    with EVT_COUNT_T.get_lock():  # Ensure exclusive access to the variable
+        EVT_COUNT_T.value += 1
+
+
+def increment_pf():
+    """
+    Increments the count of events that pass the filter.
+
+    This function is used to keep track of the number of events that pass the filter.
+    It safely increments the shared counter.
+    """
+    with EVT_COUNT_F.get_lock():
+        EVT_COUNT_F.value += 1
+
+
+def reset_globals():
+    """
+    Resets global counters to zero.
+    """
+    with EVT_COUNT_T.get_lock(), EVT_COUNT_F.get_lock():
+        EVT_COUNT_T.value = 0
+        EVT_COUNT_F.value = 0
 
 
 def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
