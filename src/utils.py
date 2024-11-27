@@ -6,9 +6,10 @@ from src.mapping_generator import ChannelType
 import ctypes
 from multiprocessing import Value
 
-# Initialize shared memory variables
-EVT_COUNT_T = Value(ctypes.c_int, 0)  # Total number of events
-EVT_COUNT_F = Value(ctypes.c_int, 0)  # Events passing the filter
+# Total number of events
+EVT_COUNT_T = 0
+# Events passing the filter
+EVT_COUNT_F = 0
 
 
 def increment_total():
@@ -16,10 +17,9 @@ def increment_total():
     Increments the total event count.
 
     This function is used to keep track of the total number of events processed.
-    It safely increments the shared counter.
     """
-    with EVT_COUNT_T.get_lock():  # Ensure exclusive access to the variable
-        EVT_COUNT_T.value += 1
+    global EVT_COUNT_T
+    EVT_COUNT_T += 1
 
 
 def increment_pf():
@@ -27,19 +27,19 @@ def increment_pf():
     Increments the count of events that pass the filter.
 
     This function is used to keep track of the number of events that pass the filter.
-    It safely increments the shared counter.
     """
-    with EVT_COUNT_F.get_lock():
-        EVT_COUNT_F.value += 1
+    global EVT_COUNT_F
+    EVT_COUNT_F += 1
 
 
 def reset_globals():
     """
     Resets global counters to zero.
     """
-    with EVT_COUNT_T.get_lock(), EVT_COUNT_F.get_lock():
-        EVT_COUNT_T.value = 0
-        EVT_COUNT_F.value = 0
+    global EVT_COUNT_F
+    global EVT_COUNT_T
+    EVT_COUNT_F = 0
+    EVT_COUNT_T = 0
 
 
 def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
