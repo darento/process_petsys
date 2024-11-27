@@ -6,40 +6,36 @@ from src.mapping_generator import ChannelType
 import ctypes
 from multiprocessing import Value
 
-# Total number of events
-EVT_COUNT_T = 0
-# Events passing the filter
-EVT_COUNT_F = 0
 
+class EventCounter:
+    def __init__(self):
+        self.evt_count_t = 0
+        self.evt_count_f = 0
 
-def increment_total():
-    """
-    Increments the total event count.
+    def increment_total(self):
+        """
+        Increments the total event count.
+        """
+        self.evt_count_t += 1
 
-    This function is used to keep track of the total number of events processed.
-    """
-    global EVT_COUNT_T
-    EVT_COUNT_T += 1
+    def increment_pf(self):
+        """
+        Increments the count of events that pass the filter.
+        """
+        self.evt_count_f += 1
 
+    def reset(self):
+        """
+        Resets counters to zero.
+        """
+        self.evt_count_t = 0
+        self.evt_count_f = 0
 
-def increment_pf():
-    """
-    Increments the count of events that pass the filter.
-
-    This function is used to keep track of the number of events that pass the filter.
-    """
-    global EVT_COUNT_F
-    EVT_COUNT_F += 1
-
-
-def reset_globals():
-    """
-    Resets global counters to zero.
-    """
-    global EVT_COUNT_F
-    global EVT_COUNT_T
-    EVT_COUNT_F = 0
-    EVT_COUNT_T = 0
+    def get_counts(self):
+        """
+        Returns the current counts.
+        """
+        return self.evt_count_t, self.evt_count_f
 
 
 def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
