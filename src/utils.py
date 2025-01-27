@@ -3,11 +3,19 @@ import pandas as pd
 from src.detector_features import calculate_total_energy
 from src.fem_handler import FEMBase
 from src.mapping_generator import ChannelType
-import ctypes
-from multiprocessing import Value
 
 
 class EventCounter:
+    """
+    Class to count the total number of events and the number of events that pass the filter.
+
+    Methods:
+        - increment_total(): Increments the total event count.
+        - increment_pf(): Increments the count of events that pass the filter.
+        - reset(): Resets counters to zero.
+        - get_counts(): Returns the current counts.
+    """
+
     def __init__(self):
         self.evt_count_t = 0
         self.evt_count_f = 0
@@ -38,7 +46,7 @@ class EventCounter:
         return self.evt_count_t, self.evt_count_f
 
 
-def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
+def get_electronics_nums(channel_id: int) -> list[int, int, int, int]:
     """
     Calculates the electronics numbers: portID, slaveID, chipID, channelID based on the given channel id.
 
@@ -46,7 +54,7 @@ def get_electronics_nums(channel_id: int) -> tuple[int, int, int, int]:
         - channel_id (int): The channel id to calculate the electronics numbers from.
 
     Returns:
-    tuple[int, int, int, int]: A tuple containing the portID, slaveID, chipID, and channelID.
+    list[int, int, int, int]: A tuple containing the portID, slaveID, chipID, and channelID.
     """
     portID = channel_id // 131072
     slaveID = (channel_id % 131072) // 4096
@@ -78,6 +86,7 @@ def get_maxEnergy_sm_mM(det_list: list[list], sm_mM_map: dict, chtype_map: dict)
     Parameters:
         - det_event (list): The event data.
         - sm_mM_map (dict): The mapping of the channels to the mod and mM.
+        - chtype_map (dict): A mapping from detector names to channel types.
 
     Returns:
         - list[list]: The event data for the maximum energy miniModule and sm.
@@ -190,6 +199,8 @@ def get_neighbour_channels(
         - chtype_map (dict): A mapping from channel names to channel types.
         - local_coord_dict (dict): A dictionary mapping detector channels to local coordinates.
         - neighbour_ch (int): The number of neighbour channels to return.
+        - FEM_instance (FEMBase): The FEM instance.
+        - zero_neighbour_xy (str): The axis to look for the nearest neighbour. Can be either "x" or "y".
 
     Returns:
     list: The event with the neighbour channels of the highest energy channel.
@@ -230,6 +241,7 @@ def apply_skew(det_list: list[list], chtype_map: dict, skew_dict: dict) -> list[
 
     Parameters:
         - det_list : List of hits with [tstp, energy, chid]
+        - chtype_map (dict): A mapping from channel names to channel types.
         - skew_dict (dict): A dictionary with the skew values.
 
     Returns:
@@ -261,7 +273,14 @@ def get_timestamp_sorted(det_list: list[list]) -> list[list]:
 def read_skew(skew_file: str):
     """
     This function reads the skew file and returns a dictionary with the skew values.
+
+    Parameters:
+        - skew_file (str): The path to the skew file.
+
+    Returns:
+    dict: A dictionary with the skew values.
     """
+
     skew_dict = {}
     with open(skew_file, "r") as f:
         for line in f:
@@ -270,7 +289,55 @@ def read_skew(skew_file: str):
     return skew_dict
 
 
+def read_skew_LORs(skew_file: str):
+    """
+    This function reads the skew file and returns a dataframe with the skew values.
+
+    Parameters:
+        - skew_file (str): The path to the skew file per LOR.
+
+    Returns:
+    dict: A dictionary with the skew values.
+    """
+    print("Reading skew file")
+    skew_dict = pd.read_csv(skew_file, sep=",").set_index("Pair")["Skew"].to_dict()
+    print("Skew file read")
+    return skew_dict
+
+
+def read_pair_map(pair_path: str) -> dict:
+    """
+    Reads the pair map file and returns a dictionary with the pair mapping.
+
+    Parameters:
+        - pair_path (str): The path to the pair map file.
+
+    Returns:
+    dict: A dictionary with the pair mapping.
+    """
+    pair_cols = ["p", "s0", "s1"]
+    pair_map = (
+        pd.read_csv(pair_path, sep="\t", names=pair_cols)
+        .set_index(pair_cols[1:])
+        .to_dict()["p"]
+    )
+    return pair_map
+
+
 class KevConverter:
+    """
+    Class to convert energy from PETsys a.u. to keV, using either a mu factor or a polynomial fit.
+
+    Parameters:
+        - kev_file (str): The file containing the conversion factors.
+        - file_type (str): The type of file containing the conversion factors. Can be either "mu" or "poly".
+
+    Methods:
+        - convert_mu(id: int, energy: float) -> float: Converts the energy using the mu factor.
+        - convert_poly(id: int, energy: float) -> float: Converts the energy using the polynomial
+        fit.
+    """
+
     def __init__(self, kev_file: str, file_type: str):
         if file_type == "mu":
             self.kev_factors = (

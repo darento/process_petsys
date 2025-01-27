@@ -1,4 +1,3 @@
-from typing import Tuple
 from src.fem_handler import FEMBase, get_FEM_instance
 from src.yaml_handler import YAMLMapReader, get_optional_group_keys
 
@@ -51,11 +50,24 @@ class BrainGeom:
 
 
 def _channel_sm_coordinate(
-    ch_per_mm: int, mm_rowcol: int, ch_indx: int, chtype: ChannelType, geom: TbpetGeom
+    ch_per_mm: int,
+    mm_rowcol: int,
+    ch_indx: int,
+    chtype: ChannelType,
+    geom: TbpetGeom | BrainGeom,
 ) -> tuple[float, float]:
     """
-    mm_rowcol : Either row or col depending on type: TIME row, ENERGY col.
-    ch_indx   : index along row/column
+    Calculate the local x and y coordinates for a given channel, along with the slab index.
+
+    Parameters:
+    - ch_per_mm (int): The number of channels per mm.
+    - mm_rowcol (int): The row or column of the mm.
+    - ch_indx (int): The index of the channel.
+    - chtype (ChannelType): The type of the channel.
+    - geom (TbpetGeom): The geometry of the detector.
+
+    Returns:
+    tuple[float, float, int]: The local x and y coordinates and the slab index.
     """
     mm_shift = geom.mm_spacing * ((31 - ch_indx) // 8)
     ch_start = (geom.slab_width + geom.mm_spacing) / 2
@@ -73,7 +85,7 @@ def _get_local_mapping(
     channels_1: list,
     channels_2: list,
     FEM_instance: FEMBase,
-) -> Tuple[dict, dict, dict]:
+) -> list[dict, dict, dict]:
     # TODO: Need to generalize this function to handle slabs and other types of detectors.
     """
     Generates the basic mapping from the mapping file.
@@ -85,7 +97,7 @@ def _get_local_mapping(
     - FEM_instance (FEMBase): FEM instance for coordinate calculations.
 
     Returns:
-    Tuple[dict, dict, dict]: The local map, the sm_mM_map, and the chtype_map.
+    list[dict, dict, dict]: The local map, the sm_mM_map, and the chtype_map.
     """
     local_map = {}
     sm_mM_map = {}
@@ -142,7 +154,7 @@ def _get_local_mapping(
     return local_map, sm_mM_map, chtype_map
 
 
-def map_factory(mapping_file: str) -> Tuple[dict, dict, dict, FEMBase]:
+def map_factory(mapping_file: str) -> list[dict, dict, dict, FEMBase]:
     """
     This function reads a YAML mapping file and returns a local map and the keys of the mod_feb_map.
 
@@ -150,7 +162,7 @@ def map_factory(mapping_file: str) -> Tuple[dict, dict, dict, FEMBase]:
         - mapping_file (str): The path to the YAML mapping file.
 
     Returns:
-    Tuple[dict, dict, dict, FEMBase]: The local map, the sm_mM_map, the chtype_map, and the FEM instance.
+    list[dict, dict, dict, FEMBase]: The local map, the sm_mM_map, the chtype_map, and the FEM instance.
     """
     yaml_schema = {
         "mandatory": {

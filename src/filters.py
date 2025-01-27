@@ -3,7 +3,8 @@ from typing import Tuple
 
 import numpy as np
 
-from src.utils import get_num_eng_channels
+from src.mapping_generator import ChannelType
+from src.utils import get_max_en_channel, get_num_eng_channels
 
 
 def filter_total_energy(
@@ -161,3 +162,27 @@ def filter_ROI(
         & (y_pos > y_ROI[0])
         & (y_pos < y_ROI[1])
     )
+
+
+def filter_coincidence(
+    det1_list: list[list],
+    det2_list: list[list],
+    chtype_map: dict,
+    time_window: float,
+) -> list[bool, float, float]:
+    """
+    Filters events based on the time difference between two detectors.
+
+    Parameters:
+        - det1_list (list[list]): The first list of detections.
+        - det2_list (list[list]): The second list of detections.
+        - chtype_map (dict): A dictionary mapping the channel type to the channel number.
+        - time_window (float): The time window for the coincidence.
+
+    Returns:
+    list[bool, float, float]: A list containing a boolean value indicating whether the event is within the time window, t1 and t2.
+    """
+    tch_det1 = get_max_en_channel(det1_list, chtype_map, ChannelType.TIME)
+    tch_det2 = get_max_en_channel(det2_list, chtype_map, ChannelType.TIME)
+    time_diff = abs(tch_det1[0] - tch_det2[0])
+    return time_diff < time_window, tch_det1, tch_det2

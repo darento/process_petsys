@@ -22,80 +22,69 @@ def calculate_total_energy(det_list: list[list], chtype_map: dict) -> float:
 
 
 def calculate_centroid(
-    det_list: list[list], local_dict: dict, x_rtp: int, y_rtp: int
-) -> tuple:
-    # TODO: Generalize for sum_rows_cols case. Implement 2 functions for each case.
+    det_list: list[list],
+    local_map: dict,
+    x_rtp: int,
+    y_rtp: int,
+    chtype_map: dict = None,
+) -> list[float, float]:
     """
-    Calculate the centroid of the event.
-
-    Parameters:
-        - det_list: The event data.
-        - local_dict: The local coordinates of the channels.
-        - x_rtp: The power of the x coordinate.
-        - y_rtp: The power of the y coordinate.
-
-    Returns:
-    tuple: The centroid of the event.
-    """
-    powers = [x_rtp, y_rtp]
-    offsets = [0.00001, 0.00001]
-
-    sum_xy = [0.0, 0.0]
-    weights_xy = [0.0, 0.0]
-
-    # Calculate the centroid of the event based on the local coordinates of the channels
-    # and the energy deposited in each channel
-    for hit in det_list:
-        ch = hit[-1]
-        energy = hit[1]
-        x, y = local_dict[ch]
-        weight_x = (energy + offsets[0]) ** powers[0]
-        weight_y = (energy + offsets[1]) ** powers[1]
-        sum_xy[0] += weight_x * x
-        sum_xy[1] += weight_y * y
-        weights_xy[0] += weight_x
-        weights_xy[1] += weight_y
-
-    return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
-
-
-def calculate_centroid_sum(
-    det_list: list[list], local_map: dict, chtype_map: dict, x_rtp: int, y_rtp: int
-) -> tuple:
-    """
-    Calculate the centroid of the event.
+    Calculate the centroid of the event. If chtype_map is provided, the centroid is calculated
+    taking into account the readout reduction channel type.
 
     Parameters:
         - det_list: The event data.
         - local_map: The local coordinates of the channels.
-        - chtype_map: A dictionary mapping the channel type to the channel number.
         - x_rtp: The power of the x coordinate.
         - y_rtp: The power of the y coordinate.
+        - chtype_map: (Optional) A dictionary mapping the channel type to the channel number. Use
+        this parameter if the readout reduction is in place.
 
     Returns:
-    tuple: The centroid of the event.
+    list[float, float]: The centroid of the event.
     """
     powers = [x_rtp, y_rtp]
     offsets = [0.00001, 0.00001]
 
-    sum_xy = [0.0, 0.0]
-    weights_xy = [0.0, 0.0]
+    def calculate_with_sum_rows_cols():
+        sum_xy = [0.0, 0.0]
+        weights_xy = [0.0, 0.0]
+        for hit in det_list:
+            ch = hit[-1]
+            energy = hit[1]
+            en_t = chtype_map[ch][0].value - 1
+            pos = local_map[ch][en_t]
+            weight = (energy + offsets[en_t]) ** powers[en_t]
+            sum_xy[en_t] += weight * pos
+            weights_xy[en_t] += weight
+        return sum_xy, weights_xy
 
-    # Calculate the centroid of the event based on the local coordinates of the channels
-    # and the energy deposited in each channel
-    for hit in det_list:
-        ch = hit[-1]
-        en_t = chtype_map[ch][0].value - 1
-        pos = local_map[ch][en_t]
-        weight = (hit[1] + offsets[en_t]) ** powers[en_t]
-        sum_xy[en_t] += weight * pos
-        weights_xy[en_t] += weight
+    def calculate_without_sum_rows_cols():
+        sum_xy = [0.0, 0.0]
+        weights_xy = [0.0, 0.0]
+        for hit in det_list:
+            ch = hit[-1]
+            energy = hit[1]
+            x, y = local_map[ch]
+            weight_x = (energy + offsets[0]) ** powers[0]
+            weight_y = (energy + offsets[1]) ** powers[1]
+            sum_xy[0] += weight_x * x
+            sum_xy[1] += weight_y * y
+            weights_xy[0] += weight_x
+            weights_xy[1] += weight_y
+        return sum_xy, weights_xy
+
+    if chtype_map:
+        sum_xy, weights_xy = calculate_with_sum_rows_cols()
+    else:
+        sum_xy, weights_xy = calculate_without_sum_rows_cols()
+
     return sum_xy[0] / weights_xy[0], sum_xy[1] / weights_xy[1]
 
 
 def calculate_DOI(
     det_list: list[list],
-    local_dict: dict,
+    local_map: dict,
     sum_rows_cols: bool,
     chtype_map: dict,
     slab_orientation: str = "x",
@@ -105,7 +94,7 @@ def calculate_DOI(
 
     Parameters:
         - det_list: The event data.
-        - local_dict: The local coordinates of the channels.
+        - local_map: The local coordinates of the channels.
         - slab_orientation: The orientation of the slab. (x or y)
         - sum_rows_cols: A boolean indicating whether to sum the rows and columns.
         - chtype_map: A dictionary mapping the channel type to the channel number.
@@ -122,15 +111,15 @@ def calculate_DOI(
         sum_energy = calculate_total_energy(det_list, chtype_map)
         return sum_energy / max_energy
 
-    def calculate_DOI_sum_xy(det_list, local_dict, slab_orientation):
+    def calculate_DOI_sum_xy(det_list, local_map, slab_orientation):
         xy_pos = defaultdict(float)
         if slab_orientation == "x":
             for ch in det_list:
-                x, _ = local_dict[ch[-1]]
+                x, _ = local_map[ch[-1]]
                 xy_pos[x] += ch[1]
         elif slab_orientation == "y":
             for ch in det_list:
-                _, y = local_dict[ch[-1]]
+                _, y = local_map[ch[-1]]
                 xy_pos[y] += ch[1]
         max_energy = max(xy_pos.values())
         sum_energy = sum(xy_pos.values())
@@ -139,12 +128,12 @@ def calculate_DOI(
     if sum_rows_cols:
         return calculate_DOI_sum_rows_cols(det_list, chtype_map)
     else:
-        return calculate_DOI_sum_xy(det_list, local_dict, slab_orientation)
+        return calculate_DOI_sum_xy(det_list, local_map, slab_orientation)
 
 
 def calculate_impact_hits(
     det_list: list[list], local_coord_dict: dict, FEM_instance: FEMBase
-) -> tuple:
+) -> np.ndarray:
     """
     Calculate the impact hits of the event.
 
@@ -154,7 +143,7 @@ def calculate_impact_hits(
         - FEM_instance (FEM): The FEM instance.
 
     Returns:
-    tuple: The impact hits of the event.
+    np.ndarray: The impact hits matrix of the event.
     """
     num_ASIC_ch = FEM_instance.channels / FEM_instance.num_ASICS
     num_boxes_side = int(math.sqrt(num_ASIC_ch))
@@ -237,7 +226,7 @@ def calculate_dt_singlehit(
     skew_map: dict,
     det1_Ntstp: int = 1,
     det2_Ntstp: int = 1,
-) -> float:
+) -> list[float, float, float]:
     """
     Calculate the time difference between two detectors using one timestamp each.
     det1_Ntstp and det2_Ntstp give the timestamp number to consider for each detector
@@ -253,12 +242,10 @@ def calculate_dt_singlehit(
         - det2_Ntstp (float): The tstp number to consider for detector 2.
 
     Returns:
-    float: The time difference between the det1_Ntstp timestamp of detector 1 and det2_Ntstp timestamp of detector 2,
-    and the energy collected by the det1_Ntstp and the det2_Ntstp channels.
+    list[float, float, float]: The time difference between the two detectors, the energy of
+    the channel in detector 1 and the energy of the channel in detector 2.
     """
     # Get the time channels for each detector
-    #
-
     event_det1 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det1_list))
     event_det2 = list(filter(lambda x: ChannelType.TIME in chtype_map[x[2]], det2_list))
 
@@ -266,7 +253,6 @@ def calculate_dt_singlehit(
     det2_tstp_idx = det2_Ntstp - 1
 
     # Check if the timestamp number exist or it's larger than the number of channel of the event
-
     if det1_tstp_idx >= len(event_det1):
         det1_tstp_idx = len(event_det1) - 1
     if det2_tstp_idx >= len(event_det2):

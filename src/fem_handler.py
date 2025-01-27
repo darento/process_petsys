@@ -86,6 +86,7 @@ class FEM256(FEMBase):
         - y_pitch (float): The pitch of the y-axis.
         - mM_channels (int): The number of mM channels.
         - sum_rows_cols (bool): A boolean indicating whether to sum the rows and columns.
+
     """
 
     def __init__(

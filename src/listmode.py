@@ -63,6 +63,21 @@ class CoincidenceV3(Structure):
     ]
 
 
+class CoincidenceV4(Structure):
+    _fields_ = [
+        ("time", c_float),
+        ("energy1", c_ushort),
+        ("energy2", c_ushort),
+        ("amount", c_float),
+        ("xPosition1", c_byte),
+        ("yPosition1", c_byte),
+        ("xPosition2", c_byte),
+        ("yPosition2", c_byte),
+        ("pair", c_ushort),
+        ("dt", c_short),
+    ]
+
+
 class CoincidenceV5(Structure):
     _fields_ = [
         ("time", c_float),
@@ -78,14 +93,3 @@ class CoincidenceV5(Structure):
         ("pair", c_ushort),
         ("dt", c_short),
     ]
-
-
-def write_listmode(file_buffer):
-    """
-    Output linstmode binary with coincidence information
-    """
-
-    def write_coinc(*args):
-        pass
-
-    return write_coinc

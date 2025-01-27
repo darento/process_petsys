@@ -154,7 +154,7 @@ def curve_fit_fn(
 
 def mean_around_max(
     data: np.ndarray, bins: np.ndarray, cb: int, yerr: np.ndarray = None
-) -> tuple:
+) -> list[float | None]:
     """
     This function calculates the mean around the maximum value of the data.
 
@@ -165,7 +165,7 @@ def mean_around_max(
         - yerr (np.ndarray, optional): A numpy array of uncertainties in the data.
 
     Returns:
-    tuple: A tuple of four elements:
+    list[float | None]: A list of five elements:
         - None: The function seems to be incomplete, so it's unclear what the first three elements of the tuple should be.
         - yerr: A numpy array of uncertainties in the data around the maximum value.
     """
