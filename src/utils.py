@@ -1,3 +1,4 @@
+import random
 from typing import Callable
 import pandas as pd
 from src.detector_features import calculate_total_energy
@@ -164,7 +165,12 @@ def get_max_en_channel(
         return None
 
 
-def get_max_num_ch(det_list: list[list], chtype_map: dict, max_ch: int) -> list[list]:
+def get_max_num_ch(
+    det_list: list[list],
+    chtype_map: dict,
+    max_ch: int,
+    chtype: ChannelType = ChannelType.ENERGY,
+) -> list[list]:
     """
     Returns the event up to the maximum number of channel specified.
 
@@ -181,6 +187,55 @@ def get_max_num_ch(det_list: list[list], chtype_map: dict, max_ch: int) -> list[
         key=lambda x: x[1],
         reverse=True,
     )[:max_ch]
+
+
+def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) -> int:
+    """
+    Returns the slab with highest energy in the event for the cornell (16 slabs per
+    minimodule) detector.
+
+    Parameters:
+        - det_list : List of hits with [tstp, energy, chid]
+        - chtype_map (dict): A mapping from channel names to channel types.
+        - local_map (dict): A mapping from detector names to local coordinates.
+
+    Returns:
+    int: The slab with the highest energy in the event. (0-15)
+    """
+    threshold = 0.8
+    cornell_slabs = [(i, i + 1) for i in range(0, 16, 2)]
+    edges = [0, 7]
+    time_chs = get_max_num_ch(det_list, chtype_map, 3, ChannelType.TIME)
+    max_time_ch = local_map[time_chs[0][2]][2]
+    if len(time_chs) == 1:
+        random_num = random.randint(0, 1)
+        if random_num == 0:
+            slab = cornell_slabs[max_time_ch][0]
+        else:
+            slab = cornell_slabs[max_time_ch][1]
+        return slab
+    second_max_time_ch = local_map[time_chs[1][2]][2]
+    diff = max_time_ch - second_max_time_ch
+    if abs(diff) > 1:
+        return None
+    if max_time_ch in edges:
+        energy_ratio = time_chs[1][1] / time_chs[0][1]
+        if energy_ratio > threshold:
+            if diff == 1:
+                slab = cornell_slabs[max_time_ch][1]
+            else:
+                slab = cornell_slabs[max_time_ch][0]
+        else:
+            if diff == 1:
+                slab = cornell_slabs[max_time_ch][0]
+            else:
+                slab = cornell_slabs[max_time_ch][1]
+    else:
+        if diff == 1:
+            slab = cornell_slabs[max_time_ch][1]
+        else:
+            slab = cornell_slabs[max_time_ch][0]
+    return slab
 
 
 def get_neighbour_channels(
