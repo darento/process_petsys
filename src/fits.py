@@ -36,6 +36,31 @@ def gaussian(
         return np.inf
     return amp * np.exp(-0.5 * (x - mu) ** 2 / sigma**2) / (np.sqrt(2 * np.pi) * sigma)
 
+def double_gaussian(
+    x: float | np.ndarray, amp1: float, mu1: float, sigma1: float, amp2: float, mu2: float, sigma2: float
+) -> float | np.ndarray:
+    """
+    This function calculates the double Gaussian distribution.
+
+    Parameters:
+        - x (float | np.ndarray): The input array or a single float number.
+        - amp1 (float): The amplitude of the first Gaussian.
+        - mu1 (float): The mean of the first Gaussian.
+        - sigma1 (float): The standard deviation of the first Gaussian.
+        - amp2 (float): The amplitude of the second Gaussian.
+        - mu2 (float): The mean of the second Gaussian.
+        - sigma2 (float): The standard deviation of the second Gaussian.
+
+    Returns:
+    float | np.ndarray: The calculated double Gaussian distribution.
+    """
+    if sigma1 <= 0.0 or sigma2 <= 0.0:
+        return np.inf
+    return amp1 * np.exp(-0.5 * (x - mu1) ** 2 / sigma1**2) / (
+        np.sqrt(2 * np.pi) * sigma1
+    ) + amp2 * np.exp(-0.5 * (x - mu2) ** 2 / sigma2**2) / (
+        np.sqrt(2 * np.pi) * sigma2
+    )
 
 def lorentzian(
     x: float | np.ndarray, amp: float, x0: float, gamma: float
@@ -64,6 +89,7 @@ def fit_gaussian(
     min_peak: int = 50,
     yerr: np.ndarray | None = None,
     pk_finder: str = "max",
+    gaussian_str: str = "gaussian", # double_gaussian
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     This function fits a Gaussian to the data.
@@ -75,6 +101,7 @@ def fit_gaussian(
         - min_peak (int, optional): The minimum height of the peaks.
         - yerr (np.ndarray | None, optional): A numpy array of uncertainties in the data.
         - pk_finder (str, optional): The method to find the peaks in the data.
+        - gaussian_str (str, optional): The type of Gaussian to fit to the data. It can be either "gaussian" or "double_gaussian".
 
     Returns:
     tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]: A tuple of five numpy arrays:
@@ -125,9 +152,16 @@ def fit_gaussian(
         sig0 *= wsum / (wsum - 1)
     sig0 = np.sqrt(sig0)
 
-    pars, pcov = curve_fit(gaussian, x, y, sigma=err, p0=[wsum, mu0, sig0])
-    chi_ndf = np.square((y - gaussian(x, *pars)) / err).sum() / (y.shape[0] - 3)
-    return bin_centres, gaussian(bin_centres, *pars), pars, pcov, chi_ndf
+    if gaussian_str == "gaussian":
+        gaussian_fn = gaussian
+        p0=[wsum, mu0, sig0]
+    elif gaussian_str == "double_gaussian":
+        gaussian_fn = double_gaussian
+        p0=[wsum, mu0, sig0, wsum, mu0, sig0]
+
+    pars, pcov = curve_fit(gaussian_fn, x, y, sigma=err, p0=p0)
+    chi_ndf = np.square((y - gaussian_fn(x, *pars)) / err).sum() / (y.shape[0] - 3)
+    return bin_centres, gaussian_fn(bin_centres, *pars), pars, pcov, chi_ndf
 
 
 def curve_fit_fn(

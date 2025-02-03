@@ -202,17 +202,14 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
     Returns:
     int: The slab with the highest energy in the event. (0-15)
     """
-    threshold = 0.8
+    threshold = 0.2
     cornell_slabs = [(i, i + 1) for i in range(0, 16, 2)]
     edges = [0, 7]
     time_chs = get_max_num_ch(det_list, chtype_map, 2, ChannelType.TIME)
     max_time_ch = local_map[time_chs[0][2]][2]
     if len(time_chs) == 1:
-        random_num = random.randint(0, 1)
-        if random_num == 0:
-            slab = cornell_slabs[max_time_ch][0]
-        else:
-            slab = cornell_slabs[max_time_ch][1]
+        random_num = random.randint(0, 1)        
+        slab = cornell_slabs[max_time_ch][random_num]        
         return slab, 1
     second_max_time_ch = local_map[time_chs[1][2]][2]
     diff = max_time_ch - second_max_time_ch
