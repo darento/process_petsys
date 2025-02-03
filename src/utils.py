@@ -183,7 +183,7 @@ def get_max_num_ch(
     list: The event up to the maximum number of channels specified.
     """
     return sorted(
-        filter(lambda x: ChannelType.ENERGY in chtype_map[x[2]], det_list),
+        filter(lambda x: chtype in chtype_map[x[2]], det_list),
         key=lambda x: x[1],
         reverse=True,
     )[:max_ch]
@@ -205,7 +205,7 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
     threshold = 0.8
     cornell_slabs = [(i, i + 1) for i in range(0, 16, 2)]
     edges = [0, 7]
-    time_chs = get_max_num_ch(det_list, chtype_map, 3, ChannelType.TIME)
+    time_chs = get_max_num_ch(det_list, chtype_map, 2, ChannelType.TIME)
     max_time_ch = local_map[time_chs[0][2]][2]
     if len(time_chs) == 1:
         random_num = random.randint(0, 1)
@@ -213,11 +213,11 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
             slab = cornell_slabs[max_time_ch][0]
         else:
             slab = cornell_slabs[max_time_ch][1]
-        return slab
+        return slab, 1
     second_max_time_ch = local_map[time_chs[1][2]][2]
     diff = max_time_ch - second_max_time_ch
     if abs(diff) > 1:
-        return None
+        return None, 2
     if max_time_ch in edges:
         energy_ratio = time_chs[1][1] / time_chs[0][1]
         if energy_ratio > threshold:
@@ -235,7 +235,7 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
             slab = cornell_slabs[max_time_ch][1]
         else:
             slab = cornell_slabs[max_time_ch][0]
-    return slab
+    return slab, 3
 
 
 def get_neighbour_channels(
