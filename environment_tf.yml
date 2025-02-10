@@ -1,24 +1,11 @@
 name: tf_env
 channels:
-  - defaults
   - conda-forge
+  - defaults  
 dependencies:
-  - bzip2=1.0.8
-  - ca-certificates=2023.12.12
-  - expat=2.5.0
-  - libffi=3.4.4
-  - openssl=3.0.12
-  - pip=23.3.1
-  - python=3.12.1
-  - setuptools=68.2.2
-  - sqlite=3.41.2
-  - tk=8.6.12
-  - tzdata=2023d
-  - wheel=0.41.2
-  - xz=5.4.5
-  - zlib=1.2.13
+  - python=3.10.14
   - pip:
-      - numpy==1.26.3
+      - numpy==1.24.3
       - docopt==0.6.2
       - pyyaml==6.0.1
       - matplotlib==3.8.2
@@ -29,4 +16,5 @@ dependencies:
       - tensorflow==2.13.0
       - openpyxl==3.1.5
       - tqdm==4.66.4
-      - coloarama
+      - colorama
+      - natsort 
