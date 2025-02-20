@@ -1,4 +1,4 @@
-name: process_PETsys
+name: process_petsys
 channels:
   - conda-forge
   - defaults  
