@@ -178,6 +178,7 @@ def get_max_num_ch(
         - det_list : List of hits with [tstp, energy, chid]
         - chtype_map (dict): A mapping from channel names to channel types.
         - max_ch (int): The maximum number of channels to return.
+        - chtype (ChannelType, optional): The type of channel to be compared. Defaults to ChannelType.ENERGY.
 
     Returns:
     list: The event up to the maximum number of channels specified.
@@ -201,6 +202,7 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
 
     Returns:
     int: The slab with the highest energy in the event. (0-15)
+    int: The flag indicating the type of slab. (0-3)
     """
     cornell_slabs = [(i, i + 1) for i in range(0, 16, 2)]
     edges = [0, 7]
