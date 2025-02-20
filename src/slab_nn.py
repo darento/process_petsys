@@ -5,9 +5,17 @@ import numpy as np
 from typing import Callable
 
 import keras
+import tensorflow as tf
 
 # Suppress TensorFlow logging (1: INFO, 2: WARNING, and 3: ERROR)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+# List all physical GPUs
+physical_gpus = tf.config.list_physical_devices("GPU")
+
+# For example, select only the first GPU
+if physical_gpus:
+    tf.config.set_visible_devices(physical_gpus[0], "GPU")
 
 
 def read_category_file(filename: str) -> dict:
