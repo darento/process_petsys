@@ -212,20 +212,20 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
         if max_time_ch == edges[0]:
             slab = cornell_slabs[max_time_ch][len(time_chs) - 1]
         else:
-            slab = cornell_slabs[max_time_ch][1-(len(time_chs) - 1)]
+            slab = cornell_slabs[max_time_ch][1 - (len(time_chs) - 1)]
         return slab, 0
     if len(time_chs) == 1:
-        random_num = random.randint(0, 1)        
-        slab = cornell_slabs[max_time_ch][random_num]        
+        random_num = random.randint(0, 1)
+        slab = cornell_slabs[max_time_ch][random_num]
         return slab, 1
     second_max_time_ch = local_map[time_chs[1][2]][2]
     diff = max_time_ch - second_max_time_ch
     if abs(diff) > 1:
-        return None, 2            
+        return None, 2
     if diff == 1:
-        slab = cornell_slabs[max_time_ch][1]
-    else:
         slab = cornell_slabs[max_time_ch][0]
+    else:
+        slab = cornell_slabs[max_time_ch][1]
     return slab, 3
 
 
