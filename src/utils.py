@@ -217,27 +217,21 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
             ad_factor = half_slab_width if len(time_chs) == 2 else -half_slab_width
             x_pos = local_map[max_time_ch][0] + ad_factor
         else:
-            slab = cornell_slabs[max_time_ch_pos][1 - (len(time_chs) - 1)]
-            ad_factor = -half_slab_width if len(time_chs) == 2 else half_slab_width
-            x_pos = local_map[max_time_ch][0] + ad_factor
-        return slab, 0, x_pos
+            slab = cornell_slabs[max_time_ch][1-(len(time_chs) - 1)]
+        return slab, 0
     if len(time_chs) == 1:
-        random_num = random.randint(0, 1)
-        slab = cornell_slabs[max_time_ch_pos][random_num]
-        ad_factor = -half_slab_width if random_num == 0 else half_slab_width
-        x_pos = local_map[max_time_ch][0] + ad_factor
-        return slab, 1, x_pos
+        random_num = random.randint(0, 1)        
+        slab = cornell_slabs[max_time_ch][random_num]        
+        return slab, 1
     second_max_time_ch = local_map[time_chs[1][2]][2]
     diff = max_time_ch_pos - second_max_time_ch
     if abs(diff) > 1:
-        return None, 2, None
+        return None, 2            
     if diff == 1:
-        slab = cornell_slabs[max_time_ch_pos][1]
-        x_pos = local_map[max_time_ch][0] + half_slab_width
+        slab = cornell_slabs[max_time_ch][1]
     else:
-        slab = cornell_slabs[max_time_ch_pos][0]
-        x_pos = local_map[max_time_ch][0] - half_slab_width
-    return slab, 3, x_pos
+        slab = cornell_slabs[max_time_ch][0]
+    return slab, 3
 
 
 def get_neighbour_channels(

@@ -1,4 +1,4 @@
-# Event Petsys
+# PROCESS_PETSYS
 
 This project provides a Python module to read and process compact data from detectors. It includes filtering and mapping capabilities, and can handle both grouped and ungrouped events.
 
@@ -13,20 +13,20 @@ Before you begin, ensure you have met the following requirements:
 First, clone the repository to your local machine:
 
 ```bash
-git clone https://github.com/darento/event_petsys.git
+git clone https://github.com/darento/process_petsys.git
 ```
 Then, navigate to the project directory and install the required dependencies:
 ```bash
-cd event_petsys/
-conda env create -f environment.yml
+cd process_petsys/
+conda env create -f process_petsys.yml
 ```
 or, if updating the existing environment:
 ```bash
-conda env update --name myenv --file environment.yml
+conda env update --name myenv --file process_petsys.yml
 ```
 After creating or updating the environment, you can activate it using:
 ```bash
-conda activate event_petsys
+conda activate process_petsys
 ```
 
 ## Configuration
