@@ -1,6 +1,7 @@
 import random
 from typing import Callable
 import pandas as pd
+import ast
 from src.detector_features import calculate_total_energy
 from src.fem_handler import FEMBase
 from src.mapping_generator import ChannelType
@@ -408,6 +409,16 @@ class KevConverter:
                 .to_dict("index")
             )
             self.convert = self.convert_poly
+        elif file_type == "cornell":
+            string_map = (
+                pd.read_csv(kev_file, sep="\t")
+                .set_index("ID(t_ch, slab)")["mu"]
+                .to_dict()
+            )
+            self.kev_factors = {
+                ast.literal_eval(key): value for key, value in string_map.items()
+            }
+            self.convert = self.convert_mu
         else:
             raise ValueError(f"Unknown file type: {file_type}")
 
