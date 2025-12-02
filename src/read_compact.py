@@ -37,15 +37,16 @@ def read_binary_file(
     """
     Generates events from a binary file.
 
-    Parameters:
-        - file_path (str): The path to the binary file to read.
-        - en_filter (float, optional): The energy filter threshold. Defaults to 0.
-        - group_events (bool, optional): Whether to group events. Defaults to True.
+    Args:
+        file_path: The path to the binary file to read
+        en_filter: The energy filter threshold. Defaults to 0
+        group_events: Whether to group events. Defaults to False
 
-    Returns:
-    generator: A generator that yields tuples containing the data for each event.
-        - det1: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det1
-        - det2: list[list] -> [[tstp_n, energy_n, chid_n]] for n in number of hits in det2 (if group_events is False)
+    Yields:
+        Tuple of (det1, det2) where:
+            - det1: list of [[timestamp, energy, channel_id]] for detector 1
+            - det2: list of [[timestamp, energy, channel_id]] for detector 2
+                   (empty list if group_events is True)
     """
     # Define the struct formats and sizes
     header_format = "B" if group_events else "2B"  # Format for the header
