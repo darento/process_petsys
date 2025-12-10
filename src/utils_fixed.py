@@ -165,9 +165,10 @@ def create_dec_lookup_arrays(
 
     Returns:
         Tuple of (y_min_arr, y_max_arr) 2D arrays indexed by [channel_id, slab_id]
+        Missing entries are marked as NaN.
     """
-    y_min_arr = np.zeros((max_ch, max_slab), dtype=np.float32)
-    y_max_arr = np.zeros((max_ch, max_slab), dtype=np.float32)
+    y_min_arr = np.full((max_ch, max_slab), np.nan, dtype=np.float32)
+    y_max_arr = np.full((max_ch, max_slab), np.nan, dtype=np.float32)
 
     for (time_ch, slab), (y_min, y_max) in dec_map.items():
         if time_ch < max_ch and slab < max_slab:
