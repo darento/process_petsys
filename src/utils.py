@@ -160,6 +160,10 @@ def get_max_en_channel(
 
     filt_func = _is_type if chtype else lambda x: True
 
+    if not isinstance(det_list, (list, tuple)):
+        print("Unexpected det_list type:", type(det_list), det_list)
+        return None
+
     try:
         return max(filter(filt_func, det_list), key=lambda y: y[1])
     except ValueError:
@@ -231,12 +235,13 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
     second_max_time_ch = local_map[time_chs[1][2]][2]
     diff = max_time_ch_pos - second_max_time_ch
     if abs(diff) > 1:
+        # Add algorithm to determine slab when the two time channels are not adjacent
         return None, 2, None
     if diff == 1:
-        slab = cornell_slabs[max_time_ch_pos][1]
+        slab = cornell_slabs[max_time_ch_pos][0]
         x_pos = local_map[max_time_ch][0] + half_slab_width
     else:
-        slab = cornell_slabs[max_time_ch_pos][0]
+        slab = cornell_slabs[max_time_ch_pos][1]
         x_pos = local_map[max_time_ch][0] - half_slab_width
     return slab, 3, x_pos
 
@@ -388,7 +393,8 @@ class KevConverter:
 
     Parameters:
         - kev_file (str): The file containing the conversion factors.
-        - file_type (str): The type of file containing the conversion factors. Can be either "mu" or "poly".
+        - file_type (str): The type of file containing the conversion factors. Can be either "mu", "poly" or
+        "cornell".
 
     Methods:
         - convert_mu(id: int, energy: float) -> float: Converts the energy using the mu factor.
