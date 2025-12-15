@@ -425,6 +425,27 @@ class KevConverter:
                 ast.literal_eval(key): value for key, value in string_map.items()
             }
             self.convert = self.convert_mu
+        elif file_type == "cornell_position":
+            # Position-dependent calibration with (time_ch, slab, region) keys
+            # Extract num_regions from header: "# Position-dependent energy calibration (N regions per slab)"
+            import re
+
+            self.num_regions = None
+            with open(kev_file, "r") as f:
+                first_line = f.readline()
+                match = re.search(r"\((\d+)\s+regions", first_line)
+                if match:
+                    self.num_regions = int(match.group(1))
+
+            string_map = (
+                pd.read_csv(kev_file, sep="\t", comment="#")
+                .set_index("ID(time_ch, slab, region)")["mu"]
+                .to_dict()
+            )
+            self.kev_factors = {
+                ast.literal_eval(key): value for key, value in string_map.items()
+            }
+            self.convert = self.convert_mu
         else:
             raise ValueError(f"Unknown file type: {file_type}")
 
