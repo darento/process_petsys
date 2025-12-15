@@ -36,8 +36,15 @@ def gaussian(
         return np.inf
     return amp * np.exp(-0.5 * (x - mu) ** 2 / sigma**2) / (np.sqrt(2 * np.pi) * sigma)
 
+
 def double_gaussian(
-    x: float | np.ndarray, amp1: float, mu1: float, sigma1: float, amp2: float, mu2: float, sigma2: float
+    x: float | np.ndarray,
+    amp1: float,
+    mu1: float,
+    sigma1: float,
+    amp2: float,
+    mu2: float,
+    sigma2: float,
 ) -> float | np.ndarray:
     """
     This function calculates the double Gaussian distribution.
@@ -61,6 +68,7 @@ def double_gaussian(
     ) + amp2 * np.exp(-0.5 * (x - mu2) ** 2 / sigma2**2) / (
         np.sqrt(2 * np.pi) * sigma2
     )
+
 
 def lorentzian(
     x: float | np.ndarray, amp: float, x0: float, gamma: float
@@ -89,7 +97,7 @@ def fit_gaussian(
     min_peak: int = 50,
     yerr: np.ndarray | None = None,
     pk_finder: str = "max",
-    gaussian_str: str = "gaussian", # double_gaussian
+    gaussian_str: str = "gaussian",  # double_gaussian
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     This function fits a Gaussian to the data.
@@ -154,10 +162,10 @@ def fit_gaussian(
 
     if gaussian_str == "gaussian":
         gaussian_fn = gaussian
-        p0=[wsum, mu0, sig0]
+        p0 = [wsum, mu0, sig0]
     elif gaussian_str == "double_gaussian":
         gaussian_fn = double_gaussian
-        p0=[wsum, mu0, sig0, wsum, mu0, sig0]
+        p0 = [wsum, mu0, sig0, wsum, mu0, sig0]
 
     pars, pcov = curve_fit(gaussian_fn, x, y, sigma=err, p0=p0)
     chi_ndf = np.square((y - gaussian_fn(x, *pars)) / err).sum() / (y.shape[0] - 3)
