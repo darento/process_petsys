@@ -170,3 +170,9 @@ cython_debug/
 # Configs and maps directories
 configs/
 maps/
+scripts_cornell/
+scripts_imas/
+scripts_gui/
+encal_files/
+png/
+gui/
