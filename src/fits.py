@@ -167,8 +167,15 @@ def fit_gaussian(
         gaussian_fn = double_gaussian
         p0 = [wsum, mu0, sig0, wsum, mu0, sig0]
 
-    pars, pcov = curve_fit(gaussian_fn, x, y, sigma=err, p0=p0)
-    chi_ndf = np.square((y - gaussian_fn(x, *pars)) / err).sum() / (y.shape[0] - 3)
+    try:
+        pars, pcov = curve_fit(gaussian_fn, x, y, sigma=err, p0=p0)
+        # Avoid divide by zero in chi_ndf
+        err_safe = np.where(err == 0, 1.0, err)
+        chi_ndf = np.square((y - gaussian_fn(x, *pars)) / err_safe).sum() / (
+            y.shape[0] - len(pars)
+        )
+    except Exception as e:
+        raise RuntimeError(f"Fitting failed: {e}")
     return bin_centres, gaussian_fn(bin_centres, *pars), pars, pcov, chi_ndf
 
 
