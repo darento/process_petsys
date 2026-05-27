@@ -171,6 +171,7 @@ def map_factory(mapping_file: str) -> list[dict, dict, dict, FEMBase]:
             "mod_feb_map": dict,
             "x_pitch": (int, float),
             "y_pitch": (int, float),
+            "channels": int,
             "mM_channels": int,
             "sum_rows_cols": bool,
         },
@@ -183,6 +184,7 @@ def map_factory(mapping_file: str) -> list[dict, dict, dict, FEMBase]:
     reader = YAMLMapReader(yaml_schema)
     yaml_map = reader.read_yaml_file(mapping_file)
     FEM_type = yaml_map["FEM"]
+    channels = yaml_map["channels"]
     mM_channels = yaml_map["mM_channels"]
     sum_rows_cols = yaml_map["sum_rows_cols"]
     x_pitch = yaml_map["x_pitch"]
@@ -198,7 +200,7 @@ def map_factory(mapping_file: str) -> list[dict, dict, dict, FEMBase]:
     channels_2 = yaml_map[channel_group_keys[1]]
 
     FEM_instance = get_FEM_instance(
-        FEM_type, x_pitch, y_pitch, mM_channels, sum_rows_cols
+        FEM_type, x_pitch, y_pitch, mM_channels, sum_rows_cols, channels
     )
 
     # Implement _get_local_mapping based on the refactored approach
