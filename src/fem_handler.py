@@ -25,7 +25,7 @@ class FEMBase:
         self.x_pitch = x_pitch
         self.y_pitch = y_pitch
         self.sum_rows_cols = sum_rows_cols
-        self.channels = channels
+        self.channels_populated = channels
         self.mM_channels = mM_channels
         self.num_ASICS = num_ASICS
         self.sum_row_offset = sum_row_offset
@@ -47,14 +47,14 @@ class FEMBase:
         """
         if not self.sum_rows_cols:
             # Number of columns in the (square-ish) channel grid: channels // 16.
-            grid_dim = self.channels // 16
+            grid_dim = self.channels_populated // 16
             row = channel_pos // grid_dim
             col = channel_pos % grid_dim
             loc_x = round((col + 0.5) * self.x_pitch, 2)
             loc_y = round((row + 0.5) * self.y_pitch, 2)
         else:
             # Channel span of a summed row/column layout: channels // 8.
-            span = self.channels // 8
+            span = self.channels_populated // 8
             loc_x = round(self.x_pitch / 2 + self.x_pitch * (channel_pos % span), 2)
             loc_y = round(
                 self.y_pitch / 2
@@ -84,6 +84,7 @@ class FEM128(FEMBase):
         sum_rows_cols: bool,
         channels: int,
     ):
+        self.channels = 128
         super().__init__(
             x_pitch,
             y_pitch,
@@ -116,6 +117,7 @@ class FEM256(FEMBase):
         sum_rows_cols: bool,
         channels: int,
     ):
+        self.channels = 256
         super().__init__(
             x_pitch,
             y_pitch,
