@@ -163,11 +163,14 @@ class SideTable:
     Each column holds one value per side; ``partner[i]`` is the row of the other
     side of i's pair, so partner values are never stored twice. ``energy`` is the
     active energy view: the ``raw_energy`` array itself when uncalibrated.
+    ``doi`` is the active DOI view: the stored light-sharing ratio
+    (``columns["doi"]``) unless a decompressed-mm view is applied (FR-18).
     """
 
-    def __init__(self, columns: dict, energy=None):
+    def __init__(self, columns: dict, energy=None, doi=None):
         self.columns = columns
         self.energy = columns["raw_energy"] if energy is None else energy
+        self.doi = columns["doi"] if doi is None else doi
 
     @classmethod
     def from_pairs(cls, file_index: int, **sides):
@@ -214,6 +217,8 @@ class SideTable:
                     del table.columns[name]
                     if name == "raw_energy":
                         table.energy = None
+                    elif name == "doi":
+                        table.doi = None
             columns[name] = _narrowest(out, dtype)
         return cls(columns)
 
@@ -239,13 +244,18 @@ class SideTable:
             raise AttributeError(name) from None
 
     def with_energy(self, energy):
-        """Same sides and columns with a different active energy view."""
-        return SideTable(self.columns, energy)
+        """Same sides and columns with a different active energy view (the DOI view is kept)."""
+        return SideTable(self.columns, energy, self.doi)
+
+    def with_doi(self, doi):
+        """Same sides and columns with a different active DOI view (None: the stored ratio)."""
+        return SideTable(self.columns, self.energy, doi)
 
     @property
     def nbytes(self):
         own = sum(values.nbytes for values in self.columns.values())
-        return own + (0 if self.energy is self.columns["raw_energy"] else self.energy.nbytes)
+        return (own + (0 if self.energy is self.columns["raw_energy"] else self.energy.nbytes)
+                + (0 if self.doi is self.columns["doi"] else self.doi.nbytes))
 
     def by_sm(self):
         """``{sm: ModuleEvents}`` views onto this table's contiguous SM rows."""
@@ -261,7 +271,8 @@ class ModuleEvents:
     """One SuperModule's rows of a ``SideTable``.
 
     Own columns are zero-copy slices; partner columns are gathered through
-    ``partner`` on access and cannot be assigned.
+    ``partner`` on access and cannot be assigned. ``doi`` follows the table's
+    DOI view; ``doi_ratio`` is always the stored light-sharing ratio.
     """
 
     _OWN = ("energy", "raw_energy", "calibration_key", "x", "y", "doi", "timestamp", "mm",
@@ -271,6 +282,7 @@ class ModuleEvents:
         self._table, self._start, self._stop = table, start, stop
         for name in self._OWN:
             setattr(self, name, getattr(table, name)[start:stop])
+        self.doi_ratio = table.columns["doi"][start:stop]
 
     def __len__(self):
         return self._stop - self._start
@@ -286,10 +298,11 @@ class ModuleEvents:
     partner_mm = property(lambda self: self._partner("mm"))
 
     def with_table(self, table: SideTable):
-        """The same rows of ``table`` (a new energy view); other slices are shared."""
+        """The same rows of ``table`` (new energy/DOI views); other slices are shared."""
         view = copy.copy(self)
         view._table = table
         view.energy = table.energy[self._start:self._stop]
+        view.doi = table.doi[self._start:self._stop]
         return view
 
 
@@ -427,6 +440,13 @@ class Dataset:
     coordinates: dict = field(default_factory=dict)
     channel_modules: dict = field(default_factory=dict)
     channel_types: dict = field(default_factory=dict)
+    # Active DOI view (FR-18; see apply_doi_view): the DOI limits file when decompressed mm.
+    doi_limits: "Limits | None" = None
+    doi_excluded: Counter = field(default_factory=Counter)
+
+    @property
+    def doi_mm(self) -> bool:
+        return self.doi_limits is not None
 
 
 def merge_results(settings: Settings, files: list[FileResult], setup: Setup | None = None,
@@ -516,10 +536,11 @@ class Selection:
     y_low: float = -float("inf")
     y_high: float = float("inf")
 
-    def mask(self, data: ModuleEvents, *, energy: bool = True):
-        keep = ((data.doi >= self.doi_low) & (data.doi <= self.doi_high)
-                & (data.x >= self.x_low) & (data.x <= self.x_high)
+    def mask(self, data: ModuleEvents, *, energy: bool = True, doi: bool = True):
+        keep = ((data.x >= self.x_low) & (data.x <= self.x_high)
                 & (data.y >= self.y_low) & (data.y <= self.y_high))
+        if doi:  # a NaN DOI (decompressed view, excluded side) fails every DOI cut
+            keep &= (data.doi >= self.doi_low) & (data.doi <= self.doi_high)
         if energy:
             keep &= ((data.energy >= self.energy_low) & (data.energy <= self.energy_high)
                      & (data.partner_energy >= self.energy_low)
@@ -661,9 +682,16 @@ def fit_on_display_bins(result, display_edges):
              "gaussian": gauss, "background": background}
 
 
-def flood_counts(x, y, bins=100):
-    """2D detector-side counts; empty bins are masked, not coloured as min counts."""
-    counts, xedges, yedges = np.histogram2d(x, y, bins=bins, range=[[0, 102], [0, 102]])
+def flood_counts(x, y, bins=100, extent=102.0, x_edges=None):
+    """2D detector-side counts over [0, extent] mm; empty bins are masked, not coloured as min counts.
+
+    ``x_edges`` replaces the X binning (the slab view: one column per slab, see ``slab_x_edges``).
+    """
+    if x_edges is None:
+        counts, xedges, yedges = np.histogram2d(x, y, bins=bins, range=[[0, extent], [0, extent]])
+    else:
+        counts, xedges, yedges = np.histogram2d(x, y, bins=[np.asarray(x_edges), bins],
+                                                range=[[x_edges[0], x_edges[-1]], [0, extent]])
     return np.ma.masked_equal(counts.T, 0), xedges, yedges
 
 
@@ -1149,6 +1177,7 @@ _LIMITS_LINE = re.compile(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)\t([^\t]+)\t([^\t]+)")
 SLABS_PER_MM = 16
 HALF_SLAB_MM = 0.8  # src/utils.py:get_slab_cornell: slab 2p at X_p - 0.8 mm, 2p + 1 at X_p + 0.8 mm (B1)
 MM_ROW_MM = 25.6  # decompressed COG Y spans one minimodule row
+SLAB_EXTENT_MM = 4 * MM_ROW_MM  # slab-view flood extent: four minimodule rows
 DOI_DEPTH_MM = 20.0  # crystal thickness of the list-mode DOI mapping
 LIMITS_REASONS = ("missing key", "invalid limits", "out of range")
 
@@ -1220,7 +1249,30 @@ def _require_cornell(dataset: Dataset):
         raise ValueError("Slab views and limits files apply to Cornell datasets only")
 
 
-def slab_view(dataset: Dataset, data: ModuleEvents, cog: Limits) -> dict:
+def _counted(mask, **flags):
+    """Per-reason counts of the flagged sides, restricted to ``mask`` when given."""
+    return +Counter({reason.replace("_", " "): int((flag if mask is None else flag & mask).sum())
+                     for reason, flag in flags.items()})
+
+
+def slab_x_edges(dataset: Dataset, sm: int) -> np.ndarray:
+    """Flood column edges for the slab view: one column per mapped slab X of ``sm``.
+
+    Slab X is discrete (time-channel X ± 0.8 mm), so a regular X binning
+    aliases against the 1.6 mm pitch; edges sit halfway between neighbouring
+    slab positions, and the outer edges half a pitch beyond the outer slabs.
+    """
+    xs = np.unique(np.round([dataset.coordinates[ch][0] + shift
+                             for ch, (s, _) in dataset.channel_modules.items()
+                             if s == sm and ChannelType.TIME in dataset.channel_types.get(ch, ())
+                             for shift in (-HALF_SLAB_MM, HALF_SLAB_MM)], 6))
+    if xs.size < 2:
+        return np.array([0.0, SLAB_EXTENT_MM])
+    middle = (xs[1:] + xs[:-1]) / 2
+    return np.concatenate(([xs[0] - (middle[0] - xs[0])], middle, [xs[-1] + (xs[-1] - middle[-1])]))
+
+
+def slab_view(dataset: Dataset, data: ModuleEvents, cog: Limits, *, mask=None) -> dict:
     """Slab-assigned flood coordinates for one SM's sides (FR-17).
 
     X is the stored time channel's fine X shifted by half a slab (B1
@@ -1229,7 +1281,8 @@ def slab_view(dataset: Dataset, data: ModuleEvents, cog: Limits) -> dict:
     ``clip((y - left) * 25.6 / (right - left), 0, 25.6)``, placed in its
     minimodule row with ``(3 - mm // 4) * 25.6`` (cornell_floodmaps.py). Sides
     without an entry ("missing key") or on a left == right entry ("invalid
-    limits") have NaN Y and are counted; nothing is substituted.
+    limits") have NaN Y and are counted; nothing is substituted. With ``mask``
+    the counts cover only those sides (e.g. the ones passing the cuts).
 
     Returns ``{"x", "y", "excluded": Counter, "clipped"}``.
     """
@@ -1244,20 +1297,21 @@ def slab_view(dataset: Dataset, data: ModuleEvents, cog: Limits) -> dict:
     with np.errstate(divide="ignore", invalid="ignore"):
         scaled = (data.y - left) * MM_ROW_MM / (right - left)
     usable = ~(missing | invalid)
-    clipped = int((usable & ((scaled < 0) | (scaled > MM_ROW_MM))).sum())
+    clipped = usable & ((scaled < 0) | (scaled > MM_ROW_MM))
     y = np.where(usable, np.clip(scaled, 0.0, MM_ROW_MM) + (3 - data.mm.astype(np.int64) // 4) * MM_ROW_MM,
                  np.nan)
-    excluded = Counter({"missing key": int(missing.sum()), "invalid limits": int(invalid.sum())})
-    return {"x": x, "y": y, "excluded": +excluded, "clipped": clipped}
+    return {"x": x, "y": y, "excluded": _counted(mask, missing_key=missing, invalid_limits=invalid),
+            "clipped": int((clipped if mask is None else clipped & mask).sum())}
 
 
-def decompressed_doi(dataset: Dataset, data: ModuleEvents, doi: Limits) -> dict:
+def decompressed_doi(dataset: Dataset, data: ModuleEvents, doi: Limits, *, mask=None) -> dict:
     """DOI ratio mapped linearly to 0-20 mm with the side's DOI limits (FR-18).
 
     ``(doi - right) * 20 / (left - right)`` as in
     cornell_listmode_cog_fixed_position.py: a linear light-sharing mapping, not
     an independently validated depth. Values outside [0, 20] mm ("out of
-    range"), missing keys and left == right entries are NaN and counted.
+    range"), missing keys and left == right entries are NaN and counted (only
+    within ``mask`` when given). Always maps the stored ratio (``doi_ratio``).
 
     Returns ``{"doi_mm", "excluded": Counter}``.
     """
@@ -1266,12 +1320,44 @@ def decompressed_doi(dataset: Dataset, data: ModuleEvents, doi: Limits) -> dict:
     missing = np.isnan(left)
     invalid = ~missing & (left == right)
     with np.errstate(divide="ignore", invalid="ignore"):
-        depth = (data.doi - right) * DOI_DEPTH_MM / (left - right)
+        depth = (data.doi_ratio - right) * DOI_DEPTH_MM / (left - right)
     usable = ~(missing | invalid)
     outside = usable & ~((depth >= 0) & (depth <= DOI_DEPTH_MM))
-    excluded = Counter({"missing key": int(missing.sum()), "invalid limits": int(invalid.sum()),
-                        "out of range": int(outside.sum())})
-    return {"doi_mm": np.where(usable & ~outside, depth + 0.0, np.nan), "excluded": +excluded}  # no -0.0
+    return {"doi_mm": np.where(usable & ~outside, depth + 0.0, np.nan),  # + 0.0: no -0.0
+            "excluded": _counted(mask, missing_key=missing, invalid_limits=invalid, out_of_range=outside)}
+
+
+def apply_doi_view(dataset: Dataset, doi: Limits | None) -> Dataset:
+    """Choose the DOI view without rereading LDAT (FR-18).
+
+    With a DOI limits file the table's DOI view becomes the decompressed depth
+    (NaN where excluded), so every DOI cut, count and fit uses mm and excluded
+    sides fail any DOI cut; ``doi_excluded`` keeps the per-reason counts over
+    all sides. With None the stored ratio is the view again.
+    """
+    table, excluded = dataset.table, Counter()
+    if doi is not None:
+        _require_cornell(dataset)
+        result = decompressed_doi(dataset, ModuleEvents(table, 0, len(table)), doi)
+        table, excluded = table.with_doi(result["doi_mm"]), result["excluded"]
+    else:
+        table = table.with_doi(None)
+    modules = {sm: data.with_table(table) for sm, data in dataset.modules.items()}
+    return replace(dataset, table=table, modules=modules, doi_limits=doi, doi_excluded=excluded)
+
+
+def slab_totals(dataset: Dataset, cog: Limits, selection: Selection | None = None, sms=None) -> dict:
+    """Slab-view exclusions summed over SMs (all sides, or those passing ``selection``)."""
+    excluded, clipped, shown = Counter(), 0, 0
+    for sm, data in sorted(dataset.modules.items()):
+        if sms is not None and sm not in sms:
+            continue
+        mask = selection.mask(data) if selection is not None else np.ones(len(data), bool)
+        view = slab_view(dataset, data, cog, mask=mask)
+        excluded.update(view["excluded"])
+        clipped += view["clipped"]
+        shown += int((mask & np.isfinite(view["y"])).sum())
+    return {"excluded": excluded, "clipped": clipped, "shown": shown}
 
 
 def unresolved_slab_pairs(dataset: Dataset) -> int:

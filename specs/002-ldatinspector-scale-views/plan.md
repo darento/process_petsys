@@ -129,12 +129,20 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
   - **Exclusions:** NaN, counted per reason: "missing key" (no entry) and "invalid limits" (left == right, which the scripts' `+ 1e-9` would turn into a clipped or huge value). The scripts' `+ 1e-9` in the denominator is otherwise omitted.
   - **Unresolved slabs:** those pairs were rejected at ingest and are not in the table; `unresolved_slab_pairs(dataset)` gives their count from the ingest counters for titles and provenance.
 - **GUI:**
-  - Two optional file pickers ("COG limits…", "DOI limits…") with shortened names that show the full path, like spec 001's calibration label.
-  - Flood view selector: "COG / RTP" or "Slab (decompressed)", Cornell with a COG file only.
+  - Two optional file pickers ("COG limits…", "DOI limits…") in the inputs card with shortened names. Clicking a name shows the full path and offers to remove the file. A malformed file is rejected with a dialog, and the previous file is kept. Pickers are refused while processing or writing a report.
+  - Flood view selector: "COG / RTP" or "Slab (decompressed)", Cornell with a COG file only. It sits in the SuperModule tab's ROI group and in the System Overview toolbar (one shared value).
   - DOI unit selector: "Ratio" or "Decompressed mm", with a DOI file only. The cut range resets to 0–15 (ratio) or 0–20 mm.
-  - Excluded-side counts appear in the plot titles.
-  - The System Overview flood mode follows the same selector.
-- **Reports:** limits paths and exclusion counts go in provenance. SM flood/DOI pages use the active views.
+  - When a selector is unavailable it is disabled, with a grey note ("n/a: Cornell only" / "n/a: no COG limits file" / "n/a: no DOI limits file"), and it falls back to the default view (COG / RTP, Ratio with the cut reset). An IMAS dataset keeps the files loaded but makes both views unavailable.
+  - Excluded-side counts appear on the plots. The DOI and flood titles stay short (the summary panel narrows the canvas), and the counts per reason go in an in-axes note. For the SM flood, these are the sides passing the cuts, with the clipped count and the unresolved-slab pairs from ingest (all SMs). For the DOI, they are the energy/ROI sides. The System Overview flood mode follows the same selector and puts the totals in its suptitle.
+  - **COG limits are display-only:** loading, swapping or removing one only redraws the SuperModule and System Overview tabs. The dataset and its cached per-minimodule, SM and pair results are unchanged.
+  - **The mm DOI view is a dataset view:** `apply_doi_view(dataset, doi)` sets `SideTable.doi` to the decompressed depth; the stored ratio stays in `columns["doi"]` and `ModuleEvents.doi_ratio`. So the DOI cut, counts, fits, pair matrix and reports all use mm, and an excluded side (NaN) fails every DOI cut. `Selection.mask(doi=False)` gives the DOI plot its population.
+    - The view is applied by a background job (like calibration), or in the processing thread when mm is chosen before processing. `apply_calibration` keeps it.
+    - As a result, in mm mode sides without a DOI entry have already failed the DOI cut, and the slab flood reports them as "excluded: none".
+  - **The ROI stays on COG/RTP coordinates:** in the slab view the ROI rectangle and the drag-to-select / profile region are off, and a note says so. Changing the flood view never changes any population.
+  - **Slab-view flood columns:** one column per mapped slab X of the SM (`slab_x_edges`: edges halfway between neighbouring slab positions; 64 for a full Cornell SM). Slab X is discrete, and the regular bins alias against the 1.6 mm pitch. Y uses the bins control over 0–102.4 mm (`SLAB_EXTENT_MM`).
+- **Reports:** `write_report(…, cog_limits=, doi_limits=, slab_flood=)`.
+  - **Provenance** lists both limits paths (key counts, left == right entries) or "none", the active flood view with the slab exclusions among sides passing the cuts in the report scope, the clipped count and the unresolved-slab pairs, and the DOI view with `doi_excluded`. The display line reads "DOI mm a..b".
+  - **SM pages** use the active views, and a slab-flood report without a COG file is refused.
 
 ### Non-adjacent slab recovery (FR-19)
 

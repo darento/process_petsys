@@ -28,7 +28,9 @@ import numpy as np
 from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
     FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
-    FileResult, FindingThresholds, Selection, Settings, apply_calibration, channel_findings, channel_geometry,
+    SLAB_EXTENT_MM, FileResult, FindingThresholds, Selection, Settings, apply_calibration, apply_doi_view,
+    channel_findings, channel_geometry, decompressed_doi, load_limits, slab_view, slab_x_edges,
+    unresolved_slab_pairs,
     fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
     minimodule_layout, minimodule_metrics, overview_grid, pair_dt, pair_mask, pair_matrix, process_file,
     rate_series, pair_offset_series, supermodule_layout, system_channel_findings, uniformity,
@@ -49,6 +51,14 @@ ALL_PARTNERS = "All partners"
 DT_LABEL = ("Observational: geometry and time of flight contribute to the paired time difference; "
             "it is not a clock offset or a CTR calibration.")
 STEP_DEBOUNCE_MS = 150  # wheel and Page Up/Down redraw once the stepping pauses
+# Cornell limits files (spec 002 T15, FR-16-FR-18).
+LIMITS_KINDS = {"cog": "COG limits", "doi": "DOI limits"}
+FLOOD_VIEWS = ("COG / RTP", "Slab (decompressed)")
+DOI_UNITS = ("Ratio", "Decompressed mm")
+DOI_CUTS = {"Ratio": ("0", "15"), "Decompressed mm": ("0", "20")}  # the DOI cut resets with the unit
+DOI_MM_LABEL = "Decompressed DOI (mm-equivalent)"
+DOI_MM_NOTE = "linear light-sharing mapping,\nnot a validated depth"
+_NOTE_BOX = {"facecolor": "white", "alpha": 0.8, "edgecolor": "#a8a8a8"}
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -61,6 +71,10 @@ def _entry(parent, variable, width=74):
 
 def _label(parent, text):
     ctk.CTkLabel(parent, text=text).pack(side="left", padx=(6, 0))
+
+
+def _reasons(counts):
+    return ", ".join(f"{reason} {n:,}" for reason, n in sorted(counts.items())) or "none"
 
 
 class _Tooltip:
@@ -181,11 +195,19 @@ class LDATWorkbench(ctk.CTk):
         self._pair_job = None
         self._pair_current = None
         self._matrix_ax = self._dt_ax = None
+        # Cornell limits files (T15): the COG limits drive the slab flood view (display only);
+        # the DOI limits the decompressed-mm DOI view, applied to the dataset by a background job.
+        self.limits = {"cog": None, "doi": None}
+        self.flood_view = tk.StringVar(value=FLOOD_VIEWS[0])
+        self.doi_unit = tk.StringVar(value=DOI_UNITS[0])
+        self._flood_combos = []
 
         self._build_top()
         self._build_tabs()
         self._drawers = {SM_TAB: self._refresh_selected, "System Overview": self._draw_overview,
                          COINC_TAB: self._draw_coincidences, "Timestamps": self._draw_timestamps}
+        self.system.trace_add("write", lambda *_: self._update_limits_controls())
+        self._update_limits_controls()
         self._log("Select an IMAS or Cornell config and LDAT files; calibration can be applied later.")
         self.bind("<Control-o>", lambda _: self._select_files())
         self.bind("<Control-p>", lambda _: self._start_processing())
@@ -219,6 +241,19 @@ class LDATWorkbench(ctk.CTk):
         self.calib_switch = ctk.CTkSwitch(inputs, text="Calib: keV / raw a.u.", variable=self.calibrated,
                                            command=self._toggle_calibration)
         self.calib_switch.pack(anchor="w", padx=10, pady=2)
+        self.limit_buttons, self.limit_labels = {}, {}
+        for kind, title in LIMITS_KINDS.items():
+            row = ctk.CTkFrame(inputs, fg_color="transparent")
+            row.pack(fill="x", padx=8)
+            button = ctk.CTkButton(row, text=f"{title}...", width=95, height=24,
+                                   command=lambda k=kind: self._select_limits(k))
+            button.pack(side="left", padx=2, pady=1)
+            _Tooltip(button, f"Optional Cornell {title.split()[0]} limits file: (time channel, slab)<TAB>left<TAB>right")
+            label = ctk.CTkLabel(row, text="none (optional, Cornell)", anchor="w", width=235)
+            label.pack(side="left", padx=4)
+            label.bind("<Button-1>", lambda _event, k=kind: self._limits_info(k))
+            _Tooltip(label, "Click for the full path, or to remove the file")
+            self.limit_buttons[kind], self.limit_labels[kind] = button, label
         file_row = ctk.CTkFrame(inputs, fg_color="transparent")
         file_row.pack(fill="x", padx=8, pady=(5, 0))
         ctk.CTkButton(file_row, text="Add LDAT...", width=106, command=self._select_files).pack(side="left", padx=2)
@@ -391,6 +426,7 @@ class LDATWorkbench(ctk.CTk):
         self.energy_control_group, self.doi_control_group, self.spatial_control_group = (
             group for group, _ in groups)
         self.energy_group_title = groups[0][1]
+        self.doi_group_title = groups[1][1]
 
         def add_slider(group, label, variable, upper):
             row = ctk.CTkFrame(group, fg_color="transparent")
@@ -405,6 +441,14 @@ class LDATWorkbench(ctk.CTk):
 
         add_slider(groups[0][0], "Lo", self.energy_low, 1500)
         add_slider(groups[0][0], "Hi", self.energy_high, 1500)
+        unit_row = ctk.CTkFrame(groups[1][0], fg_color="transparent")
+        unit_row.pack(fill="x", padx=4)
+        _label(unit_row, "Unit")
+        self.doi_unit_combo = ctk.CTkComboBox(unit_row, variable=self.doi_unit, values=list(DOI_UNITS), width=150,
+                                              state="disabled", command=lambda _: self._doi_unit_changed())
+        self.doi_unit_combo.pack(side="left", padx=5)
+        self.doi_unit_note = ctk.CTkLabel(unit_row, text="", text_color="#7d848b", font=("Arial", 10))
+        self.doi_unit_note.pack(side="left")
         add_slider(groups[1][0], "Lo", self.doi_low, 1)
         add_slider(groups[1][0], "Hi", self.doi_high, 1)
         colour_group = groups[2][0]
@@ -422,6 +466,12 @@ class LDATWorkbench(ctk.CTk):
         ctk.CTkComboBox(row, variable=self.bins, values=["50", "100", "200", "300"],
                         state="readonly", width=80, command=lambda _: self._refresh_all()).pack(side="left", padx=5)
         ctk.CTkButton(row, text="Apply", command=self._refresh_all, width=66).pack(side="right", padx=7)
+        _label(row, "Flood")
+        self._flood_combos.append(ctk.CTkComboBox(row, variable=self.flood_view, values=list(FLOOD_VIEWS), width=160,
+                                                  state="disabled", command=lambda _: self._flood_view_changed()))
+        self._flood_combos[-1].pack(side="left", padx=5)
+        self.flood_note = ctk.CTkLabel(row, text="", text_color="#7d848b", font=("Arial", 10))
+        self.flood_note.pack(side="left")
 
         self.explorer_info = ctk.CTkLabel(tab, text="Process files to explore SuperModules", anchor="w")
         self.explorer_info.pack(fill="x", padx=9)
@@ -480,6 +530,11 @@ class LDATWorkbench(ctk.CTk):
         ctk.CTkComboBox(controls, variable=self.overview_mode, values=[*OVERVIEW_METRICS, FLOOD_MODE],
                         state="readonly", width=210,
                         command=lambda _: self._draw_overview()).pack(side="left", padx=8)
+        _label(controls, "Flood view")
+        self._flood_combos.append(ctk.CTkComboBox(controls, variable=self.flood_view, values=list(FLOOD_VIEWS),
+                                                  width=160, state="disabled",
+                                                  command=lambda _: self._flood_view_changed()))
+        self._flood_combos[-1].pack(side="left", padx=8)
         self.overview_open = ctk.CTkButton(controls, text="Open SM", width=90, state="disabled",
                                            command=self._overview_open_sm)
         self.overview_open.pack(side="right", padx=8)
@@ -654,7 +709,8 @@ class LDATWorkbench(ctk.CTk):
         energy_max = 1500 if self.calibrated.get() else 300
         colour_max = max(10, float(len(data) / max(int(self.bins.get()) ** 2, 1)) * 10
                          if data is not None else 0)
-        doi_max = max(1.0, float(np.max(data.doi)) * 1.1 if data is not None and len(data) else 0)
+        doi_max = (20.0 if self.doi_unit.get() == DOI_UNITS[1]
+                   else max(1.0, float(np.max(data.doi)) * 1.1 if data is not None and len(data) else 0))
         for index, (slider, field) in enumerate(self._sliders):
             upper = energy_max if index < 2 else doi_max if index < 4 else colour_max
             slider.configure(to=upper)
@@ -705,6 +761,7 @@ class LDATWorkbench(ctk.CTk):
         self.energy_ax, self.doi_ax, self.flood_ax = self.fig.subplots(1, 3)
         self.channel_axes = {}
         self.explorer_info.configure(text="Inputs changed; process the selected files again")
+        self._update_limits_controls()
 
     def _select_files(self):
         if self._busy or self._report_busy:
@@ -830,6 +887,9 @@ class LDATWorkbench(ctk.CTk):
                                    initializer=init_worker, initargs=(self._cancel, self._file_progress))
         self._pool = pool
         reader = self._reader or process_file
+        # The decompressed DOI view (if chosen) is applied before the dataset reaches the GUI.
+        doi = (self.limits["doi"] if self.doi_unit.get() == DOI_UNITS[1] and settings.system == "CORNELL"
+               else None)
         scope = ("whole files" if settings.max_pairs is None
                  else f"first {settings.max_pairs:,} pairs per file")
         self._log(f"Processing {len(files)} files with {self._workers} worker processes ({scope})")
@@ -855,7 +915,8 @@ class LDATWorkbench(ctk.CTk):
                     return
                 pool.shutdown(wait=False)
                 results.sort(key=lambda r: r.index)
-                self._events.put(("complete", merge_results(settings, results, setup, consume=True)))
+                dataset = merge_results(settings, results, setup, consume=True)
+                self._events.put(("complete", apply_doi_view(dataset, doi) if doi is not None else dataset))
             except Exception as exc:
                 pool.shutdown(wait=False, cancel_futures=True)
                 self._events.put(("error", str(exc)))
@@ -950,6 +1011,8 @@ class LDATWorkbench(ctk.CTk):
                     self._sm_metrics_done(*event[1:])
                 elif event[0] == "pairs":
                     self._pairs_done(*event[1:])
+                elif event[0] == "doi_view":
+                    self._doi_view_done(*event[1:])
                 elif event[0] == "report":
                     self._report_busy = False
                     self.last_report = event[1]
@@ -981,6 +1044,7 @@ class LDATWorkbench(ctk.CTk):
         dataset = self.dataset
         self.calibrated.set(dataset.settings.calibrated)
         self._fit_control_state()
+        self._update_limits_controls()  # an IMAS dataset has no slab or mm DOI views
         self._reset_energy_range()
         successful = [f for f in dataset.files if f.success]
         self._log(f"Merged {sum(f.pairs_accepted for f in successful):,} coincidence pairs, "
@@ -1196,38 +1260,206 @@ class LDATWorkbench(ctk.CTk):
         if self.energy_ax.get_legend_handles_labels()[1]:
             self.energy_ax.legend(loc="lower right", fontsize=8)
 
-        doi_selection = replace(selection, doi_low=-float("inf"), doi_high=float("inf"))
-        doi_population = doi_selection.mask(data)
-        doi_max = max(1.0, float(np.max(data.doi)) * 1.1)
+        doi_mm = self.dataset.doi_mm
+        doi_base = selection.mask(data, doi=False)
+        doi_population = doi_base & np.isfinite(data.doi)  # decompressed mm: excluded sides are NaN
+        doi_max = 20.0 if doi_mm else max(1.0, float(np.max(data.doi)) * 1.1)
         self.doi_ax.hist(data.doi[doi_population], bins=55, range=(0, doi_max), color="#a358b0")
-        self.doi_ax.set(xlabel="DOI light-sharing ratio (not mm)", ylabel="Detector sides",
-                         title=f"DOI • {int(doi_population.sum()):,} energy/ROI sides")
+        if doi_mm:
+            excluded = decompressed_doi(self.dataset, data, self.dataset.doi_limits, mask=doi_base)["excluded"]
+            self.doi_ax.set(xlabel=DOI_MM_LABEL, ylabel="Detector sides",
+                            title=f"DOI (mm) • {int(doi_population.sum()):,} energy/ROI sides")
+            self.doi_ax.text(0.98, 0.97, f"{Path(self.dataset.doi_limits.path).name}\n{DOI_MM_NOTE}\n"
+                             f"{sum(excluded.values()):,} excluded: {_reasons(excluded)}",
+                             transform=self.doi_ax.transAxes, ha="right",
+                             va="top", fontsize=7, bbox=_NOTE_BOX)
+        else:
+            self.doi_ax.set(xlabel="DOI light-sharing ratio (not mm)", ylabel="Detector sides",
+                            title=f"DOI • {int(doi_population.sum()):,} energy/ROI sides")
         self.doi_ax.axvline(selection.doi_low, c="#d35930", ls="--")
         self.doi_ax.axvline(selection.doi_high, c="#d35930", ls="--")
         self.doi_ax.set_xlim(0, doi_max)
 
-        if chosen.any():
-            counts, xedges, yedges = flood_counts(data.x[chosen], data.y[chosen], int(self.bins.get()))
+        slab = self._slab_active()
+        x, y, shown, extent = data.x, data.y, chosen, 102.0
+        if slab:
+            view = slab_view(self.dataset, data, self.limits["cog"], mask=chosen)
+            x, y, extent = view["x"], view["y"], SLAB_EXTENT_MM
+            shown = chosen & np.isfinite(y)
+        if shown.any():
+            counts, xedges, yedges = flood_counts(x[shown], y[shown], int(self.bins.get()), extent,
+                                                  slab_x_edges(self.dataset, sm) if slab else None)
             cmap = matplotlib.colormaps["plasma"].copy()
             cmap.set_bad("white")
             image = self.flood_ax.pcolormesh(xedges, yedges, counts, cmap=cmap,
                                               vmin=min_count, vmax=max_count)
             self._colorbar = self.fig.colorbar(image, ax=self.flood_ax, pad=0.02, shrink=0.8)
             self._colorbar.set_label("Detector sides / bin")
-        self.flood_ax.set(xlabel="Local X (mm)", ylabel="Local Y (mm)",
-                          title=f"Flood map • SM {sm}")
-        self.flood_ax.set_xlim(0, 102)
-        self.flood_ax.set_ylim(0, 102)
-        self.flood_ax.add_patch(Rectangle((selection.x_low, selection.y_low),
-                                          selection.x_high - selection.x_low,
-                                          selection.y_high - selection.y_low,
-                                          fill=False, edgecolor="#4ec06c", lw=1.6))
+        if slab:
+            self.flood_ax.set(xlabel="Slab X (mm)", ylabel="Decompressed Y (mm)",
+                              title=f"Slab flood • SM {sm}")
+            self.flood_ax.text(0.01, 0.01, f"{int(shown.sum()):,} of {int(chosen.sum()):,} sides; 1 column/slab\n"
+                               f"excluded: {_reasons(view['excluded'])} • clipped to row {view['clipped']:,}\n"
+                               f"{unresolved_slab_pairs(self.dataset):,} unresolved-slab pairs rejected at ingest\n"
+                               "ROI cut and region selection: COG/RTP coordinates",
+                               transform=self.flood_ax.transAxes, fontsize=7, bbox=_NOTE_BOX)
+        else:
+            self.flood_ax.set(xlabel="Local X (mm)", ylabel="Local Y (mm)",
+                              title=f"Flood map • SM {sm}")
+            self.flood_ax.add_patch(Rectangle((selection.x_low, selection.y_low),
+                                              selection.x_high - selection.x_low,
+                                              selection.y_high - selection.y_low,
+                                              fill=False, edgecolor="#4ec06c", lw=1.6))
+        self.flood_ax.set_xlim(0, extent)
+        self.flood_ax.set_ylim(0, extent)
         self.explorer_info.configure(text=f"SM {sm} • {len(data):,} ingested sides • "
                 f"{int(chosen.sum()):,} after paired energy + DOI + ROI "
                 f"({'keV' if calibrated else 'raw a.u.'}) • fit: {legacy['status']}")
         self._switch_rectangle()
         self.canvas.draw_idle()
         self._draw_summary(sm, selection, int(chosen.sum()))
+
+    def _select_limits(self, kind):
+        if self._busy or self._report_busy:
+            return
+        title = LIMITS_KINDS[kind]
+        path = filedialog.askopenfilename(title=f"Select the {title} file",
+                                          filetypes=[("Limits file", "*.txt"), ("All files", "*.*")],
+                                          initialdir=str(Path(__file__).resolve().parent.parent))
+        if not path:
+            return
+        try:
+            limits = load_limits(path)
+        except (OSError, ValueError) as exc:
+            self._log(f"{title} not loaded: {exc}")
+            messagebox.showerror(title, f"{exc}\n\nThe previous file (if any) is kept.", parent=self)
+            return
+        self.limits[kind] = limits
+        self._log(f"{title}: {Path(path).name} ({len(limits):,} keys"
+                  + (f", {limits.invalid} with left == right" if limits.invalid else "") + ")")
+        self._limits_changed(kind)
+
+    def _limits_info(self, kind):
+        """Show a loaded limits file's full path and offer to remove it."""
+        limits = self.limits[kind]
+        if limits is None or self._busy or self._report_busy:
+            return
+        title = LIMITS_KINDS[kind]
+        if messagebox.askyesno(title, f"{limits.path}\n\n{len(limits):,} keys\n\nRemove this limits file?",
+                               parent=self):
+            self.limits[kind] = None
+            self._log(f"{title} removed")
+            self._limits_changed(kind)
+
+    def _limits_changed(self, kind):
+        """A limits file was loaded, swapped or removed: recompute views, never reread LDAT."""
+        for name, label in self.limit_labels.items():
+            limits = self.limits[name]
+            text = "none (optional, Cornell)" if limits is None else Path(limits.path).name
+            label.configure(text=text if len(text) <= 34 else text[:15] + "…" + text[-15:])
+        self._update_limits_controls()
+        if not self.dataset:
+            return
+        wanted = self._wanted_doi()
+        if kind == "doi" and wanted is not self.dataset.doi_limits:
+            self._start_doi_view(wanted)
+            return
+        # The COG limits only feed the slab flood views; other cached results stay valid.
+        self._stale.update({SM_TAB, "System Overview"})
+        self._draw_visible()
+
+    def _update_limits_controls(self):
+        """Slab view: Cornell with a COG file; mm DOI: Cornell with a DOI file. Otherwise the default view."""
+        cornell = (self.dataset.settings.system if self.dataset else self.system.get()) == "CORNELL"
+        notes = {kind: "" if cornell and self.limits[kind] is not None
+                 else "n/a: Cornell only" if not cornell else f"n/a: no {kind.upper()} limits file"
+                 for kind in LIMITS_KINDS}
+        for combo in self._flood_combos:
+            combo.configure(state="disabled" if notes["cog"] else "readonly")
+        self.flood_note.configure(text=notes["cog"])
+        if notes["cog"]:
+            self.flood_view.set(FLOOD_VIEWS[0])
+        self.doi_unit_combo.configure(state="disabled" if notes["doi"] else "readonly")
+        self.doi_unit_note.configure(text=notes["doi"])
+        if notes["doi"] and self.doi_unit.get() != DOI_UNITS[0]:
+            self.doi_unit.set(DOI_UNITS[0])
+            self._reset_doi_cut()
+        self.doi_group_title.configure(text="DOI (decompressed mm-equivalent)" if self.doi_unit.get() == DOI_UNITS[1]
+                                       else "DOI (light-sharing ratio)")
+
+    def _reset_doi_cut(self):
+        low, high = DOI_CUTS[self.doi_unit.get()]
+        self.doi_low.set(low)
+        self.doi_high.set(high)
+
+    def _wanted_doi(self):
+        """The DOI limits the dataset's DOI view should use (None: the ratio)."""
+        if self.doi_unit.get() == DOI_UNITS[1] and self.dataset and self.dataset.settings.system == "CORNELL":
+            return self.limits["doi"]
+        return None
+
+    def _slab_active(self):
+        return (self.flood_view.get() == FLOOD_VIEWS[1] and self.limits["cog"] is not None
+                and self.dataset is not None and self.dataset.settings.system == "CORNELL")
+
+    def _flood_view_changed(self):
+        self._stale.update({SM_TAB, "System Overview"})
+        self._draw_visible()
+
+    def _doi_unit_changed(self):
+        if self._busy or self._report_busy:
+            self.doi_unit.set(DOI_UNITS[1] if self.dataset and self.dataset.doi_mm else DOI_UNITS[0])
+            return
+        self._reset_doi_cut()
+        self._update_limits_controls()
+        if self.dataset and self._wanted_doi() is not self.dataset.doi_limits:
+            self._start_doi_view(self._wanted_doi())
+        else:
+            self._sync_sliders()
+
+    def _start_doi_view(self, doi):
+        dataset = self.dataset
+        self._busy = True
+        self.calib_switch.configure(state="disabled")
+        self.process_button.configure(state="disabled")
+        for button in (self.uniformity_button, self.system_report, self.module_report):
+            button.configure(state="disabled")
+        self._log("Applying the decompressed DOI view (mm) to retained detector sides..." if doi is not None
+                  else "Switching retained detector sides to the DOI ratio...")
+
+        def run():
+            try:
+                self._events.put(("doi_view", dataset, apply_doi_view(dataset, doi), None))
+            except Exception as exc:
+                self._events.put(("doi_view", dataset, None, str(exc)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _doi_view_done(self, before, result, error):
+        self._busy = False
+        self.process_button.configure(state="normal")
+        self.calib_switch.configure(state="normal")
+        for button in (self.uniformity_button, self.system_report, self.module_report):
+            button.configure(state="normal" if self.dataset and self.dataset.modules else "disabled")
+        if error is not None or before is not self.dataset:
+            if error is not None:
+                self._log(f"DOI view unavailable: {error}")
+                messagebox.showerror("DOI view", error, parent=self)
+            current = DOI_UNITS[1] if self.dataset and self.dataset.doi_mm else DOI_UNITS[0]
+            if self.doi_unit.get() != current:
+                self.doi_unit.set(current)
+                self._reset_doi_cut()
+            self._update_limits_controls()
+            return
+        self.dataset = result
+        if result.doi_mm:
+            excluded = result.doi_excluded
+            self._log(f"DOI view: decompressed mm with {Path(result.doi_limits.path).name}; "
+                      f"{sum(excluded.values()):,} of {len(result.table):,} sides excluded ({_reasons(excluded)}); "
+                      "LDAT not reread")
+        else:
+            self._log("DOI view: light-sharing ratio; LDAT not reread")
+        self._refresh_all()
 
     def _experimental_settings(self):
         interval = (float(self.fit_low.get()), float(self.fit_high.get()))
@@ -1340,7 +1572,8 @@ class LDATWorkbench(ctk.CTk):
         if self._selector is not None:
             self._selector.set_active(False)
             self._selector.disconnect_events()
-        if not self.dataset:
+        self._selector = None
+        if not self.dataset or self._slab_active():  # the ROI is on COG/RTP coordinates
             return
         self._selector = RectangleSelector(self.flood_ax, self._on_rectangle,
                                             useblit=False, button=[1], minspanx=1,
@@ -1386,8 +1619,8 @@ class LDATWorkbench(ctk.CTk):
 
     def _reset_filters(self):
         self._reset_energy_range()
-        for var, text in ((self.doi_low, "0"), (self.doi_high, "15"),
-                          (self.x_low, "0"), (self.x_high, "102"),
+        self._reset_doi_cut()
+        for var, text in ((self.x_low, "0"), (self.x_high, "102"),
                           (self.y_low, "0"), (self.y_high, "102"),
                           (self.color_min, "0.1"),
                           (self.color_max, "Auto")):
@@ -1888,19 +2121,31 @@ class LDATWorkbench(ctk.CTk):
             self._draw_pair_dt()
 
     def _draw_overview_floods(self):
-        """Spec 001 per-SM flood maps, placed by ``supermodule_layout``."""
+        """Per-SM flood maps placed by ``supermodule_layout``: COG/RTP (spec 001) or slab view."""
         rows, cols, placement = supermodule_layout(self.dataset)
         self._overview_grid = self._overview_ax = None
         self.overview_fig.clear()
         axes = self.overview_fig.subplots(rows, cols, squeeze=False)
         selection = self._selection()
+        slab = self._slab_active()
+        extent = SLAB_EXTENT_MM if slab else 102.0
+        excluded, clipped, shown_total = Counter(), 0, 0
         for sm, (row, col) in placement.items():
             axis = axes[row, col]
             data = self.dataset.modules.get(sm)
             if data is not None:
                 mask = selection.mask(data)
+                x, y = data.x, data.y
+                if slab:
+                    view = slab_view(self.dataset, data, self.limits["cog"], mask=mask)
+                    x, y = view["x"], view["y"]
+                    mask = mask & np.isfinite(y)
+                    excluded.update(view["excluded"])
+                    clipped += view["clipped"]
+                shown_total += int(mask.sum())
                 if mask.any():
-                    counts, xedges, yedges = flood_counts(data.x[mask], data.y[mask], 28)
+                    counts, xedges, yedges = flood_counts(x[mask], y[mask], 28, extent,
+                                                          slab_x_edges(self.dataset, sm) if slab else None)
                     cmap = matplotlib.colormaps["plasma"].copy()
                     cmap.set_bad("white")
                     axis.pcolormesh(xedges, yedges, counts, cmap=cmap, vmin=0.1)
@@ -1910,7 +2155,15 @@ class LDATWorkbench(ctk.CTk):
             axis.set_xticks([])
             axis.set_yticks([])
             axis.set_aspect("equal")
-        self.overview_fig.subplots_adjust(left=0.01, right=0.99, top=0.98,
+        if slab:
+            title = (f"Slab flood maps (decompressed Y, {Path(self.limits['cog'].path).name}) • "
+                     f"{shown_total:,} sides passing the cuts • excluded: {_reasons(excluded)} • "
+                     f"clipped to row {clipped:,} • {unresolved_slab_pairs(self.dataset):,} unresolved-slab pairs "
+                     "rejected at ingest")
+        else:
+            title = f"COG/RTP flood maps (spec 001 centroid) • {shown_total:,} sides passing the cuts"
+        self.overview_fig.suptitle(title, fontsize=9)
+        self.overview_fig.subplots_adjust(left=0.01, right=0.99, top=0.95,
                                            bottom=0.02, wspace=0.08, hspace=0.07)
         self.overview_canvas.draw_idle()
 
@@ -2187,13 +2440,16 @@ class LDATWorkbench(ctk.CTk):
         for button in (self.system_report, self.module_report):
             button.configure(state="disabled")
         dataset = self.dataset
+        cornell = dataset.settings.system == "CORNELL"
+        limits = {kind: value if cornell else None for kind, value in self.limits.items()}
+        slab = self._slab_active()
         self._log(f"Writing {'system' if sm is None else 'SM '+str(sm)} PDF in background...")
 
         def run():
             try:
                 from src.ldat_report import write_report
-                write_report(path, dataset, selection, sm=sm,
-                             target=target, tolerance_pct=tolerance)
+                write_report(path, dataset, selection, sm=sm, target=target, tolerance_pct=tolerance,
+                             cog_limits=limits["cog"], doi_limits=limits["doi"], slab_flood=slab)
                 self._events.put(("report", path))
             except Exception as exc:
                 self._events.put(("report_error", str(exc)))

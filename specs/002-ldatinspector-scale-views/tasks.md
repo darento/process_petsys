@@ -312,10 +312,63 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - 33,790 unresolved-slab pairs were rejected at ingest;
     - slab X − COG X: median +0.001 mm, |Δ| p95 0.98 mm.
   - **Other checks:** engine/report 59/59, hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, scale 44/44 (selftest 44/44), unpopulated 6/6, slab convention 16/16.
-- [ ] **T15 — Flood/DOI selectors and provenance** (FR-16–FR-18). *Done when:*
+- [x] **T15 — Flood/DOI selectors and provenance** (FR-16–FR-18). *Done when:*
   - the hidden-GUI check covers both file pickers, the flood-view and DOI-unit selectors, IMAS/no-file unavailable states, the DOI cut reset (0–15 ratio vs 0–20 mm), and the excluded counts in titles;
   - PDF provenance lists the limits paths and exclusion counts;
   - on a real Cornell prefix with the owner-chosen limits files, the slab flood map shows per-slab stripes for owner review.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 124/124** (23 new for T15); `--real` → **PASS 127/127**; GUI compile exit 0.
+  - **Code:** engine `apply_doi_view`, `SideTable.with_doi`, `ModuleEvents.doi_ratio`, `Selection.mask(doi=False)`, `slab_totals`, `slab_x_edges`, and `flood_counts(extent=, x_edges=)`; report `write_report(cog_limits=, doi_limits=, slab_flood=)`; GUI pickers, selectors and views (see plan). Owner-chosen files: the repo-root `cog_`/`doi_limits_full_system.txt`.
+  - **Hidden GUI** (Cornell SM 0 fixture: 652 sides on minimodules 4 and 13, 32 keys; 5 sides on a key in neither file, 3 above their COG right limit, 4 with DOI ratio 8; 7 unresolved-slab pairs in the ingest counters):
+    - **unavailable states:** IMAS reads "n/a: Cornell only" on both selectors; Cornell without files reads "n/a: no COG / DOI limits file"; the selectors are disabled, and COG / RTP and Ratio stay the defaults;
+    - **COG picker:** the file loads (short name shown) and enables both flood selectors (SuperModule tab and System Overview);
+    - **slab flood:** equals the engine: 647 of 652 sides, 0–102.4 mm, the note "excluded: missing key 5 • clipped to row 3 • 7 unresolved-slab pairs"; before switching, the COG flood had all 652;
+    - **ROI tools:** the slab view has no ROI rectangle or selector, and a note says the ROI uses COG/RTP coordinates;
+    - **Overview flood mode** follows the selector: the suptitle is "Slab flood maps (decompressed Y, cog_fixture.txt) • 647 sides passing the cuts • excluded: missing key 5…";
+    - **COG file changes:**
+      - a malformed file gives one dialog and the previous file is kept;
+      - a swapped file redraws exactly `flood_counts` of the new limits;
+      - removing the file (label click, confirmed) returns to COG / RTP and brings the ROI rectangle and selector back;
+      - the reader, patched to fail, is called 0 times throughout;
+    - **DOI picker** enables the unit selector, and Ratio stays the view;
+    - **mm:**
+      - the cut resets to 0–20; the view comes from a background thread and equals `decompressed_doi`, with `doi_excluded` {missing key 5, out of range 4};
+      - the DOI plot spans 0–20 mm, with an "mm-equivalent" label and a note naming the file, "not a validated depth" and "9 excluded: missing key 5, out of range 4";
+      - 643 sides are selected (the excluded ones fail the cut); a 0–10 mm cut keeps exactly the sides with decompressed DOI in [0, 10] (324);
+    - **back to Ratio:** the cut returns to 0–15 and the view is the stored ratio column. Removing the DOI file in mm mode falls back to Ratio (0–15);
+    - **GUI SuperModule report:** carries the slab and mm views and both file names;
+    - **IMAS:** an IMAS dataset with both files loaded makes both selectors unavailable;
+    - no unexpected dialogs.
+  - **PDF** (`pypdf`, SM 0, mm view and slab flood):
+    - the provenance holds both full paths, "Flood view: slab-assigned … excluded: none; clipped to the row: 3" (in mm the missing-key sides already fail the DOI cut), "unresolved-slab pairs rejected at ingest (all files): 7", "DOI view: decompressed mm-equivalent … missing key 5, out of range 4", "DOI mm 0..20" and "not a validated depth";
+    - the SM page titles "Selected slab flood (decompressed Y)" and labels "Decompressed DOI (mm-equivalent)";
+    - a default-view PDF reads "Flood view: COG/RTP centroid", "DOI limits: none" and "DOI view: light-sharing ratio";
+    - a slab-flood report without a COG file is refused.
+  - **Slab columns:** 64 per full Cornell SM, with each of the 16 fixture slabs in its own column.
+  - **Mutation checks** (GUI + PDF checks):
+    - DOI cut not reset: 4 fail;
+    - slab view never active: 5;
+    - ratio kept instead of mm: 5;
+    - regular X bins in the slab view: 1;
+    - no limits lines in the PDF: 3;
+    - selectors never disabled: 7.
+
+    Unmodified, none fail.
+  - **Found while checking:**
+    - two-line titles overlapped on the real canvas, so the counts moved to in-axes notes;
+    - regular X bins aliased the discrete 1.6 mm slab X (moiré), so the slab view now has one column per slab.
+  - **Real Cornell** (`00000003`, resolved encal, min 4 channels, 0.2 a.u.; mm and slab chosen before processing, so the DOI view is applied in the processing thread; recorded, not a pass criterion; screenshots in the session scratchpad `t15/`):
+    - **prefix** (500,000 pairs/file, 780,406 sides):
+      - processed in 3.2 s; mm DOI excludes {missing key 1,588, out of range 33,429};
+      - slab totals take 0.08 s under the cuts (151,882 shown, 0 excluded, 3,859 clipped);
+      - an SM redraw takes 0.52 s; the overview slab floods 0.48 s;
+    - **whole file** (3,853,684 sides):
+      - processed in 7.1 s; mm excludes {missing key 7,747, out of range 164,681};
+      - under the cuts 749,022 sides are shown, 0 excluded and 18,341 clipped; 167,568 unresolved-slab pairs were rejected at ingest;
+      - the SM 13 redraw takes 0.59 s; the overview 1.0 s;
+      - SM 13 shows 64 distinct slab X columns at 1.600 mm (median) spacing: per-slab stripes, with empty columns and blocks where the Channel Status reads NOT OBSERVED.
+  - **Other checks:** hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, unpopulated 6/6, slab convention 16/16, scale 44/44 (selftest 44/44), engine/report 59/59.
+  - **Owner review pending:** the slab flood and mm DOI on the real Cornell set (screenshots `t15/sm13_slab_mm.png`, `t15/sm13_figure.png`, `t15/overview_slab.png`). Also pending: the design choices of a display-only COG file, the ROI kept on COG/RTP coordinates, exclusions counted among sides passing the cuts, and one column per slab.
 
 - [ ] **T16 — Non-adjacent slab recovery option** (FR-19; after B1, with T2). *Done when:*
   - `ldat_scale_check.py` fixtures pin every recovery branch (only p−1 fired, only p+1 fired, both with a stronger side, a tie, neither fired, and edges) in both the reference and the fast reader;
