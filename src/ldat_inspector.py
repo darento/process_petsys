@@ -26,7 +26,6 @@ from src.utils import KevConverter, get_maxEnergy_sm_mM, get_max_en_channel, get
 
 MAX_PAIRS_PER_FILE = 1_000_000
 TIMESTAMP_SECONDS = 1e-12
-CORNELL_MM_INACTIVE = frozenset((2, 3, 6, 7, 10, 11, 14, 15))
 _HIT = struct.Struct("qfi")
 _HEADER = struct.Struct("2B")
 _COLUMNS = {
@@ -81,12 +80,28 @@ class Setup:
     converter: object
 
 
+def unpopulated_minimodules(config: dict) -> dict[int, frozenset[int]]:
+    """Minimodules without sensors, from the config's `unpopulated_minimodules`.
+
+    The key maps SuperModule -> list of minimodules (e.g. the half-populated
+    Cornell SMs). Without the key every mapped minimodule is expected.
+    """
+    value = config.get("unpopulated_minimodules") or {}
+    if not isinstance(value, dict):
+        raise ValueError("unpopulated_minimodules must map SuperModule -> list of minimodules")
+    try:
+        return {int(sm): frozenset(int(mm) for mm in mms) for sm, mms in value.items()}
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid unpopulated_minimodules entry: {exc}") from exc
+
+
 def load_setup(settings: Settings) -> Setup:
     settings.validate()
     with open(settings.config_path, encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
     if not isinstance(config, dict) or not config.get("map_file"):
         raise ValueError("Configuration is missing map_file")
+    unpopulated_minimodules(config)  # reject a malformed key before any file is read
     coords, channel_modules, channel_types, fem = map_factory(
         str(_path_from_config(settings.config_path, config["map_file"])))
     converter = (KevConverter(settings.calibration_path,
@@ -173,8 +188,12 @@ class _UnresolvedCornellSlab(ValueError):
     """The two leading time hits are not adjacent; no slab can be calibrated."""
 
 
-def process_file(path: str, settings: Settings, index: int = 0) -> FileResult:
-    """Decode raw coincidence sides once; a corrupt file contributes no prefix."""
+def process_file_reference(path: str, settings: Settings, index: int = 0) -> FileResult:
+    """Decode raw coincidence sides once; a corrupt file contributes no prefix.
+
+    Spec 001's per-pair Python reader. Spec 002 keeps it unchanged as the
+    oracle that the fast reader is compared against (scripts/ldat_scale_check.py).
+    """
     result = FileResult(index=index, path=str(path))
     try:
         settings.validate()
@@ -253,6 +272,10 @@ def process_file(path: str, settings: Settings, index: int = 0) -> FileResult:
     return result
 
 
+# The GUI and checks call process_file; it switches to the fast reader in spec 002 T2.
+process_file = process_file_reference
+
+
 @dataclass
 class Dataset:
     settings: Settings
@@ -273,9 +296,9 @@ def merge_results(settings: Settings, files: list[FileResult], setup: Setup | No
     expected_t = defaultdict(set)
     expected_e = defaultdict(set)
     expected_mm = defaultdict(set)
+    unpopulated = unpopulated_minimodules(setup.config)
     for channel, (sm, mm) in setup.channel_modules.items():
-        if (settings.system == "CORNELL" and 20 <= sm < 30
-                and mm in CORNELL_MM_INACTIVE):
+        if mm in unpopulated.get(sm, ()):
             continue
         if channel not in setup.coordinates or channel not in setup.channel_types:
             continue
@@ -398,11 +421,14 @@ def fit_peak(energies, *, interval=(350.0, 700.0), bins=140):
 
 def fit_peak_background(energies, *, interval=(350.0, 700.0),
                          search=(425.0, 600.0), bins=140,
-                         background_model="linear"):
+                         background_model="linear", sigma0=35.0, mu_halfwidth=45.0):
     """Poisson Gaussian plus nonnegative constant or linear continuum in keV.
 
     This is a *display estimate*, not an energy correction or clinical verdict.
     Endpoint background counts are constrained positive across the fit interval.
+    ``sigma0`` (initial width) and ``mu_halfwidth`` (centroid freedom around the
+    smoothed peak) default to keV values; callers fitting raw PETsys a.u. spectra
+    scale both to their expected peak position.
     """
     unavailable = lambda why: {"status": why, "mu": None, "resolution": None}
     if not (np.isfinite([*interval, *search]).all()
@@ -447,12 +473,12 @@ def fit_peak_background(energies, *, interval=(350.0, 700.0),
 
     # Keep a noisy secondary hump from pulling the fit away from the supported
     # mode. A 90-keV-wide centroid interval is still generous for a 511-keV peak.
-    mu_low = max(search[0], mu0 - 45)
-    mu_high = min(search[1], mu0 + 45)
+    mu_low = max(search[0], mu0 - mu_halfwidth)
+    mu_high = min(search[1], mu0 + mu_halfwidth)
     lower = [0.0, mu_low, bin_width, 0.0]
     upper = [max(energies.size * 2.0, 1.0), mu_high,
              (interval[1] - interval[0]) / 3, max(peak * 4, 1)]
-    initial = [max((peak - floor) * 20, 1), mu0, 35.0, max(floor, 0.01)]
+    initial = [max((peak - floor) * 20, 1), mu0, sigma0, max(floor, 0.01)]
     if background_model == "linear":
         lower.append(0.0)
         upper.append(max(peak * 4, 1))
