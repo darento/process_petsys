@@ -150,7 +150,22 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - The 15 not-observed channels have exactly 0 hits in the whole files: SM 3 time 4368/4419, SM 9 time 135562, SM 12 time 262457/262624/262648 and energy 262422, SM 13 time 262989 and energy 263031, SM 15 energy 528703, SM 20 time 525717, SM 23 time 656768/656791, SM 24 time 659786, SM 28 energy 787417.
     - All 19 low channels are time channels, at 0.03–0.149 × median, except SM 16 time 529182 with only 5 hits (0.0003 × median).
   - **Other checks:** engine/report 59/59, scale 44/44; compile exit 0.
-- [ ] **T7 — Channel Status tab** (FR-5, FR-6). *Done when:* the hidden-GUI check shows RAWInspector-style row tags and text states, threshold Apply updates rows, clicking a row draws the channel map and bars for that SM, and "Open in SuperModule" selects it. It also checks the compile.
+- [x] **T7 — Channel Status tab** (FR-5, FR-6). *Done when:* the hidden-GUI check shows RAWInspector-style row tags and text states, threshold Apply updates rows, clicking a row draws the channel map and bars for that SM, and "Open in SuperModule" selects it. It also checks the compile.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 29/29**; `--real` → **PASS 30/30**; GUI compile exit 0.
+  - **Engine:** `channel_geometry(dataset, sm)` places each channel from the selected map. `Dataset` now keeps the map's `coordinates`, `channel_modules` and `channel_types`. On both maps every expected channel sits at its map X (time) or Y (energy) inside its minimodule box. Each SM has 16 minimodule boxes, with populated ones equal to `expected_mm` (Cornell SM 2: 8).
+  - **Hidden GUI** (Cornell fixtures from T6):
+    - 30 rows with the RAWInspector tag colour and the text state for every fixture case;
+    - row columns pinned (the mixed SM reads `400`, `1/16`, `1 / 0 / 0`, median `100`, `0 / 1 / 1`; half-populated SM 2 reads `1/8` and `4 ch` unexpected; the 98-side SM reads `insufficient`);
+    - the summary shows totals, the population wording and the thresholds;
+    - Apply with low 0.04 turns the LOW row OK; high 0.9 is rejected with a dialog and the rows are kept;
+    - clicking a row draws 128 vertical time segments at the map's fine X and 128 horizontal energy segments, one flagged outline, 128 bars per type with state colours, and median / 0.15× / 3× lines. The tab does not change;
+    - the flag list names each flagged channel; the half-populated SM shows 8 hatched minimodules and 4 unexpected channels;
+    - "Open in SuperModule" selects the SM in the SuperModule Explorer; invalidating inputs clears the tab; no error dialogs.
+  - **Found while checking:** in a screenshot on a real Cornell prefix, the SM table area was blank. The Treeview was created before the frame it is packed into, so the frame covered it. The spec 001 table used the same construction. The frame is now created first; the screenshot shows the rows.
+  - **Changed spec 001 check:** `ldat_revision_check.py` read the old columns (`Selected sides`) and `channel_ax`. It now checks SM, ingest sides, minimodules and the finding (14 revision checks pass).
+  - **Other checks:** hidden GUI 29/29, issue 8/8, processing 17/17, engine/report 59/59, scale 44/44, unpopulated 6/6.
+  - **Owner review pending:** layout and readability on representative IMAS and Cornell acquisitions.
 - [ ] **T8 — Minimodule layout and metrics engine** (FR-8, FR-13). *Done when:*
   - both real maps give 4×4 grids;
   - a synthetic non-4×4 map gives its own grid (proves the layout is derived, not assumed);

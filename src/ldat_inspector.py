@@ -422,6 +422,10 @@ class Dataset:
     file_spans: dict[int, tuple[int, int]]
     expected_mm: dict[int, set[int]] = field(default_factory=dict)
     table: SideTable | None = None
+    # From the selected map: channel -> (x, y, index), (SM, minimodule) and types.
+    coordinates: dict = field(default_factory=dict)
+    channel_modules: dict = field(default_factory=dict)
+    channel_types: dict = field(default_factory=dict)
 
 
 def merge_results(settings: Settings, files: list[FileResult], setup: Setup | None = None,
@@ -459,7 +463,8 @@ def merge_results(settings: Settings, files: list[FileResult], setup: Setup | No
     dataset = Dataset(replace(settings, calibrated=False), files, table.by_sm(),
                       dict(expected_t), dict(expected_e), dict(t_counts), dict(e_counts),
                       str(_path_from_config(settings.config_path, setup.config["map_file"])),
-                      setup.config.copy(), spans, dict(expected_mm), table)
+                      setup.config.copy(), spans, dict(expected_mm), table,
+                      setup.coordinates, setup.channel_modules, setup.channel_types)
     return apply_calibration(dataset, settings.calibration_path, True,
                              converter=setup.converter) if settings.calibrated else dataset
 
@@ -766,6 +771,37 @@ def system_channel_findings(dataset: Dataset, thresholds: FindingThresholds = Fi
     """``channel_findings`` for every mapped SM (and any SM with sides), in SM order."""
     sms = set(dataset.expected_time) | set(dataset.expected_energy) | set(dataset.modules)
     return [channel_findings(dataset, sm, thresholds) for sm in sorted(sms)]
+
+
+def channel_geometry(dataset: Dataset, sm: int):
+    """Channel positions of one SM from the selected map (sum rows/cols readout).
+
+    Time channels carry their fine X, energy channels their fine Y. Each
+    minimodule's box spans its time-channel X and energy-channel Y positions
+    plus half a pitch; ``populated`` is False for minimodules the config lists
+    as unpopulated.
+    """
+    by_mm = defaultdict(lambda: {"time": [], "energy": []})
+    for ch, (s, mm) in dataset.channel_modules.items():
+        if s != sm or ch not in dataset.coordinates or ch not in dataset.channel_types:
+            continue
+        x, y = dataset.coordinates[ch][:2]
+        for kind, channel_type in (("time", ChannelType.TIME), ("energy", ChannelType.ENERGY)):
+            if channel_type in dataset.channel_types[ch]:
+                by_mm[mm][kind].append((ch, float(x), float(y)))
+    minimodules, time, energy = {}, [], []
+    for mm, channels in sorted(by_mm.items()):
+        xs = sorted(x for _, x, _ in channels["time"]) or sorted(x for _, x, _ in channels["energy"])
+        ys = sorted(y for _, _, y in channels["energy"]) or sorted(y for _, _, y in channels["time"])
+        steps = np.diff(xs) if len(xs) > 1 else np.diff(ys)
+        half = float(np.median(steps)) / 2 if len(steps) else 1.0
+        box = (xs[0] - half, xs[-1] + half, ys[0] - half, ys[-1] + half)
+        populated = mm in dataset.expected_mm.get(sm, set())
+        minimodules[mm] = {"box": box, "populated": populated}
+        if populated:
+            time += [(ch, x, box[2], box[3], mm) for ch, x, _ in sorted(channels["time"], key=lambda c: c[1])]
+            energy += [(ch, y, box[0], box[1], mm) for ch, _, y in sorted(channels["energy"], key=lambda c: c[2])]
+    return {"minimodules": minimodules, "time": time, "energy": energy}
 
 
 def uniformity(dataset: Dataset, selection: Selection, target=511.0, tolerance_pct=10.0):

@@ -91,10 +91,12 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 - **Tabs:** Channel Status, SuperModule, System Overview, Coincidences, Timestamps. The "SuperModule Status" text tab is removed after its content moves to the SuperModule summary panel.
 - **Redraw:** `_refresh_all` redraws only the visible tab and marks the others stale; switching tabs draws a stale tab. Stepping through SMs at the new scale needs this: fits and overview tiles must not be recomputed on every SM change.
-- **Channel Status:** SM table with the counts from the findings. Threshold entries plus Apply. A detail figure for the selected row:
-  - left, the SM's 4×4 minimodule outline, with time channels as vertical segments at their fine X and energy channels as horizontal segments at their fine Y, coloured by hit count and outlined by state;
-  - right, per-channel bars grouped by minimodule, with median and threshold lines.
-  - An "Open in SuperModule" button.
+- **Channel Status:** SM table with the counts from the findings (ingest sides, minimodules seen/expected, per type: assessed channels, not observed / low / high, median hits; unexpected hits; finding). Threshold entries plus Apply. A detail figure for the selected row:
+  - left, the SM's minimodule outline from `channel_geometry` (unpopulated minimodules hatched), drawn twice: time channels as vertical segments at their fine X, and energy channels as horizontal segments at their fine Y. They are separate maps because the two sets cross over the same area and their medians differ by about 3×. Segments are coloured by hits / type median and outlined by state;
+  - right, per-channel bars for each type, grouped by minimodule in map order and coloured by state, with median and threshold lines; zero-hit channels are marked with ×;
+  - a list of the flagged channels (ID, hits, state) and unexpected hits;
+  - an "Open in SuperModule" button. Clicking a row only draws its detail; it no longer switches tab.
+  - The findings use the ingest population only, so the tab is redrawn on new data and on Apply, not on display-cut changes. The spec 001 "Selected sides" column and SM participation bar chart are dropped from this tab; selected counts belong to the SuperModule summary (T10) and System Overview (T9).
 - **SuperModule** (the renamed Explorer):
   - Prev/Next buttons; mouse wheel over the toolbar and SM combobox (debounced 150 ms); Page Up/Page Down shortcuts. Tooltips and labels match.
   - A summary panel beside the plots: occupancy, channel findings and a per-minimodule Treeview (mM, ingest, selected, centroid, resolution, fit status). Raw mode shows the fit columns as unavailable.

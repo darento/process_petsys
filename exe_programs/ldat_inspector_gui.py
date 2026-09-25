@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 import multiprocessing
@@ -16,6 +17,8 @@ import customtkinter as ctk
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
@@ -23,14 +26,18 @@ import numpy as np
 
 from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
-    FileResult, Selection, Settings, apply_calibration, channel_status, fit_peak,
-    fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results, process_file, rate_series,
-    pair_offset_series, uniformity,
+    FINDING_COLOURS, FINDINGS_POPULATION, FileResult, FindingThresholds, Selection, Settings, apply_calibration,
+    channel_findings, channel_geometry, channel_status, fit_peak, fit_on_display_bins, fit_peak_background,
+    flood_counts, load_setup, merge_results, process_file, rate_series, pair_offset_series,
+    system_channel_findings, uniformity,
 )
 from src.ldat_memory import estimate_memory
 
 
 __version__ = "0.1.0"
+# Strong colours for plotted channel states; table rows keep the pale RAWInspector colours.
+STATE_EDGES = {"OK": "#4c9a5b", "NOT OBSERVED": "#d62728", "HIGH": "#c2185b", "LOW": "#ef8a00",
+               "INSUFFICIENT EVENTS": "#8c939a"}
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -105,6 +112,14 @@ class LDATWorkbench(ctk.CTk):
         self.time_bins = tk.StringVar(value="60")
         self.target = tk.StringVar(value="511")
         self.tolerance = tk.StringVar(value="10")
+        default = FindingThresholds()
+        self.thresholds = default
+        self.finding_low = tk.StringVar(value=f"{default.low_frac:g}")
+        self.finding_high = tk.StringVar(value=f"{default.high_frac:g}")
+        self.finding_median = tk.StringVar(value=f"{default.min_median:g}")
+        self.finding_events = tk.StringVar(value=str(default.min_events))
+        self._findings = {}
+        self._channel_sm = None
 
         self._build_top()
         self._build_tabs()
@@ -222,30 +237,48 @@ class LDATWorkbench(ctk.CTk):
 
     def _build_channels(self):
         tab = self.tabs.tab("Channel Status")
-        ctk.CTkLabel(tab, text="PETsys SuperModule summary • coincidence detector sides; mapped channel/minimodule coverage uses the ingest population",
-                      anchor="w").pack(fill="x", padx=9, pady=5)
-        columns = ("sm", "events", "selected", "mm", "time", "energy", "median", "doi", "state")
-        self.channel_tree = ttk.Treeview(tab, columns=columns, show="headings", height=12)
-        for column, heading, width in zip(columns,
-                ("SM", "Ingest sides", "Selected sides", "mM seen/mapped", "Time seen/mapped",
-                 "Energy seen/mapped", "Median energy", "Median DOI ratio", "Finding"),
-                (60, 115, 115, 115, 120, 130, 130, 125, 150)):
-            self.channel_tree.heading(column, text=heading)
-            self.channel_tree.column(column, width=width, anchor="center")
-        self.channel_tree.tag_configure("warn", background="#ffe7ba")
-        self.channel_tree.tag_configure("ok", background="#d8eedb")
-        self.channel_tree.tag_configure("none", background="#dce0e4")
+        controls = ctk.CTkFrame(tab)
+        controls.pack(fill="x", padx=9, pady=(5, 2))
+        for text, variable in (("LOW <", self.finding_low), ("× median   HIGH >", self.finding_high),
+                               ("× median   Min median (hits)", self.finding_median),
+                               ("Min ingest sides", self.finding_events)):
+            _label(controls, text)
+            _entry(controls, variable, 58)
+        ctk.CTkButton(controls, text="Apply", width=66, command=self._apply_thresholds).pack(side="left", padx=4)
+        self.open_sm_button = ctk.CTkButton(controls, text="Open in SuperModule", width=150,
+                                            command=self._open_in_supermodule, state="disabled")
+        self.open_sm_button.pack(side="right", padx=6)
+        self.channel_summary = ctk.CTkLabel(tab, text=f"Channel status • {FINDINGS_POPULATION}; "
+                                            "process files to assess channels", anchor="w", justify="left")
+        self.channel_summary.pack(fill="x", padx=9)
+        columns = ("sm", "events", "mm", "time", "time_flags", "time_median",
+                   "energy", "energy_flags", "energy_median", "unexpected", "state")
+        # The frame must exist first: a widget packed into a later sibling is stacked below it (hidden).
         frame = ctk.CTkFrame(tab)
         frame.pack(fill="x", padx=9)
-        self.channel_tree.pack(in_=frame, side="left", fill="x", expand=True)
+        self.channel_tree = ttk.Treeview(frame, columns=columns, show="headings", height=9)
+        for column, heading, width in zip(columns,
+                ("SM", "Ingest sides", "mM seen/expected", "Time assessed", "Time not obs / low / high",
+                 "Time median hits", "Energy assessed", "Energy not obs / low / high", "Energy median hits",
+                 "Unexpected hits", "Finding"),
+                (60, 100, 115, 100, 160, 115, 110, 170, 125, 110, 150)):
+            self.channel_tree.heading(column, text=heading)
+            self.channel_tree.column(column, width=width, anchor="center")
+        for state, colour in FINDING_COLOURS.items():
+            self.channel_tree.tag_configure(state, background=colour, foreground="black")
+        self.channel_tree.pack(side="left", fill="x", expand=True)
         bar = ttk.Scrollbar(frame, orient="vertical", command=self.channel_tree.yview)
         bar.pack(side="right", fill="y")
         self.channel_tree.configure(yscrollcommand=bar.set)
         self.channel_tree.bind("<<TreeviewSelect>>", self._select_channel_row)
-        self.channel_fig = Figure(figsize=(13, 3.5), dpi=100)
-        self.channel_ax = self.channel_fig.add_subplot(111)
-        self.channel_canvas = FigureCanvasTkAgg(self.channel_fig, master=tab)
-        self.channel_canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=6)
+        detail = ctk.CTkFrame(tab, fg_color="transparent")
+        detail.pack(fill="both", expand=True, padx=5, pady=(4, 4))
+        self.channel_flags = ctk.CTkTextbox(detail, width=300, font=("Consolas", 10))
+        self.channel_flags.pack(side="right", fill="y", padx=(4, 0))
+        self.channel_fig = Figure(figsize=(13, 4.2), dpi=100)
+        self.channel_canvas = FigureCanvasTkAgg(self.channel_fig, master=detail)
+        self.channel_canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+        self.channel_axes = {}
 
     def _build_explorer(self):
         tab = self.tabs.tab("SuperModule Explorer")
@@ -497,6 +530,10 @@ class LDATWorkbench(ctk.CTk):
             button.configure(state="disabled")
         self.module_var.set("")
         self.channel_tree.delete(*self.channel_tree.get_children())
+        self._findings, self._channel_sm = {}, None
+        self.open_sm_button.configure(state="disabled")
+        self.channel_flags.delete("1.0", "end")
+        self.channel_summary.configure(text=f"Channel status • {FINDINGS_POPULATION}; process files to assess channels")
         if self._selector is not None:
             self._selector.set_active(False)
             self._selector.disconnect_events()
@@ -508,7 +545,7 @@ class LDATWorkbench(ctk.CTk):
         self._colorbar = None
         self._close_residuals()
         self.energy_ax, self.doi_ax, self.flood_ax = self.fig.subplots(1, 3)
-        self.channel_ax = self.channel_fig.add_subplot(111)
+        self.channel_axes = {}
         self.detail.delete("1.0", "end")
         self.explorer_info.configure(text="Inputs changed; process the selected files again")
 
@@ -796,6 +833,8 @@ class LDATWorkbench(ctk.CTk):
         self._sync_sliders()
         for button in (self.uniformity_button, self.system_report, self.module_report):
             button.configure(state="normal" if dataset.modules else "disabled")
+        # Findings use the ingest population only: independent of display cuts and calibration.
+        self._draw_channels()
         self._refresh_all()
 
     def _selected_sm(self):
@@ -823,7 +862,6 @@ class LDATWorkbench(ctk.CTk):
             self._colour_range()
             self._sync_sliders()
             self._refresh_selected()
-            self._draw_channels()
             self._draw_overview()
             self._draw_timestamps()
         except (ValueError, OverflowError) as exc:
@@ -1119,50 +1157,163 @@ class LDATWorkbench(ctk.CTk):
         self.profile_mode.set(False)
         self._refresh_all()
 
+    def _apply_thresholds(self):
+        try:
+            events = float(self.finding_events.get())
+            thresholds = FindingThresholds(float(self.finding_low.get()), float(self.finding_high.get()),
+                                           float(self.finding_median.get()),
+                                           int(events) if events.is_integer() else events).validate()
+        except ValueError as exc:
+            messagebox.showerror("Channel thresholds", str(exc))
+            return
+        self.thresholds = thresholds
+        self._log(f"Channel thresholds: {thresholds.text()}")
+        self._draw_channels()
+
     def _draw_channels(self):
         if not self.dataset:
             return
         tree = self.channel_tree
+        keep = self._channel_sm
         tree.delete(*tree.get_children())
-        rows, selected_rows = [], []
-        selection = self._selection()
-        unit = "keV" if self.dataset.settings.calibrated else "a.u."
-        tree.heading("median", text=f"Median energy ({unit})")
-        for sm in sorted(set(self.dataset.expected_time) | set(self.dataset.modules)):
-            status = channel_status(self.dataset, sm)
-            rows.append((sm, status["events"]))
+        rows = system_channel_findings(self.dataset, self.thresholds)
+        self._findings = {row["sm"]: row for row in rows}
+        states, channel_states = Counter(), Counter()
+
+        def assessed(kind):
+            return "insufficient" if kind["insufficient"] else f"{len(kind['channels'])}"
+
+        def flags(kind):
+            return "—" if kind["insufficient"] else " / ".join(
+                str(kind["counts"].get(state, 0)) for state in ("NOT OBSERVED", "LOW", "HIGH"))
+
+        def median(kind):
+            return "—" if kind["median"] is None else f"{kind['median']:,.0f}"
+
+        for row in rows:
+            sm, t, e = row["sm"], row["time"], row["energy"]
             data = self.dataset.modules.get(sm)
-            selected = selection.mask(data) if data is not None else np.zeros(0, dtype=bool)
-            count = int(selected.sum())
-            selected_rows.append(count)
-            mm_count = len(np.unique(data.mm)) if data is not None else 0
-            valid_energy = data.energy[selected & np.isfinite(data.energy)] if data is not None else []
-            median_energy = f"{np.median(valid_energy):.1f}" if len(valid_energy) else "—"
-            median_doi = f"{np.median(data.doi[selected]):.3f}" if count else "—"
-            tag = "none" if status["events"] == 0 else "warn" if status["state"] != "OBSERVED" else "ok"
-            tree.insert("", "end", iid=str(sm), values=(f"SM {sm}", f"{status['events']:,}", f"{count:,}",
-                        f"{mm_count}/{len(self.dataset.expected_mm.get(sm, set()))}",
-                        f"{len(status['active_time'])}/{len(status['expected_time'])}",
-                        f"{len(status['active_energy'])}/{len(status['expected_energy'])}",
-                        median_energy, median_doi, status["state"]), tags=(tag,))
-        self.channel_ax.clear()
-        if rows:
-            ids, totals = zip(*rows)
-            self.channel_ax.bar(ids, totals, color="#5188c4", label="Ingested")
-            self.channel_ax.bar(ids, selected_rows, color="#48aa76", label="Selected")
-            self.channel_ax.legend(fontsize=8)
-        self.channel_ax.set(xlabel="SuperModule", ylabel="Coincidence detector sides",
-                            title="PETsys SuperModule participation")
-        self.channel_ax.grid(axis="y", alpha=0.25)
-        self.channel_fig.tight_layout()
-        self.channel_canvas.draw_idle()
+            seen_mm = len(np.unique(data.mm)) if data is not None else 0
+            unexpected = len(t["unexpected"]) + len(e["unexpected"])
+            tree.insert("", "end", iid=str(sm), tags=(row["state"],), values=(
+                f"SM {sm}", f"{row['events']:,}", f"{seen_mm}/{len(self.dataset.expected_mm.get(sm, ()))}",
+                assessed(t), flags(t), median(t), assessed(e), flags(e), median(e),
+                f"{unexpected} ch" if unexpected else "—", row["state"]))
+            states[row["state"]] += 1
+            channel_states.update(t["states"])
+            channel_states.update(e["states"])
+        order = ("NOT OBSERVED", "HIGH", "LOW", "INSUFFICIENT EVENTS", "NO DATA", "OK")
+        self.channel_summary.configure(text=(
+            f"{len(rows)} SuperModules: " + ", ".join(f"{states[s]} {s}" for s in order if states[s])
+            + "  •  channels: " + ", ".join(f"{channel_states[s]:,} {s}" for s in order if channel_states[s])
+            + f"\n{FINDINGS_POPULATION} (not a dead/hot hardware verdict) • {self.thresholds.text()}"))
+        if keep in self._findings:
+            tree.selection_set(str(keep))
+            self._draw_channel_detail(keep)
 
     def _select_channel_row(self, _event):
         selection = self.channel_tree.selection()
-        if selection:
-            self.module_var.set(f"SM {selection[0]}")
-            self.tabs.set("SuperModule Explorer")
-            self._refresh_all()
+        if selection and (int(selection[0]) != self._channel_sm or not self.channel_axes):
+            self._draw_channel_detail(int(selection[0]))
+
+    def _open_in_supermodule(self):
+        if self._channel_sm is None:
+            return
+        self.module_var.set(f"SM {self._channel_sm}")
+        self.tabs.set("SuperModule Explorer")
+        self._refresh_all()
+
+    def _draw_channel_detail(self, sm):
+        """Channel map (time: vertical at fine X; energy: horizontal at fine Y) and bars."""
+        self._channel_sm = sm
+        self.open_sm_button.configure(state="normal")
+        findings = self._findings.get(sm) or channel_findings(self.dataset, sm, self.thresholds)
+        geometry = channel_geometry(self.dataset, sm)
+        figure = self.channel_fig
+        figure.clear()
+        grid = figure.add_gridspec(2, 2, width_ratios=(1, 2.9), hspace=0.42, wspace=0.16,
+                                   left=0.005, right=0.99, top=0.9, bottom=0.04)
+        self.channel_axes = {}
+        norm = Normalize(0, 2)
+        cmap = matplotlib.colormaps["viridis"]
+        flag_lines = []
+        for row, kind in enumerate(("time", "energy")):
+            found = findings[kind]
+            state_of = dict(zip(found["channels"], found["states"]))
+            hits_of = dict(zip(found["channels"], found["hits"].tolist()))
+            scale = found["median"] if found["median"] else max(max(hits_of.values(), default=0), 1)
+            placed = geometry[kind]
+            ids = [ch for ch, *_ in placed]
+            map_ax = figure.add_subplot(grid[row, 0])
+            bar_ax = figure.add_subplot(grid[row, 1])
+            self.channel_axes[kind] = (map_ax, bar_ax)
+
+            # map: minimodule boxes (hatched when unpopulated) and one segment per channel
+            for mm, info in geometry["minimodules"].items():
+                x0, x1, y0, y1 = info["box"]
+                map_ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=not info["populated"],
+                                           facecolor="#e4e6e9", hatch=None if info["populated"] else "//",
+                                           edgecolor="#7c8288", lw=0.8))
+            if kind == "time":
+                segments = [[(pos, lo), (pos, hi)] for _, pos, lo, hi, _ in placed]
+            else:
+                segments = [[(lo, pos), (hi, pos)] for _, pos, lo, hi, _ in placed]
+            flagged = [i for i, ch in enumerate(ids) if state_of.get(ch, "OK") != "OK"]
+            if flagged:
+                map_ax.add_collection(LineCollection([segments[i] for i in flagged], linewidths=5,
+                                                     colors=[STATE_EDGES[state_of[ids[i]]] for i in flagged]))
+            lines = LineCollection(segments, linewidths=1.8, cmap=cmap, norm=norm)
+            lines.set_array(np.array([hits_of.get(ch, 0) / scale for ch in ids], dtype=float))
+            map_ax.add_collection(lines)
+            map_ax.set_xlim(0, 103.6)
+            map_ax.set_ylim(0, 103.6)
+            map_ax.set_aspect("equal")
+            map_ax.set_xticks([])
+            map_ax.set_yticks([])
+            map_ax.set_title(f"{kind.capitalize()} channels at their {'fine X' if kind == 'time' else 'fine Y'}",
+                             fontsize=9)
+            colorbar = figure.colorbar(lines, cax=map_ax.inset_axes((1.04, 0.0, 0.05, 1.0)), ticks=(0, 1, 2))
+            colorbar.ax.set_yticklabels(("0", "median", "≥ 2×"), fontsize=6)
+            colorbar.set_label("hits / type median", fontsize=7)
+
+            # bars grouped by minimodule, in map order
+            hits = [hits_of.get(ch, 0) for ch in ids]
+            bar_ax.bar(np.arange(len(ids)), hits, width=0.85,
+                       color=[STATE_EDGES[state_of.get(ch, "OK")] for ch in ids])
+            zero = [i for i, n in enumerate(hits) if n == 0]
+            if zero:
+                bar_ax.plot(zero, [0] * len(zero), "x", color=STATE_EDGES["NOT OBSERVED"], ms=6, mew=1.6)
+            boundaries = [i for i in range(1, len(placed)) if placed[i][4] != placed[i - 1][4]]
+            for b in boundaries:
+                bar_ax.axvline(b - 0.5, color="#b8bcc1", lw=0.7)
+            for a, b in zip([0] + boundaries, boundaries + [len(placed)]):
+                bar_ax.text((a + b - 1) / 2, 1.0, f"mM{placed[a][4]}", transform=bar_ax.get_xaxis_transform(),
+                            ha="center", va="bottom", fontsize=6, color="#555b61")
+            if found["median"] is not None:
+                bar_ax.axhline(found["median"], color="#303438", lw=1, label=f"median {found['median']:,.0f}")
+                bar_ax.axhline(self.thresholds.low_frac * found["median"], color=STATE_EDGES["LOW"], ls="--",
+                               lw=1, label=f"low {self.thresholds.low_frac:g} × median")
+                bar_ax.axhline(self.thresholds.high_frac * found["median"], color=STATE_EDGES["HIGH"], ls="--",
+                               lw=1, label=f"high {self.thresholds.high_frac:g} × median")
+                bar_ax.legend(fontsize=7, loc="upper right", ncol=3)
+            bar_ax.set_xlim(-0.6, len(ids) - 0.4)
+            bar_ax.set_xticks([])
+            status = found["insufficient"] or ", ".join(
+                f"{found['counts'][s]} {s}" for s in ("NOT OBSERVED", "HIGH", "LOW") if found["counts"][s]) \
+                or "all OK"
+            bar_ax.set_ylabel("Hits", fontsize=8)
+            bar_ax.set_title(f"SM {sm} • {kind} channel hits • {status}", fontsize=9, pad=12)
+            for ch in ids:
+                state = state_of.get(ch, "OK")
+                if state not in ("OK", "INSUFFICIENT EVENTS"):
+                    flag_lines.append(f"{kind:<6} {ch:>7} {hits_of.get(ch, 0):>9,}  {state}")
+            for ch, n in found["unexpected"].items():
+                flag_lines.append(f"{kind:<6} {ch:>7} {n:>9,}  unexpected (unpopulated mM)")
+        self.channel_canvas.draw_idle()
+        self.channel_flags.delete("1.0", "end")
+        header = [f"SM {sm} • {findings['state']}", f"{findings['events']:,} ingest sides",
+                  "", f"{'type':<6} {'channel':>7} {'hits':>9}  state"]
+        self.channel_flags.insert("end", "\n".join(header + (flag_lines or ["no flagged channels"])))
 
     def _layout(self):
         config = self.dataset.config
