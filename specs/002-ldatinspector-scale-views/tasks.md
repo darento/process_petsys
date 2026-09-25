@@ -161,7 +161,7 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - Apply with low 0.04 turns the LOW row OK; high 0.9 is rejected with a dialog and the rows are kept;
     - clicking a row draws 128 vertical time segments at the map's fine X and 128 horizontal energy segments, one flagged outline, 128 bars per type with state colours, and median / 0.15× / 3× lines. The tab does not change;
     - the flag list names each flagged channel; the half-populated SM shows 8 hatched minimodules and 4 unexpected channels;
-    - "Open in SuperModule" selects the SM in the SuperModule Explorer; invalidating inputs clears the tab; no error dialogs.
+    - "Open in SuperModule" selects the SM in the SuperModule Explorer (renamed "SuperModule" in T10); invalidating inputs clears the tab; no error dialogs.
   - **Found while checking:** in a screenshot on a real Cornell prefix, the SM table area was blank. The Treeview was created before the frame it is packed into, so the frame covered it. The spec 001 table used the same construction. The frame is now created first; the screenshot shows the rows.
   - **Changed spec 001 check:** `ldat_revision_check.py` read the old columns (`Selected sides`) and `channel_ax`. It now checks SM, ingest sides, minimodules and the finding (14 revision checks pass).
   - **Other checks:** hidden GUI 29/29, issue 8/8, processing 17/17, engine/report 59/59, scale 44/44, unpopulated 6/6.
@@ -213,7 +213,35 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   - **Changed spec 001 check:** `ldat_gui_check.py` used the removed "Counts" mode; it now uses "Ingest sides" (29/29). "Flood maps" is unchanged.
   - **Other checks:** engine/report 59/59, revision 14/14, issue 8/8, processing 17/17, scale 44/44, unpopulated 6/6.
   - **Owner review pending:** readability on IMAS (120 SMs) and Cornell.
-- [ ] **T10 — SuperModule tab stepping and summary** (FR-10, FR-13). *Done when:* the hidden-GUI check covers Prev/Next, wheel and Page Up/Page Down stepping (clamped at the ends), the summary panel and per-minimodule table. The Status tab is retired with no lost content, and stepping redraws only the visible tab.
+- [x] **T10 — SuperModule tab stepping and summary** (FR-10, FR-13). *Done when:* the hidden-GUI check covers Prev/Next, wheel and Page Up/Page Down stepping (clamped at the ends), the summary panel and per-minimodule table. The Status tab is retired with no lost content, and stepping redraws only the visible tab.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 76/76** (17 new for T10); `--real` → **PASS 78/78**; GUI compile exit 0.
+  - **Engine:** `minimodule_metrics(..., sms=[1, 2, 99])` gives exactly the rows of SMs 1 and 2 (99 is not mapped), equal to the full computation.
+  - **Hidden GUI, on the T6 Cornell fixtures** (drawing is counted per tab):
+    - the tabs are Channel Status, SuperModule, System Overview, Timestamps; the Status tab and its text box are gone;
+    - loading shows SM 0 at "1 / 30" with Prev disabled. Prev/Next step one SM and redraw at once; both stop at the ends (the end button is disabled and a step returns False);
+    - wheel events on the SM box and on the toolbar background: wheel up at SM 0 is clamped, and three wheel-downs move the box to SM 3 at once with no redraw. One redraw follows 150 ms later; wheel up then goes back one;
+    - Page Down twice from the second-last SM gives the last SM with one redraw; Page Up steps back. On the Channel Status tab, Page Down does nothing;
+    - three steps redraw only the SuperModule tab (3 draws). A cut change redraws only the visible tab, and Timestamps and System Overview draw once when shown. After a further step, showing them again does not redraw them;
+    - the summary keeps the spec 001 Status-tab content for all 9 fixture SMs: ingest sides, time and energy observed / expected, every unobserved channel ID from `channel_status`, and the minimodule occupancy (in the table). The header gives the SM, the system and the finding in its Channel Status colour;
+    - the summary lists flagged channels by state (not observed / low / high with IDs), the 4 stray channels of the half-populated SM, and "insufficient: 98 ingest sides < 100" with the zero-hit IDs. Threshold Apply updates the visible summary (LOW → OK → LOW).
+  - **Hidden GUI, per-minimodule table** (T8 synthetic sides, calibrated; energy window from the config):
+    - SM 0 shows "computing…" first, then per-mM ingest, selected, centroid, resolution and FIT from one background job for SM 0 (not on the Tk thread). "16/16 fitted"; the selected total equals the summary line and the explorer label;
+    - SM 1 mM 3 (24 sides) and mM 7 (0 sides) read "insufficient events" with no value;
+    - with a 0.4 s job, stepping SM 0 → 1 → 2 during the job runs jobs for SM 0 and SM 2 only. The half-populated SM 2 has 8 grey rows reading "unpopulated (config)";
+    - a revisited SM and a System Overview result with fits are reused without a new job;
+    - raw mode: every fit reads `unavailable: raw a.u. (no keV calibration)` with the counts kept. Invalidating inputs clears the summary, table and stepping controls; no error dialogs.
+  - **Test note:** Tk drops generated wheel and key events for an unmapped window, so the check maps the window fully transparent for those two checks.
+  - **Mutation checks:** without the wheel debounce, with Page Up/Down active on every tab, or with a step marking every tab stale, one check fails each; unmodified, none fail.
+  - **Real Cornell** (`00000003`, resolved calibration, 1600 × 960 window; recorded, not a pass criterion):
+    - stepping through all 30 SMs: a step takes median 0.45 s (max 0.60 s) on the 500,000-pair prefix and 0.50 s (max 0.61 s) on the whole file (3,853,684 sides), including the canvas render;
+    - the summary panel takes 8 ms of that. The rest is the spec 001 energy/DOI/flood plots (0.27 s to build, 0.33 s to render); previously an SM change also redrew System Overview and Timestamps;
+    - the per-mM table job (16 fits) finishes within the same step (max 0.10 s after it);
+    - screenshots: SM 12 shows the NOT OBSERVED header and channels 262457, 262624, 262648 and 262422, which are among the T6 whole-file zero-hit channels; SM 2 shows 8/8 fitted and 8 unpopulated rows.
+  - **Found while checking:** at 960 px the summary text left room for only two table rows. The text and table now share a draggable vertical split (8 rows visible by default), and the Fit column was widened so "unpopulated (config)" fits.
+  - **Changed spec 001 checks:** `ldat_gui_check.py` expected 5 tabs; it now expects 4 and shows the SuperModule tab first, because only the visible tab redraws (29/29). `ldat_revision_check.py` also shows that tab first (14/14). The T7 and T9 "Open …" checks now also confirm that the SuperModule tab is drawn for that SM.
+  - **Other checks:** engine/report 59/59, processing 17/17, issue 8/8, scale 44/44, unpopulated 6/6.
+  - **Owner review pending:** stepping feel, the summary layout and the split position on the owner's screen.
 - [ ] **T11 — Coincidence matrix and Δt** (FR-11, FR-12). *Done when:*
   - fixtures with a known pair list give the exact symmetric SM × SM counts under cuts, counting each pair once;
   - Δt sign, median and central-68 % width match fixtures;

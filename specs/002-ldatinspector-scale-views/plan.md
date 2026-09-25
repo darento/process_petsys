@@ -89,8 +89,8 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 ### GUI (FR-5, FR-6, FR-8–FR-10, FR-12)
 
-- **Tabs:** Channel Status, SuperModule, System Overview, Coincidences, Timestamps. The "SuperModule Status" text tab is removed after its content moves to the SuperModule summary panel.
-- **Redraw:** `_refresh_all` redraws only the visible tab and marks the others stale; switching tabs draws a stale tab. Stepping through SMs at the new scale needs this: fits and overview tiles must not be recomputed on every SM change.
+- **Tabs:** Channel Status, SuperModule, System Overview, Coincidences (T11), Timestamps. The "SuperModule Status" text tab is removed; its content is in the SuperModule summary panel (T10).
+- **Redraw:** `_refresh_all` validates the cuts, marks the SuperModule, System Overview and Timestamps tabs stale and draws the visible one; the tab-change command draws a stale tab when it is shown. Changing the SM marks only the SuperModule tab stale, so stepping never recomputes overview tiles or timestamps. Channel Status keeps its own rule (new data and Apply). A finished overview job redraws only when its tab is visible.
 - **Channel Status:** SM table with the counts from the findings (ingest sides, minimodules seen/expected, per type: assessed channels, not observed / low / high, median hits; unexpected hits; finding). Threshold entries plus Apply. A detail figure for the selected row:
   - left, the SM's minimodule outline from `channel_geometry` (unpopulated minimodules hatched), drawn twice: time channels as vertical segments at their fine X, and energy channels as horizontal segments at their fine Y. They are separate maps because the two sets cross over the same area and their medians differ by about 3×. Segments are coloured by hits / type median and outlined by state;
   - right, per-channel bars for each type, grouped by minimodule in map order and coloured by state, with median and threshold lines; zero-hit channels are marked with ×;
@@ -98,8 +98,12 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
   - an "Open in SuperModule" button. Clicking a row only draws its detail; it no longer switches tab.
   - The findings use the ingest population only, so the tab is redrawn on new data and on Apply, not on display-cut changes. The spec 001 "Selected sides" column and SM participation bar chart are dropped from this tab; selected counts belong to the SuperModule summary (T10) and System Overview (T9).
 - **SuperModule** (the renamed Explorer):
-  - Prev/Next buttons; mouse wheel over the toolbar and SM combobox (debounced 150 ms); Page Up/Page Down shortcuts. Tooltips and labels match.
-  - A summary panel beside the plots: occupancy, channel findings and a per-minimodule Treeview (mM, ingest, selected, centroid, resolution, fit status). Raw mode shows the fit columns as unavailable.
+  - Stepping: "◀ Prev" / "Next ▶" buttons and an "n / N" position label beside the SM box, clamped at the ends (the button at an end is disabled). The mouse wheel over the toolbar and SM box and Page Up/Page Down (only while this tab is visible) also step; they update the SM box at once and redraw 150 ms after the last step, so a fast scroll draws once. Buttons redraw at once. Tooltips give the shortcuts.
+  - A summary panel beside the plots. A header gives the SM, the system and its finding, coloured as in Channel Status. Below it, in a vertical split the operator can drag:
+    - occupancy: ingest sides (and share of the system), selected sides, minimodules seen / expected;
+    - channel findings per type: observed / expected, median, not observed / low / high counts with the channel IDs, or the insufficient reason with the zero-hit IDs; unexpected hits; the thresholds. This keeps everything the spec 001 Status tab showed;
+    - the per-minimodule Treeview (mM, ingest, selected, centroid keV, resolution %, fit status). Unpopulated minimodules are grey rows reading "unpopulated (config)"; failed fits show their status, never a value; raw mode shows every fit as unavailable (raw a.u.). Selecting a row shows its full fit status.
+  - The table comes from `minimodule_metrics(dataset, selection, sms=[sm])` on a daemon thread: one job at a time, and when it ends the latest wanted (SM, selection) runs next, so SMs skipped while stepping are never computed. Results are cached per (dataset, selection, SM) for 32 entries; a System Overview result with fits for the same selection is reused. The table shows "computing…" until then. The spec 001 energy, DOI and flood plots are unchanged and still drawn on the Tk thread.
 - **System Overview:**
   - One composite `imshow` for the whole system: SM cells laid out by ring/column, each drawn as its minimodule grid, with one-pixel NaN gaps between SMs.
   - Metric selector: ingest counts, selected counts, centroid (keV) and resolution (%), the last two calibrated only.

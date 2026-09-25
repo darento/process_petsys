@@ -29,7 +29,7 @@ from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
     FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
     FileResult, FindingThresholds, Selection, Settings, apply_calibration, channel_findings, channel_geometry,
-    channel_status, fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
+    fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
     minimodule_layout, minimodule_metrics, overview_grid, process_file, rate_series, pair_offset_series,
     supermodule_layout, system_channel_findings, uniformity,
 )
@@ -42,6 +42,9 @@ STATE_EDGES = {"OK": "#4c9a5b", "NOT OBSERVED": "#d62728", "HIGH": "#c2185b", "L
                "INSUFFICIENT EVENTS": "#8c939a"}
 FLOOD_MODE = "Flood maps"
 TILE_COLOURS = {TILE_UNPOPULATED: "#d5d8dc", TILE_UNAVAILABLE: "#7d848b"}
+SM_TAB = "SuperModule"
+TABS = ("Channel Status", SM_TAB, "System Overview", "Timestamps")
+STEP_DEBOUNCE_MS = 150  # wheel and Page Up/Down redraw once the stepping pauses
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -54,6 +57,30 @@ def _entry(parent, variable, width=74):
 
 def _label(parent, text):
     ctk.CTkLabel(parent, text=text).pack(side="left", padx=(6, 0))
+
+
+class _Tooltip:
+    """Hover text for a widget (CustomTkinter has no tooltip)."""
+
+    def __init__(self, widget, text):
+        self.widget, self.text, self.window = widget, text, None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _event=None):
+        if self.window is not None:
+            return
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.geometry(f"+{self.widget.winfo_rootx() + 8}+"
+                             f"{self.widget.winfo_rooty() + self.widget.winfo_height() + 4}")
+        tk.Label(self.window, text=self.text, background="#ffffe0", foreground="black", relief="solid",
+                 borderwidth=1, font=("Arial", 9), justify="left").pack()
+
+    def _hide(self, _event=None):
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
 
 
 class LDATWorkbench(ctk.CTk):
@@ -131,13 +158,27 @@ class LDATWorkbench(ctk.CTk):
         self.finding_events = tk.StringVar(value=str(default.min_events))
         self._findings = {}
         self._channel_sm = None
+        # SuperModule stepping and its per-minimodule table (spec 002 T10). One background
+        # job at a time; the latest wanted (dataset, selection, SM) runs next.
+        self._sm_ids = []
+        self._step_after = None
+        self._sm_cache = []
+        self._sm_job = None
+        self._sm_wanted = None
+        self._mm_layout = None
+        # Tabs whose content is out of date; only the visible tab is redrawn.
+        self._stale = set()
 
         self._build_top()
         self._build_tabs()
+        self._drawers = {SM_TAB: self._refresh_selected, "System Overview": self._draw_overview,
+                         "Timestamps": self._draw_timestamps}
         self._log("Select an IMAS or Cornell config and LDAT files; calibration can be applied later.")
         self.bind("<Control-o>", lambda _: self._select_files())
         self.bind("<Control-p>", lambda _: self._start_processing())
         self.bind("<Escape>", lambda _: self._reset_filters())
+        self.bind("<Prior>", lambda _: self._key_step(-1))
+        self.bind("<Next>", lambda _: self._key_step(1))
         self.after(80, self._poll_events)
 
     def _card(self, parent, title, *, width=None):
@@ -236,15 +277,14 @@ class LDATWorkbench(ctk.CTk):
         self.status.pack(fill="x", padx=8)
 
     def _build_tabs(self):
-        self.tabs = ctk.CTkTabview(self, corner_radius=7)
+        self.tabs = ctk.CTkTabview(self, corner_radius=7, command=self._draw_visible)
         self.tabs.pack(fill="both", expand=True, padx=10, pady=5)
-        for name in ("Channel Status", "SuperModule Explorer", "System Overview", "Timestamps", "SuperModule Status"):
+        for name in TABS:
             self.tabs.add(name)
         self._build_channels()
         self._build_explorer()
         self._build_overview()
         self._build_timestamps()
-        self._build_status()
 
     def _build_channels(self):
         tab = self.tabs.tab("Channel Status")
@@ -292,14 +332,25 @@ class LDATWorkbench(ctk.CTk):
         self.channel_axes = {}
 
     def _build_explorer(self):
-        tab = self.tabs.tab("SuperModule Explorer")
+        tab = self.tabs.tab(SM_TAB)
         toolbar = ctk.CTkFrame(tab)
         toolbar.pack(fill="x", padx=5, pady=(4, 2))
-        _label(toolbar, "SM")
+        self.sm_toolbar = toolbar
+        self.prev_button = ctk.CTkButton(toolbar, text="◀ Prev", width=64, state="disabled",
+                                         command=lambda: self._step_sm(-1))
+        self.prev_button.pack(side="left", padx=(6, 2))
+        _Tooltip(self.prev_button, "Previous SuperModule (Page Up, or wheel up over this bar)")
         self.module_combo = ctk.CTkComboBox(toolbar, variable=self.module_var,
                                             values=["—"], width=110, state="readonly",
-                                            command=lambda _: self._refresh_all())
-        self.module_combo.pack(side="left", padx=4)
+                                            command=lambda _: self._sm_changed())
+        self.module_combo.pack(side="left", padx=2)
+        _Tooltip(self.module_combo, "SuperModule shown in this tab; the wheel over this bar steps through them")
+        self.next_button = ctk.CTkButton(toolbar, text="Next ▶", width=64, state="disabled",
+                                         command=lambda: self._step_sm(1))
+        self.next_button.pack(side="left", padx=2)
+        _Tooltip(self.next_button, "Next SuperModule (Page Down, or wheel down over this bar)")
+        self.sm_position = ctk.CTkLabel(toolbar, text="—", width=62)
+        self.sm_position.pack(side="left", padx=(2, 4))
         self.fit_toggle = ctk.CTkCheckBox(toolbar, text="Show background fit", variable=self.experimental,
                                           command=self._refresh_all)
         self.fit_toggle.pack(side="left", padx=8)
@@ -360,11 +411,52 @@ class LDATWorkbench(ctk.CTk):
 
         self.explorer_info = ctk.CTkLabel(tab, text="Process files to explore SuperModules", anchor="w")
         self.explorer_info.pack(fill="x", padx=9)
-        self.fig = Figure(figsize=(16, 6), dpi=100)
+        body = ctk.CTkFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        self._build_sm_summary(body)
+        self.fig = Figure(figsize=(12, 6), dpi=100)
         self.energy_ax, self.doi_ax, self.flood_ax = self.fig.subplots(1, 3)
-        self.fig.subplots_adjust(left=0.045, right=0.93, bottom=0.12, top=0.91, wspace=0.28)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=tab)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.fig.subplots_adjust(left=0.055, right=0.93, bottom=0.12, top=0.91, wspace=0.3)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=body)
+        self.canvas.get_tk_widget().pack(side="left", fill="both", expand=True)
+        self._bind_wheel(toolbar)
+
+    def _build_sm_summary(self, parent):
+        """Summary panel beside the plots: occupancy, channel findings, per-minimodule table."""
+        panel = ctk.CTkFrame(parent, width=430)
+        panel.pack(side="right", fill="y", padx=(4, 5), pady=(0, 5))
+        panel.pack_propagate(False)
+        self.sm_state = ctk.CTkLabel(panel, text="No SuperModule selected", anchor="w", corner_radius=5,
+                                     font=("Arial", 12, "bold"))
+        self.sm_state.pack(fill="x", padx=6, pady=(6, 3))
+        # text above, table below; the sash lets the operator trade one for the other
+        split = ttk.PanedWindow(panel, orient="vertical")
+        split.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        top = ctk.CTkFrame(split, fg_color="transparent")
+        bottom = ctk.CTkFrame(split, fg_color="transparent")
+        split.add(top, weight=2)
+        split.add(bottom, weight=3)
+        self.sm_summary = ctk.CTkTextbox(top, height=60, font=("Consolas", 10), wrap="word")
+        self.sm_summary.pack(fill="both", expand=True)
+        self.mm_title = ctk.CTkLabel(bottom, text="Per-minimodule counts and photopeak", anchor="w",
+                                     justify="left", wraplength=410, font=("Arial", 11, "bold"))
+        self.mm_title.pack(fill="x", pady=(4, 1))
+        columns = ("mm", "ingest", "selected", "mu", "resolution", "fit")
+        frame = ctk.CTkFrame(bottom)  # before the Treeview it holds (see _build_channels)
+        frame.pack(fill="both", expand=True)
+        self.mm_tree = ttk.Treeview(frame, columns=columns, show="headings", height=4)
+        for column, heading, width in zip(columns, ("mM", "Ingest", "Selected", "Centroid keV", "Res. %", "Fit"),
+                                          (32, 60, 60, 76, 46, 130)):
+            self.mm_tree.heading(column, text=heading)
+            self.mm_tree.column(column, width=width, anchor="center", stretch=column == "fit")
+        self.mm_tree.tag_configure("unpopulated", background=FINDING_COLOURS["INSUFFICIENT EVENTS"],
+                                   foreground="#424952")
+        self.mm_tree.tag_configure("unavailable", background="#eceef0", foreground="#424952")
+        self.mm_tree.pack(side="left", fill="both", expand=True)
+        bar = ttk.Scrollbar(frame, orient="vertical", command=self.mm_tree.yview)
+        bar.pack(side="right", fill="y")
+        self.mm_tree.configure(yscrollcommand=bar.set)
+        self.mm_tree.bind("<<TreeviewSelect>>", self._select_mm_row)
 
     def _build_overview(self):
         tab = self.tabs.tab("System Overview")
@@ -407,11 +499,6 @@ class LDATWorkbench(ctk.CTk):
         self.time_fig = Figure(figsize=(13, 5), dpi=100)
         self.time_canvas = FigureCanvasTkAgg(self.time_fig, master=tab)
         self.time_canvas.get_tk_widget().pack(fill="both", expand=True)
-
-    def _build_status(self):
-        tab = self.tabs.tab("SuperModule Status")
-        self.detail = ctk.CTkTextbox(tab, font=("Consolas", 12))
-        self.detail.pack(fill="both", expand=True, padx=10, pady=10)
 
     def _log(self, text):
         from datetime import datetime
@@ -557,6 +644,12 @@ class LDATWorkbench(ctk.CTk):
         self._overview_ax = self._overview_pick = None
         self.overview_open.configure(state="disabled")
         self.overview_info.configure(text="Click a minimodule tile for its SM, mM and value")
+        if self._step_after is not None:
+            self.after_cancel(self._step_after)
+        self._step_after, self._sm_ids, self._stale = None, [], set()
+        self._sm_cache, self._sm_wanted, self._mm_layout = [], None, None  # a running SM job is ignored
+        self._update_step_controls()
+        self._clear_summary("Inputs changed; process the selected files again")
         if self._selector is not None:
             self._selector.set_active(False)
             self._selector.disconnect_events()
@@ -569,7 +662,6 @@ class LDATWorkbench(ctk.CTk):
         self._close_residuals()
         self.energy_ax, self.doi_ax, self.flood_ax = self.fig.subplots(1, 3)
         self.channel_axes = {}
-        self.detail.delete("1.0", "end")
         self.explorer_info.configure(text="Inputs changed; process the selected files again")
 
     def _select_files(self):
@@ -812,6 +904,8 @@ class LDATWorkbench(ctk.CTk):
                     messagebox.showerror("Calibration", event[1], parent=self)
                 elif event[0] == "overview":
                     self._overview_done(*event[1:])
+                elif event[0] == "sm_metrics":
+                    self._sm_metrics_done(*event[1:])
                 elif event[0] == "report":
                     self._report_busy = False
                     self.last_report = event[1]
@@ -852,6 +946,8 @@ class LDATWorkbench(ctk.CTk):
         values = [f"SM {sm}" for sm in ids]
         self.module_combo.configure(values=values or ["—"])
         self.module_var.set(values[0] if values else "")
+        self._sm_ids, self._sm_cache, self._sm_wanted, self._mm_layout = ids, [], None, None
+        self._update_step_controls()
         labels = [f"{f.index}: {Path(f.path).name}" for f in successful]
         self.time_combo.configure(values=labels or ["—"])
         self.time_file.set(labels[0] if labels else "")
@@ -877,6 +973,7 @@ class LDATWorkbench(ctk.CTk):
         return Selection(*values)
 
     def _refresh_all(self):
+        """Validate the cuts, mark every drawn tab stale and redraw the visible one."""
         try:
             self._selection()
             if self.experimental.get():
@@ -886,11 +983,83 @@ class LDATWorkbench(ctk.CTk):
                 raise ValueError("Flood bins must be between 10 and 500")
             self._colour_range()
             self._sync_sliders()
-            self._refresh_selected()
-            self._draw_overview()
-            self._draw_timestamps()
         except (ValueError, OverflowError) as exc:
             messagebox.showerror("Filter", str(exc))
+            return
+        self._stale.update(self._drawers)
+        self._draw_visible()
+
+    def _draw_visible(self):
+        """Draw the visible tab if it is stale (also the tab-change callback)."""
+        name = self.tabs.get()
+        if not self.dataset or name not in self._stale:
+            return
+        self._stale.discard(name)
+        try:
+            self._drawers[name]()
+        except (ValueError, OverflowError) as exc:
+            self._stale.add(name)
+            messagebox.showerror("Filter", str(exc))
+
+    def _show_tab(self, name):
+        self.tabs.set(name)  # CTkTabview.set does not call the tab-change command
+        self._draw_visible()
+
+    def _sm_changed(self):
+        """The selected SM changed: only the SuperModule tab depends on it."""
+        if self._step_after is not None:
+            self.after_cancel(self._step_after)
+            self._step_after = None
+        self._update_step_controls()
+        self._stale.add(SM_TAB)
+        self._draw_visible()
+
+    def _update_step_controls(self):
+        ids, sm = self._sm_ids, self._selected_sm()
+        index = ids.index(sm) if sm in ids else None
+        self.sm_position.configure(text="—" if index is None else f"{index + 1} / {len(ids)}")
+        self.prev_button.configure(state="normal" if index else "disabled")
+        self.next_button.configure(state="normal" if index is not None and index < len(ids) - 1 else "disabled")
+
+    def _step_sm(self, delta, *, debounce=False):
+        """Select the previous/next SM, clamped at the ends; True when the selection moved.
+
+        Button clicks redraw at once. The wheel and Page Up/Down redraw
+        ``STEP_DEBOUNCE_MS`` after the last step, so a fast scroll draws once.
+        """
+        ids, sm = self._sm_ids, self._selected_sm()
+        if sm not in ids:
+            return False
+        target = ids[min(max(ids.index(sm) + delta, 0), len(ids) - 1)]
+        if target == sm:
+            return False
+        self.module_var.set(f"SM {target}")
+        if not debounce:
+            self._sm_changed()
+            return True
+        self._update_step_controls()
+        if self._step_after is not None:
+            self.after_cancel(self._step_after)
+        self._step_after = self.after(STEP_DEBOUNCE_MS, self._sm_changed)
+        return True
+
+    def _key_step(self, delta):
+        if self.dataset and self.tabs.get() == SM_TAB:
+            self._step_sm(delta, debounce=True)
+            return "break"
+        return None
+
+    def _wheel_step(self, event):
+        up = event.num == 4 or (event.num != 5 and event.delta > 0)
+        self._step_sm(-1 if up else 1, debounce=True)
+        return "break"
+
+    def _bind_wheel(self, widget):
+        """Bind the wheel on a widget and all its inner Tk widgets (CTk widgets are composites)."""
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            tk.Misc.bind(widget, sequence, self._wheel_step, "+")
+        for child in tk.Misc.winfo_children(widget):
+            self._bind_wheel(child)
 
     def _refresh_selected(self):
         if not self.dataset:
@@ -914,7 +1083,7 @@ class LDATWorkbench(ctk.CTk):
         if data is None or len(data) == 0:
             self.explorer_info.configure(text=f"SM {sm}: no accepted coincidence detector sides")
             self.canvas.draw_idle()
-            self._draw_detail()
+            self._draw_summary(sm, selection, 0)
             return
         spatial = selection.mask(data, energy=False)
         chosen = selection.mask(data)
@@ -1010,7 +1179,7 @@ class LDATWorkbench(ctk.CTk):
                 f"({'keV' if calibrated else 'raw a.u.'}) • fit: {legacy['status']}")
         self._switch_rectangle()
         self.canvas.draw_idle()
-        self._draw_detail()
+        self._draw_summary(sm, selection, int(chosen.sum()))
 
     def _experimental_settings(self):
         interval = (float(self.fit_low.get()), float(self.fit_high.get()))
@@ -1194,6 +1363,8 @@ class LDATWorkbench(ctk.CTk):
         self.thresholds = thresholds
         self._log(f"Channel thresholds: {thresholds.text()}")
         self._draw_channels()
+        self._stale.add(SM_TAB)  # its summary shows the findings
+        self._draw_visible()
 
     def _draw_channels(self):
         if not self.dataset:
@@ -1244,9 +1415,14 @@ class LDATWorkbench(ctk.CTk):
     def _open_in_supermodule(self):
         if self._channel_sm is None:
             return
-        self.module_var.set(f"SM {self._channel_sm}")
-        self.tabs.set("SuperModule Explorer")
-        self._refresh_all()
+        self._open_sm(self._channel_sm)
+
+    def _open_sm(self, sm):
+        """Show one SM in the SuperModule tab (from Channel Status or System Overview)."""
+        self.module_var.set(f"SM {sm}")
+        self._update_step_controls()
+        self._stale.add(SM_TAB)
+        self._show_tab(SM_TAB)
 
     def _draw_channel_detail(self, sm):
         """Channel map (time: vertical at fine X; energy: horizontal at fine Y) and bars."""
@@ -1381,7 +1557,8 @@ class LDATWorkbench(ctk.CTk):
         what = "counts and photopeak fits" if fits and dataset.settings.calibrated else "counts"
         self._log(f"System Overview: {what} for {len(metrics):,} minimodules in {detail:.1f} s")
         if dataset is self.dataset:
-            self._draw_overview()
+            self._stale.add("System Overview")  # drawn now if visible, else when shown
+            self._draw_visible()
 
     def _draw_overview(self):
         if not self.dataset:
@@ -1508,9 +1685,7 @@ class LDATWorkbench(ctk.CTk):
     def _overview_open_sm(self):
         if self._overview_pick is None:
             return
-        self.module_var.set(f"SM {self._overview_pick[0]}")
-        self.tabs.set("SuperModule Explorer")
-        self._refresh_all()
+        self._open_sm(self._overview_pick[0])
 
     def _draw_overview_floods(self):
         """Spec 001 per-SM flood maps, placed by ``supermodule_layout``."""
@@ -1593,30 +1768,153 @@ class LDATWorkbench(ctk.CTk):
         self.time_fig.tight_layout()
         self.time_canvas.draw_idle()
 
-    def _draw_detail(self):
-        if not self.dataset:
+    def _clear_summary(self, text):
+        self.sm_state.configure(text=text, fg_color="transparent", text_color=("gray10", "gray90"))
+        self.sm_summary.delete("1.0", "end")
+        self.mm_tree.delete(*self.mm_tree.get_children())
+        self.mm_title.configure(text="Per-minimodule counts and photopeak")
+
+    def _draw_summary(self, sm, selection, selected):
+        """Occupancy and channel findings of one SM (spec 001's Status tab content), then its mM table."""
+        dataset = self.dataset
+        data = dataset.modules.get(sm)
+        ingest = len(data) if data is not None else 0
+        total = sum(len(m) for m in dataset.modules.values())
+        findings = self._findings.get(sm) or channel_findings(dataset, sm, self.thresholds)
+        state = findings["state"]
+        self.sm_state.configure(text=f"SM {sm} • {dataset.settings.system} • {state}",
+                                fg_color=FINDING_COLOURS.get(state, "transparent"), text_color="black")
+        units = "keV" if dataset.settings.calibrated else "raw a.u."
+        expected = dataset.expected_mm.get(sm, set())
+        seen = set(np.unique(data.mm).tolist()) if ingest else set()
+        share = f"  ({100 * ingest / total:.1f} % of system)" if total else ""
+        lines = ["OCCUPANCY",
+                 f"  Ingest sides    {ingest:>11,}{share}",
+                 f"  Selected sides  {selected:>11,}  (energy + DOI + ROI, {units})",
+                 f"  Minimodules seen {len(seen & expected)}/{len(expected)} expected"
+                 + (f"; {len(seen - expected)} unpopulated with sides" if seen - expected else ""),
+                 "", "CHANNEL FINDINGS",
+                 f"  {FINDINGS_POPULATION}, before display cuts"]
+        for kind in ("time", "energy"):
+            found = findings[kind]
+            observed = int((found["hits"] > 0).sum())
+            lines.append(f"  {kind.upper():<6} {observed}/{len(found['channels'])} observed"
+                         + ("" if found["median"] is None else f", median {found['median']:,.0f} hits"))
+            if found["insufficient"]:
+                lines.append(f"         insufficient: {found['insufficient']}")
+                groups = (("0 hits", [ch for ch, n in zip(found["channels"], found["hits"]) if n == 0]),)
+            else:
+                counts = found["counts"]
+                lines.append(f"         {counts['NOT OBSERVED']} not observed / {counts['LOW']} low / "
+                             f"{counts['HIGH']} high")
+                groups = [(label.lower(), [ch for ch, s in zip(found["channels"], found["states"]) if s == label])
+                          for label in ("NOT OBSERVED", "LOW", "HIGH")]
+            for label, ids in groups:
+                if ids:
+                    lines.append(f"         {label}: {', '.join(map(str, ids))}")
+            if found["unexpected"]:
+                lines.append("         unexpected hits (unpopulated mM): " + ", ".join(
+                    f"{ch} ({n:,})" for ch, n in found["unexpected"].items()))
+        lines += [f"  {self.thresholds.text()}",
+                  "  Observational: no channel is declared dead or hot from a coincidence sample."]
+        self.sm_summary.delete("1.0", "end")
+        self.sm_summary.insert("end", "\n".join(lines))
+        self._draw_mm_table(sm, selection)
+
+    def _layout_populated(self, sm):
+        if self._mm_layout is None:
+            self._mm_layout = minimodule_layout(self.dataset)
+        return self._mm_layout.get(sm, {}).get("populated", {})
+
+    def _draw_mm_table(self, sm, selection):
+        tree = self.mm_tree
+        tree.delete(*tree.get_children())
+        entry = self._sm_metrics(sm, selection)
+        calibrated = self.dataset.settings.calibrated
+        scope = ("fits on ROI/DOI sides, energy window off" if calibrated
+                 else "fits unavailable: raw a.u. (no keV calibration)")
+        if entry is None:
+            self.mm_title.configure(text=f"Per-minimodule counts and photopeak • computing… • {scope}")
             return
-        sm = self._selected_sm()
-        if sm is None:
+        if entry.get("error"):
+            self.mm_title.configure(text=f"Per-minimodule table unavailable: {entry['error']}")
             return
-        status = channel_status(self.dataset, sm)
-        lines = [f"SUPERMODULE {sm} • {self.dataset.settings.system}", "",
-                 f"Ingested coincidence detector sides: {status['events']:,}",
-                 "Channel occupancy uses the ingest population (before display energy/DOI/ROI cuts).",
-                 f"Finding: {status['state']} (minimum 100 sides for an observational finding)", "",
-                 f"TIME CHANNELS: {len(status['active_time'])}/{len(status['expected_time'])} observed",
-                 f"Not observed: {sorted(status['unobserved_time'])}", "",
-                 f"ENERGY CHANNELS: {len(status['active_energy'])}/{len(status['expected_energy'])} observed",
-                 f"Not observed: {sorted(status['unobserved_energy'])}", "",
-                 "No channel is declared dead from an unobserved coincidence sample."]
-        data = self.dataset.modules.get(sm)
-        if data is not None:
-            from collections import Counter
-            counts = Counter(data.mm.tolist())
-            lines.extend(("", "MINIMODULE OCCUPANCY:",
-                          ", ".join(f"mM{mm}: {n:,}" for mm, n in sorted(counts.items()))))
-        self.detail.delete("1.0", "end")
-        self.detail.insert("end", "\n".join(lines))
+        metrics = entry["metrics"]
+        populated = self._layout_populated(sm)
+        mms = sorted(set(populated) | {mm for s, mm in metrics if s == sm})
+        fitted = 0
+        for mm in mms:
+            row = metrics.get((sm, mm))
+            ingest = f"{row['ingest']:,}" if row else "0"
+            selected = f"{row['selected']:,}" if row else "0"
+            fit = row["fit"] if row else None
+            if not populated.get(mm, True):
+                values, tag = (mm, ingest, selected, "—", "—", "unpopulated (config)"), "unpopulated"
+            elif fit is not None and fit["status"] == "FIT":
+                values, tag = (mm, ingest, selected, f"{fit['mu']:.1f}", f"{fit['resolution']:.1f}", "FIT"), "fit"
+                fitted += 1
+            else:
+                status = fit["status"] if fit is not None else "not computed"
+                values, tag = (mm, ingest, selected, "—", "—", status), "unavailable"
+            tree.insert("", "end", iid=str(mm), values=values, tags=(tag,))
+        assessed = sum(1 for mm in mms if populated.get(mm, True))
+        self.mm_title.configure(text=f"Per-minimodule counts and photopeak • {fitted}/{assessed} fitted • {scope}"
+                                if calibrated else f"Per-minimodule counts • {scope}")
+
+    def _select_mm_row(self, _event):
+        """Show the full fit status of the chosen minimodule (the column is narrow)."""
+        chosen = self.mm_tree.selection()
+        if chosen:
+            values = self.mm_tree.item(chosen[0], "values")
+            self.mm_title.configure(text=f"SM {self._selected_sm()} · mM {values[0]} · ingest {values[1]} · "
+                                         f"selected {values[2]} · fit: {values[5]}")
+
+    def _sm_metrics(self, sm, selection):
+        """One SM's minimodule metrics (counts + fits): a cache entry, or None while a job runs.
+
+        A System Overview result with fits for the same selection is reused.
+        """
+        for entry in self._overview_cache:
+            if entry["dataset"] is self.dataset and entry["selection"] == selection and entry["fits"]:
+                return entry
+        for entry in self._sm_cache:
+            if entry["dataset"] is self.dataset and entry["selection"] == selection and entry["sm"] == sm:
+                return entry
+        self._sm_wanted = (self.dataset, selection, sm)
+        if self._sm_job is None:
+            self._start_sm_job(*self._sm_wanted)
+        return None
+
+    def _start_sm_job(self, dataset, selection, sm):
+        self._sm_job = (dataset, selection, sm)
+
+        def run():
+            try:
+                metrics = minimodule_metrics(dataset, selection, sms=[sm])
+            except Exception as exc:  # reported on the Tk thread
+                self._events.put(("sm_metrics", dataset, selection, sm, None, str(exc)))
+                return
+            self._events.put(("sm_metrics", dataset, selection, sm, metrics, None))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _sm_metrics_done(self, dataset, selection, sm, metrics, error):
+        self._sm_job = None
+        if dataset is not self.dataset:
+            return  # inputs changed while it ran
+        self._sm_cache = [{"dataset": dataset, "selection": selection, "sm": sm, "metrics": metrics,
+                           "error": error}] + self._sm_cache[:31]
+        if error:
+            self._log(f"SM {sm} minimodule metrics unavailable: {error}")
+        wanted = self._sm_wanted
+        if wanted is None or wanted[0] is not self.dataset:
+            return
+        if (wanted[1], wanted[2]) != (selection, sm):
+            self._start_sm_job(*wanted)  # the operator moved on while it ran
+            return
+        self._sm_wanted = None
+        if self._selected_sm() == sm and SM_TAB not in self._stale:
+            self._draw_mm_table(sm, selection)
 
     def _uniformity(self):
         if not self.dataset:

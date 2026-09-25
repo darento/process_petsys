@@ -886,7 +886,7 @@ def supermodule_layout(dataset: Dataset):
 RAW_FIT = {"status": "unavailable: raw a.u. (no keV calibration)", "mu": None, "resolution": None}
 
 
-def minimodule_metrics(dataset: Dataset, selection: Selection, *, fits: bool = True, cancelled=None):
+def minimodule_metrics(dataset: Dataset, selection: Selection, *, fits: bool = True, cancelled=None, sms=None):
     """Per-(SM, minimodule) side counts and, when calibrated, the photopeak fit.
 
     - ``ingest``: accepted detector sides in that minimodule;
@@ -898,10 +898,12 @@ def minimodule_metrics(dataset: Dataset, selection: Selection, *, fits: bool = T
     Every expected minimodule gets a row (zeros when it has no sides).
     ``cancelled`` (a callable) is polled between SMs; when it returns True the
     function returns None. ``fits=False`` skips the fits (``fit`` is None).
+    ``sms`` limits the rows to those SuperModules (the SuperModule tab).
     """
     calibrated = dataset.settings.calibrated
     metrics = {}
-    for sm in sorted(set(dataset.expected_mm) | set(dataset.modules)):
+    everything = set(dataset.expected_mm) | set(dataset.modules)
+    for sm in sorted(everything if sms is None else everything & set(sms)):
         if cancelled is not None and cancelled():
             return None
         expected = dataset.expected_mm.get(sm, set())
