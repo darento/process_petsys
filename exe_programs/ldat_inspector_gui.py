@@ -18,7 +18,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.collections import LineCollection
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, to_rgba
+from matplotlib.patches import Patch
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
@@ -26,10 +27,11 @@ import numpy as np
 
 from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
-    FINDING_COLOURS, FINDINGS_POPULATION, FileResult, FindingThresholds, Selection, Settings, apply_calibration,
-    channel_findings, channel_geometry, channel_status, fit_peak, fit_on_display_bins, fit_peak_background,
-    flood_counts, load_setup, merge_results, process_file, rate_series, pair_offset_series,
-    system_channel_findings, uniformity,
+    FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
+    FileResult, FindingThresholds, Selection, Settings, apply_calibration, channel_findings, channel_geometry,
+    channel_status, fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
+    minimodule_layout, minimodule_metrics, overview_grid, process_file, rate_series, pair_offset_series,
+    supermodule_layout, system_channel_findings, uniformity,
 )
 from src.ldat_memory import estimate_memory
 
@@ -38,6 +40,8 @@ __version__ = "0.1.0"
 # Strong colours for plotted channel states; table rows keep the pale RAWInspector colours.
 STATE_EDGES = {"OK": "#4c9a5b", "NOT OBSERVED": "#d62728", "HIGH": "#c2185b", "LOW": "#ef8a00",
                "INSUFFICIENT EVENTS": "#8c939a"}
+FLOOD_MODE = "Flood maps"
+TILE_COLOURS = {TILE_UNPOPULATED: "#d5d8dc", TILE_UNAVAILABLE: "#7d848b"}
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -106,7 +110,14 @@ class LDATWorkbench(ctk.CTk):
         self.search_low = tk.StringVar(value="425")
         self.search_high = tk.StringVar(value="600")
         self.profile_mode = tk.BooleanVar(value=False)
-        self.overview_mode = tk.StringVar(value="Counts")
+        self.overview_mode = tk.StringVar(value="Ingest sides")
+        # Per-minimodule metrics are computed in a thread and cached per (dataset, selection).
+        self._overview_cache = []
+        self._overview_token = 0
+        self._overview_job = None
+        self._overview_grid = None
+        self._overview_ax = None
+        self._overview_pick = None
         self.time_file = tk.StringVar()
         self.time_view = tk.StringVar(value="Event rate")
         self.time_bins = tk.StringVar(value="60")
@@ -359,13 +370,20 @@ class LDATWorkbench(ctk.CTk):
         tab = self.tabs.tab("System Overview")
         controls = ctk.CTkFrame(tab)
         controls.pack(fill="x", padx=8, pady=5)
-        ctk.CTkLabel(controls, text="Geometry-aware IMAS / Cornell overview").pack(side="left", padx=8)
-        ctk.CTkComboBox(controls, variable=self.overview_mode,
-                        values=["Counts", "Flood maps"], state="readonly", width=115,
-                        command=lambda _: self._draw_overview()).pack(side="right", padx=8)
+        _label(controls, "Minimodule tiles")
+        ctk.CTkComboBox(controls, variable=self.overview_mode, values=[*OVERVIEW_METRICS, FLOOD_MODE],
+                        state="readonly", width=210,
+                        command=lambda _: self._draw_overview()).pack(side="left", padx=8)
+        self.overview_open = ctk.CTkButton(controls, text="Open SM", width=90, state="disabled",
+                                           command=self._overview_open_sm)
+        self.overview_open.pack(side="right", padx=8)
+        self.overview_info = ctk.CTkLabel(controls, text="Click a minimodule tile for its SM, mM and value",
+                                          anchor="w")
+        self.overview_info.pack(side="left", fill="x", expand=True, padx=8)
         self.overview_fig = Figure(figsize=(15, 5), dpi=100)
         self.overview_canvas = FigureCanvasTkAgg(self.overview_fig, master=tab)
         self.overview_canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.overview_canvas.mpl_connect("button_press_event", self._overview_click)
 
     def _build_timestamps(self):
         tab = self.tabs.tab("Timestamps")
@@ -534,6 +552,11 @@ class LDATWorkbench(ctk.CTk):
         self.open_sm_button.configure(state="disabled")
         self.channel_flags.delete("1.0", "end")
         self.channel_summary.configure(text=f"Channel status • {FINDINGS_POPULATION}; process files to assess channels")
+        self._overview_token += 1  # a running overview job stops at its next SuperModule
+        self._overview_cache, self._overview_job, self._overview_grid = [], None, None
+        self._overview_ax = self._overview_pick = None
+        self.overview_open.configure(state="disabled")
+        self.overview_info.configure(text="Click a minimodule tile for its SM, mM and value")
         if self._selector is not None:
             self._selector.set_active(False)
             self._selector.disconnect_events()
@@ -787,6 +810,8 @@ class LDATWorkbench(ctk.CTk):
                     for button in (self.uniformity_button, self.system_report, self.module_report):
                         button.configure(state="normal" if self.dataset.modules else "disabled")
                     messagebox.showerror("Calibration", event[1], parent=self)
+                elif event[0] == "overview":
+                    self._overview_done(*event[1:])
                 elif event[0] == "report":
                     self._report_busy = False
                     self.last_report = event[1]
@@ -1315,59 +1340,203 @@ class LDATWorkbench(ctk.CTk):
                   "", f"{'type':<6} {'channel':>7} {'hits':>9}  state"]
         self.channel_flags.insert("end", "\n".join(header + (flag_lines or ["no flagged channels"])))
 
-    def _layout(self):
-        config = self.dataset.config
-        if self.dataset.settings.system == "CORNELL":
-            rings = len(config.get("ring_z") or [0, 1, 2])
-            ncols = max(len(config.get("ring_yx") or {}), 1)
-            return rings, ncols, lambda sm: (sm % rings, sm // rings)
-        ncols = max(len(config.get("ring_yx") or {}), 1)
-        rings = max(len(config.get("ring_z") or []), 1)
-        return rings, ncols, lambda sm: (sm // ncols, sm % ncols)
+    def _overview_metrics(self, selection, fits):
+        """Cached per-minimodule metrics, or None after starting a background job for them."""
+        for entry in self._overview_cache:
+            if entry["dataset"] is self.dataset and entry["selection"] == selection and (entry["fits"] or not fits):
+                return entry["metrics"]
+        job = (id(self.dataset), selection, fits)
+        if self._overview_job == job:
+            return None
+        self._overview_token += 1
+        token, dataset = self._overview_token, self.dataset
+        self._overview_job = job
+
+        def run():
+            import time
+            start = time.perf_counter()
+            try:
+                metrics = minimodule_metrics(
+                    dataset, selection, fits=fits,
+                    cancelled=lambda: token != self._overview_token or self._abort.is_set())
+            except Exception as exc:  # reported on the Tk thread
+                self._events.put(("overview", token, dataset, selection, fits, None, str(exc)))
+                return
+            if metrics is not None:
+                self._events.put(("overview", token, dataset, selection, fits, metrics,
+                                  time.perf_counter() - start))
+
+        threading.Thread(target=run, daemon=True).start()
+        return None
+
+    def _overview_done(self, token, dataset, selection, fits, metrics, detail):
+        if token != self._overview_token:
+            return  # superseded; the newer job reports instead
+        self._overview_job = None
+        if metrics is None:
+            self._log(f"System Overview metrics unavailable: {detail}")
+            return
+        self._overview_cache = [{"dataset": dataset, "selection": selection, "fits": fits,
+                                 "metrics": metrics}] + self._overview_cache[:3]
+        what = "counts and photopeak fits" if fits and dataset.settings.calibrated else "counts"
+        self._log(f"System Overview: {what} for {len(metrics):,} minimodules in {detail:.1f} s")
+        if dataset is self.dataset:
+            self._draw_overview()
 
     def _draw_overview(self):
         if not self.dataset:
             return
-        rows, cols, locate = self._layout()
-        self.overview_fig.clear()
-        selected = set(self.dataset.expected_time) | set(self.dataset.modules)
-        if self.overview_mode.get() == "Counts":
-            matrix = np.full((rows, cols), np.nan)
-            for sm in selected:
-                row, col = locate(sm)
-                if row < rows and col < cols:
-                    matrix[row, col] = len(self.dataset.modules[sm]) if sm in self.dataset.modules else 0
-            axis = self.overview_fig.add_subplot(111)
-            cmap = plt.get_cmap("viridis").copy()
-            cmap.set_bad("#b8bcc1")
-            image = axis.imshow(np.ma.masked_invalid(matrix), aspect="auto", cmap=cmap)
-            axis.set(xlabel="Cassette" if self.dataset.settings.system == "CORNELL" else "Azimuthal SuperModule",
-                     ylabel="Ring", title="Observed detector sides per mapped SuperModule")
-            self.overview_fig.colorbar(image, ax=axis, shrink=0.85, label="Detector sides")
+        mode = self.overview_mode.get()
+        if mode == FLOOD_MODE:
+            self._draw_overview_floods()
+            return
+        selection = self._selection()
+        field_name, label = OVERVIEW_METRICS[mode]
+        fits = field_name in ("mu", "resolution")
+        metrics = self._overview_metrics(selection, fits)
+        figure = self.overview_fig
+        figure.clear()
+        axis = figure.add_subplot(111)
+        self._overview_ax = axis
+        if metrics is None:
+            self._overview_grid = None
+            axis.text(0.5, 0.5, f"Computing per-minimodule {'photopeak fits' if fits else 'counts'}…",
+                      transform=axis.transAxes, ha="center", va="center", fontsize=12, color="#555b61")
+            axis.set_axis_off()
+            self.overview_canvas.draw_idle()
+            return
+        grid = overview_grid(self.dataset, metrics, mode)
+        self._overview_grid = {**grid, "metrics": metrics, "mode": mode}
+        kind, values = grid["kind"], grid["values"]
+        background = np.zeros((*kind.shape, 4))
+        for code, colour in TILE_COLOURS.items():
+            background[kind == code] = to_rgba(colour)
+        axis.imshow(background, interpolation="nearest")
+        finite = values[np.isfinite(values)]
+        if fits and finite.size:
+            vmin, vmax = np.percentile(finite, [1, 99])
+        else:  # counts: zero is the colormap minimum
+            vmin, vmax = 0.0, float(finite.max()) if finite.size else 1.0
+        cmap = matplotlib.colormaps["viridis"].copy()
+        cmap.set_bad((0, 0, 0, 0))
+        image = axis.imshow(np.ma.masked_invalid(values), cmap=cmap, vmin=vmin, vmax=max(vmax, vmin + 1e-9),
+                            interpolation="nearest")
+        for (row, col), (sm, mm) in grid["cells"].items():
+            if kind[row, col] == TILE_UNPOPULATED:
+                axis.add_patch(Rectangle((col - 0.5, row - 0.5), 1, 1, fill=False, hatch="////",
+                                         edgecolor="#9aa0a6", lw=0))
+        for sm, (top, left) in grid["origins"].items():
+            axis.text(left - 0.42, top - 0.42, str(sm), fontsize=6, va="top", ha="left", color="white",
+                      bbox={"facecolor": "#303438", "alpha": 0.55, "edgecolor": "none", "pad": 0.6})
+        rows, cols = grid["sm_shape"]
+        mm_rows, mm_cols = grid["mm_shape"]
+        cornell = self.dataset.settings.system == "CORNELL"
+        axis.set_xticks([c * (mm_cols + 1) + (mm_cols - 1) / 2 for c in range(cols)], [str(c) for c in range(cols)],
+                        fontsize=7)
+        axis.set_yticks([r * (mm_rows + 1) + (mm_rows - 1) / 2 for r in range(rows)], [str(r) for r in range(rows)],
+                        fontsize=7)
+        axis.tick_params(length=0)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.set(xlabel="Cassette" if cornell else "Azimuthal SuperModule", ylabel="Ring")
+        units = "keV" if self.dataset.settings.calibrated else "raw a.u."
+        population = {"ingest": "all accepted sides, before display cuts",
+                      "selected": f"paired energy + DOI + ROI cuts ({units})"}.get(
+            field_name, "ROI/DOI sides, energy window off; spec 001 fit guards")
+        unavailable = int((kind == TILE_UNAVAILABLE).sum())
+        note = ""
+        if fits and not self.dataset.settings.calibrated:
+            note = " • raw a.u.: no keV calibration, fits unavailable"
+        elif fits:
+            note = f" • {unavailable} unavailable fits"
+        axis.set_title(f"{label} per minimodule • {population}{note}", fontsize=10)
+        figure.colorbar(image, ax=axis, shrink=0.85, pad=0.01, label=label)
+        handles = [Patch(facecolor=TILE_COLOURS[TILE_UNPOPULATED], hatch="////", edgecolor="#9aa0a6",
+                         label="unpopulated (config)")]
+        if fits:
+            handles.append(Patch(facecolor=TILE_COLOURS[TILE_UNAVAILABLE], label="fit unavailable"))
         else:
-            axes = self.overview_fig.subplots(rows, cols, squeeze=False)
-            selection = self._selection()
-            for sm in selected:
-                row, col = locate(sm)
-                if row >= rows or col >= cols:
-                    continue
-                axis = axes[row, col]
-                data = self.dataset.modules.get(sm)
-                if data is not None:
-                    mask = selection.mask(data)
-                    if mask.any():
-                        counts, xedges, yedges = flood_counts(data.x[mask], data.y[mask], 28)
-                        cmap = matplotlib.colormaps["plasma"].copy()
-                        cmap.set_bad("white")
-                        axis.pcolormesh(xedges, yedges, counts, cmap=cmap, vmin=0.1)
-                axis.text(0.03, 0.97, str(sm), transform=axis.transAxes, va="top", fontsize=7,
-                          bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none"})
-            for axis in axes.flat:
-                axis.set_xticks([])
-                axis.set_yticks([])
-                axis.set_aspect("equal")
-            self.overview_fig.subplots_adjust(left=0.01, right=0.99, top=0.98,
-                                               bottom=0.02, wspace=0.08, hspace=0.07)
+            handles.append(Patch(facecolor=cmap(0.0), label="0 sides (colormap minimum)"))
+        axis.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, -0.06), ncol=2, fontsize=8,
+                    frameon=False)
+        if self._overview_pick in grid["cells"].values():
+            self._highlight_tile(*self._overview_pick)
+        figure.subplots_adjust(left=0.03, right=1.0, top=0.93, bottom=0.12)
+        self.overview_canvas.draw_idle()
+
+    def _highlight_tile(self, sm, mm):
+        grid = self._overview_grid
+        pixel = next(p for p, cell in grid["cells"].items() if cell == (sm, mm))
+        for patch in [p for p in self._overview_ax.patches if p.get_gid() == "pick"]:
+            patch.remove()
+        self._overview_ax.add_patch(Rectangle((pixel[1] - 0.5, pixel[0] - 0.5), 1, 1, fill=False,
+                                              edgecolor="#e64c46", lw=2, gid="pick"))
+
+    def _overview_tile_text(self, sm, mm):
+        grid = self._overview_grid
+        pixel = next(p for p, cell in grid["cells"].items() if cell == (sm, mm))
+        kind = grid["kind"][pixel]
+        if kind == TILE_UNPOPULATED:
+            return f"SM {sm} · mM {mm} · unpopulated in the config (no sensors)"
+        row = grid["metrics"].get((sm, mm)) or {}
+        parts = [f"SM {sm} · mM {mm}", f"ingest {row.get('ingest', 0):,} sides",
+                 f"selected {row.get('selected', 0):,}"]
+        fit = row.get("fit")
+        if fit is not None:
+            parts.append(f"photopeak {fit['mu']:.1f} keV, resolution {fit['resolution']:.1f} %"
+                         if fit.get("status") == "FIT" else f"fit: {fit['status']}")
+        elif OVERVIEW_METRICS[grid["mode"]][0] not in ("mu", "resolution"):
+            parts.append("fits: choose a centroid or resolution view")
+        return " · ".join(parts)
+
+    def _overview_click(self, event):
+        grid = self._overview_grid
+        if grid is None or event.inaxes is not self._overview_ax or event.xdata is None:
+            return
+        cell = grid["cells"].get((int(round(event.ydata)), int(round(event.xdata))))
+        if cell is None:
+            return
+        self._select_overview_tile(*cell)
+
+    def _select_overview_tile(self, sm, mm):
+        self._overview_pick = (sm, mm)
+        self.overview_info.configure(text=self._overview_tile_text(sm, mm))
+        self.overview_open.configure(state="normal")
+        self._highlight_tile(sm, mm)
+        self.overview_canvas.draw_idle()
+
+    def _overview_open_sm(self):
+        if self._overview_pick is None:
+            return
+        self.module_var.set(f"SM {self._overview_pick[0]}")
+        self.tabs.set("SuperModule Explorer")
+        self._refresh_all()
+
+    def _draw_overview_floods(self):
+        """Spec 001 per-SM flood maps, placed by ``supermodule_layout``."""
+        rows, cols, placement = supermodule_layout(self.dataset)
+        self._overview_grid = self._overview_ax = None
+        self.overview_fig.clear()
+        axes = self.overview_fig.subplots(rows, cols, squeeze=False)
+        selection = self._selection()
+        for sm, (row, col) in placement.items():
+            axis = axes[row, col]
+            data = self.dataset.modules.get(sm)
+            if data is not None:
+                mask = selection.mask(data)
+                if mask.any():
+                    counts, xedges, yedges = flood_counts(data.x[mask], data.y[mask], 28)
+                    cmap = matplotlib.colormaps["plasma"].copy()
+                    cmap.set_bad("white")
+                    axis.pcolormesh(xedges, yedges, counts, cmap=cmap, vmin=0.1)
+            axis.text(0.03, 0.97, str(sm), transform=axis.transAxes, va="top", fontsize=7,
+                      bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none"})
+        for axis in axes.flat:
+            axis.set_xticks([])
+            axis.set_yticks([])
+            axis.set_aspect("equal")
+        self.overview_fig.subplots_adjust(left=0.01, right=0.99, top=0.98,
+                                           bottom=0.02, wspace=0.08, hspace=0.07)
         self.overview_canvas.draw_idle()
 
     def _draw_timestamps(self):

@@ -191,7 +191,28 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - 40,450–78,673 ingest sides per minimodule;
     - **timing: counts only 1.6 s, counts + fits 6.7 s (17 ms per minimodule).** Both run off the Tk thread in T9. The `--real` prefix check covers every side and gives every expected minimodule a grid cell.
   - **Other checks:** engine/report 59/59, revision 14/14, hidden GUI 29/29; compile exit 0.
-- [ ] **T9 — System Overview minimodule tiles** (FR-8, FR-9). *Done when:* the hidden-GUI check verifies all four metrics, inactive vs zero vs unavailable rendering, pixel→(SM, mM) resolution on click and "Open SM", and that background fits never block `_poll_events`.
+- [x] **T9 — System Overview minimodule tiles** (FR-8, FR-9). *Done when:* the hidden-GUI check verifies all four metrics, inactive vs zero vs unavailable rendering, pixel→(SM, mM) resolution on click and "Open SM", and that background fits never block `_poll_events`.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 59/59** (16 new for T9); `--real` → **PASS 61/61**; GUI compile exit 0.
+  - **Engine (`overview_grid`), on the T8 synthetic Cornell sides:**
+    - the composite is 14 × 49 pixels: 3 rings × 10 cassettes of 4 × 4 tiles, one-pixel gaps between SMs. IMAS is 24 × 119;
+    - SM 4 mM 0 is at pixel (5, 8); count tiles equal the metrics;
+    - zero-side minimodules are values (0), and the 80 unpopulated tiles are a separate kind;
+    - fit tiles equal the fits; failed fits are unavailable with their reason, never a low value;
+    - raw mode makes all 400 fit tiles unavailable (raw a.u.) and keeps the count tiles.
+  - **Hidden GUI:**
+    - the tab shows "Computing per-minimodule counts…" and then the tiles from the background job;
+    - all four metrics draw the expected per-minimodule values and label. The comparison uses the app's selection: loading applies the config's `energy_range`;
+    - unpopulated tiles are hatched light grey and unavailable fits dark grey, both outside the colormap and in the legend; zero sides are the colormap minimum;
+    - real canvas clicks resolve (row 5, col 8) → "SM 4 · mM 0" and (1, 2) → "SM 0 · mM 5", and a gap click is ignored; the tile text gives ingest, selected and the photopeak;
+    - "Open SM" selects SM 0 in the SuperModule tab; invalidating inputs clears the cache and pick.
+  - **Non-blocking:** a slowed metrics job (2 s, polling cancel) runs on a worker thread. `_poll_events` kept running (longest gap 0.16 s). A second request superseded the first job, which stopped (1 cancel), and only the new selection was cached.
+  - **Real Cornell:**
+    - one whole file (`00000003`, 3,853,684 sides, resolved calibration): counts + fits for 400 minimodules in 5.3 s on the worker thread; `_poll_events` median gap 0.094 s, longest 0.172 s;
+    - screenshots of a 500,000-pair prefix show the centroid (all 400 fitted, 500–518 keV) and ingest views. The half-populated SMs (ring 2) are hatched on the left two columns, matching the config.
+  - **Changed spec 001 check:** `ldat_gui_check.py` used the removed "Counts" mode; it now uses "Ingest sides" (29/29). "Flood maps" is unchanged.
+  - **Other checks:** engine/report 59/59, revision 14/14, issue 8/8, processing 17/17, scale 44/44, unpopulated 6/6.
+  - **Owner review pending:** readability on IMAS (120 SMs) and Cornell.
 - [ ] **T10 — SuperModule tab stepping and summary** (FR-10, FR-13). *Done when:* the hidden-GUI check covers Prev/Next, wheel and Page Up/Page Down stepping (clamped at the ends), the summary panel and per-minimodule table. The Status tab is retired with no lost content, and stepping redraws only the visible tab.
 - [ ] **T11 — Coincidence matrix and Δt** (FR-11, FR-12). *Done when:*
   - fixtures with a known pair list give the exact symmetric SM × SM counts under cuts, counting each pair once;

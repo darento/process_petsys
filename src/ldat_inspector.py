@@ -932,6 +932,62 @@ def minimodule_metrics(dataset: Dataset, selection: Selection, *, fits: bool = T
     return metrics
 
 
+# System Overview tiles (spec 002 FR-8, FR-9). Each pixel of the composite image
+# is one minimodule, a gap between SuperModules, or an unmapped cell.
+TILE_VALUE, TILE_EMPTY, TILE_UNPOPULATED, TILE_UNAVAILABLE = 0, 1, 2, 3
+OVERVIEW_METRICS = {
+    "Ingest sides": ("ingest", "detector sides (ingest population)"),
+    "Selected sides": ("selected", "detector sides after the display cuts"),
+    "Photopeak centroid (keV)": ("mu", "photopeak centroid (keV)"),
+    "Energy resolution (%)": ("resolution", "energy resolution FWHM (%)"),
+}
+
+
+def overview_grid(dataset: Dataset, metrics, metric: str, *, mm_layout=None, sm_layout=None):
+    """Composite whole-system image: SuperModules by ring/column, each as its minimodule grid.
+
+    ``metric`` is a key of ``OVERVIEW_METRICS``. One pixel separates
+    neighbouring SuperModules. Returns ``values`` (float, NaN unless the pixel
+    has a value), ``kind`` (``TILE_*``), ``cells`` {(row, col): (sm, mm)},
+    ``origins`` {sm: (row, col)} of each SM's top-left minimodule, and
+    ``reason`` {(sm, mm): why the value is unavailable}. Fit metrics are
+    unavailable for fits that did not converge and in raw mode.
+    """
+    field_name = OVERVIEW_METRICS[metric][0]
+    mm_layout = minimodule_layout(dataset) if mm_layout is None else mm_layout
+    rings, ncols, placement = supermodule_layout(dataset) if sm_layout is None else sm_layout
+    mm_rows = max((entry["shape"][0] for entry in mm_layout.values()), default=1)
+    mm_cols = max((entry["shape"][1] for entry in mm_layout.values()), default=1)
+    height, width = rings * (mm_rows + 1) - 1, ncols * (mm_cols + 1) - 1
+    values = np.full((height, width), np.nan)
+    kind = np.full((height, width), TILE_EMPTY, dtype=np.int8)
+    cells, origins, reason = {}, {}, {}
+    for sm, (ring, col) in placement.items():
+        entry = mm_layout.get(sm)
+        if entry is None:
+            continue
+        top, left = ring * (mm_rows + 1), col * (mm_cols + 1)
+        origins[sm] = (top, left)
+        for mm, (r, c) in entry["cells"].items():
+            pixel = (top + r, left + c)
+            cells[pixel] = (sm, mm)
+            if not entry["populated"][mm]:
+                kind[pixel] = TILE_UNPOPULATED
+                continue
+            row = metrics.get((sm, mm)) if metrics is not None else None
+            if row is None:
+                kind[pixel], reason[(sm, mm)] = TILE_UNAVAILABLE, "not computed"
+            elif field_name in ("ingest", "selected"):
+                kind[pixel], values[pixel] = TILE_VALUE, row[field_name]
+            elif row["fit"] is None or row["fit"].get("status") != "FIT":
+                kind[pixel] = TILE_UNAVAILABLE
+                reason[(sm, mm)] = "fit not computed" if row["fit"] is None else row["fit"]["status"]
+            else:
+                kind[pixel], values[pixel] = TILE_VALUE, row["fit"][field_name]
+    return {"values": values, "kind": kind, "cells": cells, "origins": origins, "reason": reason,
+            "mm_shape": (mm_rows, mm_cols), "sm_shape": (rings, ncols)}
+
+
 def uniformity(dataset: Dataset, selection: Selection, target=511.0, tolerance_pct=10.0):
     if target <= 0 or tolerance_pct < 0:
         raise ValueError("Target and tolerance must be nonnegative with positive target")

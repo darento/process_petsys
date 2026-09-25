@@ -105,6 +105,8 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
   - Metric selector: ingest counts, selected counts, centroid (keV) and resolution (%), the last two calibrated only.
   - Inactive/unmapped minimodules are hatched grey; zero counts use the colormap minimum; unavailable fits are a distinct grey with a legend.
   - Clicking a pixel resolves to (SM, mM) and shows its identity and value, plus "Open SM".
+  - Engine: `overview_grid(dataset, metrics, metric)` builds the composite (`TILE_VALUE / EMPTY / UNPOPULATED / UNAVAILABLE`, pixel → (SM, mM), reasons). The GUI computes `minimodule_metrics` in a daemon thread: counts only for the count views, and counts plus fits for the fit views. The result arrives through the existing event queue and is cached per (dataset, selection) for the last four requests. A newer request supersedes the running job, which stops at its next SuperModule.
+  - The spec 001 "Flood maps" view stays as a fifth option, placed by `supermodule_layout`.
 - **Coincidences:**
   - SM × SM matrix of accepted pairs where both sides pass the current display cuts, each pair counted once.
   - Clicking a cell selects an SM pair.
