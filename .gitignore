@@ -172,6 +172,10 @@ configs/
 maps/
 scripts_cornell/
 scripts_imas/
+# Local scripts and checks stay untracked; only the template is shared.
+# (scripts/* rather than scripts/, so the exception below can apply.)
+scripts/*
+!scripts/template.py
 scripts_gui/
 encal_files/
 png/
