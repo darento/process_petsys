@@ -36,6 +36,18 @@ You can configure the behavior of the script by modifying the YAML files in the 
 The idea behind it is for everyone to create their own `main.py` script with the desired functionalities taking the necessary functions from the module and defining the `config.yaml` file along with the 
 matching `map.yaml`. 
 
+### LDAT Inspector (offline)
+
+Run the multi-file PETsys inspector with the `process_petsys` environment:
+
+```powershell
+conda run -n process_petsys --no-capture-output python exe_programs/LDATInspector.py
+```
+
+Choose an IMAS or Cornell config, its matching energy calibration, and one or more `.ldat` files. The interface retains the mapped coincidence detector sides so you can adjust energy, DOI-ratio, and local X/Y filters after processing, inspect channel occupancy, explore SuperModules, compare photopeaks, and generate PDFs. The photopeak fit applies to the shaded 350–700 keV window; curves show counts per **displayed** histogram bin, with a fitted local continuum. Cornell sides with only one time channel retain the existing random neighbouring-slab assignment before keV calibration, so repeated runs can differ slightly. File event limits are **per file**; timestamp plots of a limited prefix do not describe full-run rate. The input has no singles bucket. Use `python scripts/ldat_inspector_check.py --selftest` for hardware-free processing and report checks and `python scripts/ldat_gui_check.py` for a hidden-window smoke check. `python scripts/ldat_issue_check.py --real` checks a bounded prefix of the six Cornell `...00000003`–`08.ldat` files when they are present at the path in that script.
+
+Feature work throughout this repo follows [spec-driven development](docs/prompts.md); project constraints are in [AGENTS.md](AGENTS.md).
+
 You can run the main script with the following command:
 ```bash
 python main.py configs\<your_config.yml>
