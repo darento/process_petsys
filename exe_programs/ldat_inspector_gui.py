@@ -1235,8 +1235,10 @@ class LDATWorkbench(ctk.CTk):
             self.energy_ax.axvspan(350, 700, color="#e64c46", alpha=0.035, zorder=0)
         self.energy_ax.set(xlabel="Calibrated energy (keV)" if calibrated else "Raw energy (a.u.)",
                            ylabel="Detector sides",
-                            title=f"Energy • {len(finite_energies):,}/{len(energies):,} ROI/DOI sides"
-                            if calibrated else f"Energy • {len(energies):,} ROI/DOI sides")
+                           title=f"Energy • {len(energies):,} ROI/DOI sides"
+                           + (f" ({len(energies) - len(finite_energies):,} without keV)"
+                              if len(finite_energies) < len(energies) else "")
+                           + (" • fitted keV factors" if selection.fitted_only else ""))
         for threshold in (selection.energy_low, selection.energy_high):
             self.energy_ax.axvline(threshold, c="#d35930", lw=1.4, ls="--")
         self.energy_ax.set_xlim(0, energy_max)
@@ -1267,7 +1269,7 @@ class LDATWorkbench(ctk.CTk):
                                  and tuple(search) == tuple(legacy["search"]))
                     if same_fit:
                         auto_line.set_label(auto_line.get_label() + "; same background-aware fit")
-                        fit_readouts.append(f"Background fit: {extra['mu']:.1f} keV  |  resolution: "
+                        fit_readouts.append(f"Background fit: {extra['mu']:.1f} keV\nresolution: "
                                             f"{extra['resolution']:.1f}% (same model)")
                     else:
                         self.energy_ax.plot(overlay["x"], overlay["total"], c="#7f3fb3", lw=1.6,
@@ -1275,25 +1277,21 @@ class LDATWorkbench(ctk.CTk):
                                                   f"resolution {extra['resolution']:.1f}% (linear)")
                         self.energy_ax.plot(overlay["x"], overlay["background"], c="#ba9bdb", ls="--",
                                             label="Adjusted background")
-                        fit_readouts.append(f"Background fit: {extra['mu']:.1f} keV  |  resolution: {extra['resolution']:.1f}%")
+                        fit_readouts.append(f"Background fit: {extra['mu']:.1f} keV\nresolution: {extra['resolution']:.1f}%")
             else:
                 self._log(f"Experimental fit SM {sm}: {extra['status']}")
                 fit_readouts.append(f"Background fit: unavailable ({extra['status']})")
+        # keV factor origins of the plotted sides go to the summary panel (FR-20), not onto the plot.
         origins = factor_origins(self.dataset, data, spatial & np.isfinite(data.energy))
-        if calibrated and self.dataset.settings.system == "CORNELL":
-            note = ("keV factors (plotted sides):\n" + _origins_text(origins, "\n")
-                    if self.dataset.calibration_status is not None else "keV factor origin unknown\n(no _status.txt)")
-            if selection.fitted_only:
-                note += "\nfitted factors only"
-            # below the fit readout (top right), over the low-energy side of the spectrum
-            self.energy_ax.text(0.02, 0.86, note, transform=self.energy_ax.transAxes, ha="left", va="top",
-                                fontsize=7, bbox=_NOTE_BOX)
         if fit_readouts:
             self.energy_ax.text(0.98, 0.97, "\n".join(fit_readouts), transform=self.energy_ax.transAxes,
                                 ha="right", va="top", fontsize=8, color="#9f322c",
                                 bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "#a8a8a8"})
-        if self.energy_ax.get_legend_handles_labels()[1]:
-            self.energy_ax.legend(loc="lower right", fontsize=8)
+        # The readout box carries the numbers; a key is needed only when several curves are drawn.
+        handles, labels = self.energy_ax.get_legend_handles_labels()
+        if self.experimental.get() and handles:
+            self.energy_ax.legend(handles, [label.split(":")[0].split(" (")[0] for label in labels],
+                                  loc="lower right", fontsize=7)
 
         doi_mm = self.dataset.doi_mm
         doi_base = selection.mask(data, doi=False)
@@ -1352,7 +1350,7 @@ class LDATWorkbench(ctk.CTk):
                 f"({'keV' if calibrated else 'raw a.u.'}) • fit: {legacy['status']}")
         self._switch_rectangle()
         self.canvas.draw_idle()
-        self._draw_summary(sm, selection, int(chosen.sum()))
+        self._draw_summary(sm, selection, int(chosen.sum()), origins)
 
     def _origins_available(self):
         """Factor origins exist: a keV Cornell dataset whose calibration has a status sidecar."""
@@ -2317,7 +2315,7 @@ class LDATWorkbench(ctk.CTk):
         self.mm_tree.delete(*self.mm_tree.get_children())
         self.mm_title.configure(text="Per-minimodule counts and photopeak")
 
-    def _draw_summary(self, sm, selection, selected):
+    def _draw_summary(self, sm, selection, selected, origins=None):
         """Occupancy and channel findings of one SM (spec 001's Status tab content), then its mM table."""
         dataset = self.dataset
         data = dataset.modules.get(sm)
@@ -2336,6 +2334,7 @@ class LDATWorkbench(ctk.CTk):
                  f"  Selected sides  {selected:>11,}  (energy + DOI + ROI, {units})",
                  f"  Minimodules seen {len(seen & expected)}/{len(expected)} expected"
                  + (f"; {len(seen - expected)} unpopulated with sides" if seen - expected else ""),
+                 *self._origin_summary(origins, selection),
                  "", "CHANNEL FINDINGS",
                  f"  {FINDINGS_POPULATION}, before display cuts"]
         for kind in ("time", "energy"):
@@ -2363,6 +2362,19 @@ class LDATWorkbench(ctk.CTk):
         self.sm_summary.delete("1.0", "end")
         self.sm_summary.insert("end", "\n".join(lines))
         self._draw_mm_table(sm, selection)
+
+    def _origin_summary(self, origins, selection):
+        """Summary lines: keV factor origins of the energy plot's sides (FR-20)."""
+        dataset = self.dataset
+        if origins is None or not dataset.settings.calibrated or dataset.settings.system != "CORNELL":
+            return []
+        if dataset.calibration_status is None:
+            return ["", "KEV FACTORS", "  origin unknown: no _status.txt next to the calibration"]
+        lines = ["", "KEV FACTORS (energy plot sides)"]
+        lines += [f"  {ORIGIN_SHORT[name]:<16}{origins[name]:>11,}" for name in ORIGIN_SHORT if origins.get(name)]
+        if selection.fitted_only:
+            lines.append("  fitted keV factors only")
+        return lines
 
     def _layout_populated(self, sm):
         if self._mm_layout is None:

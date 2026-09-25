@@ -393,7 +393,7 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - 5 malformed sidecars reject the calibration (unrecognised status, missing tab, slab 16, duplicate, header only).
   - **Hidden GUI:**
     - Channel Status reads "12 / 16" (SM 0) and "6 / 0" (SM 1), and its summary gives the ingest sides and mapped slabs by origin (with unpopulated 1,280);
-    - the energy note lists the origin counts of the plotted sides, and the checkbox is enabled;
+    - the SM summary lists the origin counts of the energy plot's sides (none drawn on the plot), and the checkbox is enabled;
     - "Fitted keV factors only" gives 68 selected sides and says so on the plot;
     - Photopeak Uniformity defaults to fitted only: SM 0 has 68 of 104 sides, equal to the engine;
     - without a sidecar: "unknown" in the column, the note and the summary, and the switch is disabled with a "no _status.txt" note;
@@ -415,7 +415,13 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - no origin lines in the PDF: 2.
 
     Unmodified, none fail.
-  - **Found while checking:** on the real canvas the energy note first overlapped the fit readout and the Channel Status line was cut off. The note is now one origin per line below the readout, and the summary drops the file name and uses two lines.
+  - **Found while checking:** on the real canvas the Channel Status line was cut off, so the summary drops the file name and uses two lines.
+  - **Follow-up (owner request 2026-09-25: too much text on the SM energy histogram):**
+    - the origin counts moved to the SM summary panel, and the title became "Energy • N ROI/DOI sides" (plus "without keV" / "fitted keV factors" only when they apply);
+    - the always-on legend, which repeated the readout, now appears only with "Show background fit", using short names;
+    - the background-fit readout wraps onto two lines.
+
+    Checks: views 143/143 (the origin checks now read the summary panel), issue 8/8, hidden GUI 29/29, revision 14/14, processing 17/17, engine/report 59/59; compile exit 0. Real-prefix screenshots are in the session scratchpad `energy/`.
   - **Real Cornell whole file** (`00000003`, 3,853,684 sides, resolved encal; recorded, not a pass criterion):
     - sides: fitted 3,182,098, check 62,472, borrowed 586,004 (15.2 %), est. neighbours 17,863, est. median 5,247; none without keV;
     - the side counts take 0.012 s, and the Channel Status redraw 0.09 s;

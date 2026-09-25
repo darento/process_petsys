@@ -163,7 +163,11 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 - **Fitted-only cut:** `Selection.fitted_only` keeps only sides whose *own* factor is fitted or fitted (check); the partner is still subject to the energy window. An unknown origin is never assumed fitted, so with no sidecar the cut keeps nothing, and the GUI disables it then.
   - **GUI:** a "Fitted keV factors only" checkbox in the energy group, off by default, applies to every view's population. Photopeak Uniformity has its own switch, on by default. Both are disabled with a grey "n/a: raw a.u. / Cornell only / no _status.txt" note when origins are unavailable.
 - **Display:**
-  - The SuperModule energy plot carries a note with the origin counts of the plotted sides ("no fit" sides have no keV, so they are not plotted), or "keV factor origin unknown (no _status.txt)".
+  - The SuperModule summary panel, beside the energy plot, has a "KEV FACTORS (energy plot sides)" block with the origin counts of the plotted sides ("no fit" sides have no keV, so they are not plotted), or "origin unknown: no _status.txt". The energy title ends in "• fitted keV factors" when that cut is on. The counts are not drawn on the plot (owner request 2026-09-25: less text on the energy histogram).
+  - **Energy plot text (owner request 2026-09-25):**
+    - the title is "Energy • N ROI/DOI sides", adding "(k without keV)" only when some sides have no factor;
+    - the fit readout box keeps the numbers, with the background-fit line wrapped onto two lines;
+    - the legend is drawn only with "Show background fit" (several curves), using short names ("Photopeak model", "Gaussian component", …). The line labels keep the full values that spec 001's issue check reads.
   - Channel Status has a "keV factor sides borrowed / est." column per SM, plus summary lines with the ingest sides and the mapped slabs by origin.
   - The console logs the sidecar and its mapped-slab counts on processing or calibration.
 - **Reports:** the provenance lists the sidecar path, the ingest sides and mapped slabs by origin in the report scope, and whether the fits used fitted factors only. Without a sidecar it reads "keV factor origins: unknown (… never assumed fitted)". SM pages list their sides by origin.
