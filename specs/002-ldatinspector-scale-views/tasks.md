@@ -166,12 +166,31 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   - **Changed spec 001 check:** `ldat_revision_check.py` read the old columns (`Selected sides`) and `channel_ax`. It now checks SM, ingest sides, minimodules and the finding (14 revision checks pass).
   - **Other checks:** hidden GUI 29/29, issue 8/8, processing 17/17, engine/report 59/59, scale 44/44, unpopulated 6/6.
   - **Owner review pending:** layout and readability on representative IMAS and Cornell acquisitions.
-- [ ] **T8 — Minimodule layout and metrics engine** (FR-8, FR-13). *Done when:*
+- [x] **T8 — Minimodule layout and metrics engine** (FR-8, FR-13). *Done when:*
   - both real maps give 4×4 grids;
   - a synthetic non-4×4 map gives its own grid (proves the layout is derived, not assumed);
   - SM placement is unique;
   - per-minimodule counts are exact;
   - per-minimodule fits match `fit_peak` on the same masks, and raw mode is unavailable.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 43/43** (13 new for T8); `--real` → **PASS 45/45**.
+  - **Engine** (`src/ldat_inspector.py`): `minimodule_layout`, `supermodule_layout` and `minimodule_metrics`, plus `RAW_FIT`.
+  - **Layout:**
+    - both real maps give a 4 × 4 grid with unique cells for every SM; populated cells equal `expected_mm` (Cornell half-populated SMs: 8);
+    - orientation: SM 0 reads, top to bottom, `[3 2 1 0] [7 6 5 4] [11 10 9 8] [15 14 13 12]` on both maps;
+    - synthetic 2 × 3, 3 × 1 and 1 × 5 maps give their own shapes and cells;
+    - two minimodules at one centre raise an error.
+  - **SuperModule placement:** unique and equal to spec 001's GUI `_layout` for every SM: IMAS 5 × 24 (120 SMs), Cornell 3 × 10 (30 SMs).
+  - **Metrics:** synthetic Cornell sides in SMs 0–2 (pairs inside one minimodule, 75 % peak + flat background) are compared with a per-side Python recount:
+    - ingest, selected (paired energy + DOI + ROI) and fit-population counts are exact for all 400 expected minimodules, including 0 for SMs and minimodules without sides;
+    - fits equal `fit_peak` on the same ROI/DOI mask with the energy window off (status, μ and resolution; 38 FIT, and low-statistics minimodules unavailable);
+    - raw mode gives `RAW_FIT` for every minimodule and keeps the counts;
+    - a cancel callback returns None; `fits=False` gives counts only.
+  - **Real Cornell** (recorded; not a pass criterion): six whole files with `…_resolved.encal` and GUI default cuts (400–650 keV, DOI 0–15):
+    - all **400/400** minimodules FIT; centroid median 509.4 keV (5–95 %: 504.5–511.6); resolution median 15.5 % (14.1–17.8);
+    - 40,450–78,673 ingest sides per minimodule;
+    - **timing: counts only 1.6 s, counts + fits 6.7 s (17 ms per minimodule).** Both run off the Tk thread in T9. The `--real` prefix check covers every side and gives every expected minimodule a grid cell.
+  - **Other checks:** engine/report 59/59, revision 14/14, hidden GUI 29/29; compile exit 0.
 - [ ] **T9 — System Overview minimodule tiles** (FR-8, FR-9). *Done when:* the hidden-GUI check verifies all four metrics, inactive vs zero vs unavailable rendering, pixel→(SM, mM) resolution on click and "Open SM", and that background fits never block `_poll_events`.
 - [ ] **T10 — SuperModule tab stepping and summary** (FR-10, FR-13). *Done when:* the hidden-GUI check covers Prev/Next, wheel and Page Up/Page Down stepping (clamped at the ends), the summary panel and per-minimodule table. The Status tab is retired with no lost content, and stepping redraws only the visible tab.
 - [ ] **T11 — Coincidence matrix and Δt** (FR-11, FR-12). *Done when:*

@@ -79,7 +79,7 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 ### Minimodule layout and metrics (FR-8, FR-9, FR-13)
 
-- `minimodule_layout(dataset)` is built at merge from the selected map. Each minimodule's centre is (mean fine X of its time channels, mean fine Y of its energy channels). Grid rows/columns come from the distinct rounded centres, so it is 4×4 for the current IMAS and Cornell maps without being assumed. `mM_disposition` is not used. Mapped minimodules listed in the config's `unpopulated_minimodules` (Cornell SM 2, 5, …, 29; B3) are kept and drawn as unpopulated.
+- `minimodule_layout(dataset)` is derived from the selected map, which the dataset now keeps (coordinates, channel modules and types; T7). It is computed on demand, not at merge; it takes milliseconds. Row 0 is the largest Y and column 0 the smallest X, as the flood map is viewed. Two minimodules at one centre are rejected rather than merged. Each minimodule's centre is (mean fine X of its time channels, mean fine Y of its energy channels). Grid rows/columns come from the distinct rounded centres, so it is 4×4 for the current IMAS and Cornell maps without being assumed. `mM_disposition` is not used. Mapped minimodules listed in the config's `unpopulated_minimodules` (Cornell SM 2, 5, …, 29; B3) are kept and drawn as unpopulated.
 - SuperModule placement moves spec 001's `_layout` into the engine as `supermodule_layout(dataset)`. Cornell: ring = `sm % 3`, cassette = `sm // 3`. IMAS: ring-major, `ncols = len(ring_yx)`. A check confirms every mapped SM gets a unique cell.
 - `minimodule_metrics(dataset, selection)` gives, per SM and minimodule:
   - ingest sides;

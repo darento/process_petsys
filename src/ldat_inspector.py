@@ -804,6 +804,134 @@ def channel_geometry(dataset: Dataset, sm: int):
     return {"minimodules": minimodules, "time": time, "energy": energy}
 
 
+def _clusters(values, tolerance):
+    """Index of each value's cluster, clusters ordered by value (gap > tolerance splits)."""
+    order = np.argsort(values)
+    labels = np.empty(len(values), dtype=int)
+    label, previous = -1, None
+    for i in order:
+        if previous is None or values[i] - previous > tolerance:
+            label += 1
+        labels[i] = label
+        previous = values[i]
+    return labels, label + 1
+
+
+def minimodule_layout(dataset: Dataset):
+    """Minimodule grid of each SM, derived from the selected map's channel coordinates.
+
+    A minimodule's centre is (mean fine X of its time channels, mean fine Y of
+    its energy channels). Rows and columns are the distinct centres (within
+    half a minimodule), so no shape is assumed and ``mM_disposition`` is not
+    used. Row 0 is the largest Y (top, as the flood map is viewed); column 0 is
+    the smallest X. Unpopulated minimodules keep their cell with
+    ``populated`` False.
+
+    Returns ``{sm: {"shape": (rows, cols), "cells": {mm: (row, col)},
+    "centres": {mm: (x, y)}, "populated": {mm: bool}}}``.
+    """
+    points = defaultdict(lambda: defaultdict(lambda: {"x": [], "y": []}))
+    for ch, (sm, mm) in dataset.channel_modules.items():
+        if ch not in dataset.coordinates or ch not in dataset.channel_types:
+            continue
+        x, y = dataset.coordinates[ch][:2]
+        if ChannelType.TIME in dataset.channel_types[ch]:
+            points[sm][mm]["x"].append(float(x))
+        if ChannelType.ENERGY in dataset.channel_types[ch]:
+            points[sm][mm]["y"].append(float(y))
+    layout = {}
+    for sm, by_mm in sorted(points.items()):
+        mms = sorted(mm for mm, p in by_mm.items() if p["x"] and p["y"])
+        if not mms:
+            continue
+        centres = {mm: (float(np.mean(by_mm[mm]["x"])), float(np.mean(by_mm[mm]["y"]))) for mm in mms}
+        xs = np.array([centres[mm][0] for mm in mms])
+        ys = np.array([centres[mm][1] for mm in mms])
+        # half the smallest spread of one minimodule's channels separates neighbouring centres
+        width = min(max(np.ptp(by_mm[mm]["x"]), np.ptp(by_mm[mm]["y"])) for mm in mms)
+        tolerance = max(width / 2, 1e-6)
+        cols, ncols = _clusters(xs, tolerance)
+        rows, nrows = _clusters(-ys, tolerance)
+        cells = {mm: (int(r), int(c)) for mm, r, c in zip(mms, rows, cols)}
+        if len(set(cells.values())) != len(cells):
+            raise ValueError(f"SM {sm}: minimodules share a grid cell; the map's centres are not a grid")
+        populated = {mm: mm in dataset.expected_mm.get(sm, set()) for mm in mms}
+        layout[sm] = {"shape": (nrows, ncols), "cells": cells, "centres": centres, "populated": populated}
+    return layout
+
+
+def supermodule_layout(dataset: Dataset):
+    """SuperModule placement from the config geometry: ``(rows, cols, {sm: (row, col)})``.
+
+    Cornell: row = ring (SM within its cassette, ``sm % len(ring_z)``), column =
+    cassette (``sm // len(ring_z)``). IMAS: ring-major, ``len(ring_yx)``
+    SuperModules per ring. Moved from spec 001's GUI ``_layout``.
+    """
+    config = dataset.config
+    sms = sorted(set(dataset.expected_time) | set(dataset.expected_energy) | set(dataset.modules))
+    ncols = max(len(config.get("ring_yx") or {}), 1)
+    if dataset.settings.system == "CORNELL":
+        rings = len(config.get("ring_z") or [0, 1, 2])
+        cells = {sm: (sm % rings, sm // rings) for sm in sms}
+        ncols = max(ncols, max((c for _, c in cells.values()), default=0) + 1)
+    else:
+        rings = max(len(config.get("ring_z") or []), 1)
+        cells = {sm: (sm // ncols, sm % ncols) for sm in sms}
+        rings = max(rings, max((r for r, _ in cells.values()), default=0) + 1)
+    if len(set(cells.values())) != len(cells):
+        raise ValueError("SuperModules share a cell in the configured ring geometry")
+    return rings, ncols, cells
+
+
+RAW_FIT = {"status": "unavailable: raw a.u. (no keV calibration)", "mu": None, "resolution": None}
+
+
+def minimodule_metrics(dataset: Dataset, selection: Selection, *, fits: bool = True, cancelled=None):
+    """Per-(SM, minimodule) side counts and, when calibrated, the photopeak fit.
+
+    - ``ingest``: accepted detector sides in that minimodule;
+    - ``selected``: sides passing the current display cuts (paired energy,
+      DOI and ROI, as ``Selection.mask``);
+    - ``fit``: ``fit_peak`` on the ROI/DOI-selected energies with the energy
+      window off, as in ``uniformity``; raw mode gives ``RAW_FIT``.
+
+    Every expected minimodule gets a row (zeros when it has no sides).
+    ``cancelled`` (a callable) is polled between SMs; when it returns True the
+    function returns None. ``fits=False`` skips the fits (``fit`` is None).
+    """
+    calibrated = dataset.settings.calibrated
+    metrics = {}
+    for sm in sorted(set(dataset.expected_mm) | set(dataset.modules)):
+        if cancelled is not None and cancelled():
+            return None
+        expected = dataset.expected_mm.get(sm, set())
+        data = dataset.modules.get(sm)
+        if data is None or len(data) == 0:
+            for mm in sorted(expected):
+                metrics[(sm, mm)] = {"ingest": 0, "selected": 0, "fit_sides": 0,
+                                     "fit": (fit_peak([]) if calibrated else RAW_FIT) if fits else None}
+            continue
+        mm_col = data.mm.astype(np.int64)
+        size = int(max(mm_col.max(initial=0), max(expected, default=0))) + 1
+        ingest = np.bincount(mm_col, minlength=size)
+        selected = np.bincount(mm_col[selection.mask(data)], minlength=size)
+        spatial = selection.mask(data, energy=False)
+        fit_counts = np.bincount(mm_col[spatial], minlength=size)
+        order = np.argsort(mm_col[spatial], kind="stable")
+        energies = data.energy[spatial][order]
+        bounds = np.r_[0, np.cumsum(fit_counts)]
+        for mm in sorted(expected | set(np.flatnonzero(ingest).tolist())):
+            if not fits:
+                fit = None
+            elif not calibrated:
+                fit = RAW_FIT
+            else:
+                fit = fit_peak(energies[bounds[mm]:bounds[mm + 1]])
+            metrics[(sm, mm)] = {"ingest": int(ingest[mm]), "selected": int(selected[mm]),
+                                 "fit_sides": int(fit_counts[mm]), "fit": fit}
+    return metrics
+
+
 def uniformity(dataset: Dataset, selection: Selection, target=511.0, tolerance_pct=10.0):
     if target <= 0 or tolerance_pct < 0:
         raise ValueError("Target and tolerance must be nonnegative with positive target")
