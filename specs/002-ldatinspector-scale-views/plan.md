@@ -121,12 +121,13 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 ### Limits files and slab view (FR-16–FR-18)
 
-- **Loader:** `load_limits(path)` parses `(ch, slab)\tleft\tright` lines, as in `scripts_cornell/cornell_listmode_cog_fixed_position.py:143-157`, into a dense f8 array `[dense time channel, 16, 2]`, NaN where there is no entry. Malformed lines are an error; the file is not partially accepted.
-- **Derived values:** computed on demand per SuperModule from stored columns. The time channel is `calibration_key >> 5` and the slab is `calibration_key & 31`. Nothing is added to ingest or storage, and loading, swapping or removing a file only recomputes views.
-  - **Slab X:** time-channel fine X ± 0.8 mm by slab parity, using the convention fixed in B1.
-  - **Decompressed Y:** `clip((y − left)·25.6/(right − left), 0, 25.6) + (3 − mm // 4)·25.6`, from `cornell_floodmaps.py:173-183`.
-  - **Decompressed DOI:** `(doi − right)·20/(left − right)`; outside [0, 20] is NaN and counted.
-  - **Missing keys:** NaN, counted per reason.
+- **Loader:** `load_limits(path)` parses `(ch, slab)\tleft\tright` lines, as in `scripts_cornell/cornell_listmode_cog_fixed_position.py:143-157`, into a `Limits` object: sorted calibration keys `(ch << 5) | slab` with left/right arrays, looked up with `searchsorted` (NaN where there is no entry). This replaces the dense `[time channel, 16, 2]` array: Cornell channel IDs reach ~788,000, and the keys are the table's own `calibration_key` encoding. Malformed lines, a slab outside 0–15, non-finite limits, duplicate keys and files without entries are errors; the file is not partially accepted. Blank lines and CRLF are accepted.
+- **Derived values:** computed on demand per SuperModule from stored columns (`slab_view(dataset, data, cog)`, `decompressed_doi(dataset, data, doi)`; Cornell datasets only). The time channel is `calibration_key >> 5` and the slab is `calibration_key & 31`. Nothing is added to ingest or storage, and loading, swapping or removing a file only recomputes views.
+  - **Slab X:** time-channel fine X ± 0.8 mm by slab parity (even −0.8, odd +0.8), using the convention fixed in B1.
+  - **Decompressed Y:** `clip((y − left)·25.6/(right − left), 0, 25.6) + (3 − mm // 4)·25.6`, from `cornell_floodmaps.py:173-183`. The stored Y is the same centroid (`calculate_centroid(…, 1, 2)`) that `cornell_cog_decompress_params.py` used to build the limits. The clipped count is returned.
+  - **Decompressed DOI:** `(doi − right)·20/(left − right)`; outside [0, 20] is NaN and counted ("out of range"; 0 and 20 are kept, as in list mode).
+  - **Exclusions:** NaN, counted per reason: "missing key" (no entry) and "invalid limits" (left == right, which the scripts' `+ 1e-9` would turn into a clipped or huge value). The scripts' `+ 1e-9` in the denominator is otherwise omitted.
+  - **Unresolved slabs:** those pairs were rejected at ingest and are not in the table; `unresolved_slab_pairs(dataset)` gives their count from the ingest counters for titles and provenance.
 - **GUI:**
   - Two optional file pickers ("COG limits…", "DOI limits…") with shortened names that show the full path, like spec 001's calibration label.
   - Flood view selector: "COG / RTP" or "Slab (decompressed)", Cornell with a COG file only.

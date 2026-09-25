@@ -274,12 +274,44 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
 
 ## Cornell slab view and decompression
 
-- [ ] **T14 — Limits loader and derived values** (FR-16–FR-18; after B1). *Done when:*
+- [x] **T14 — Limits loader and derived values** (FR-16–FR-18; after B1). *Done when:*
   - `ldat_views_check.py` loads synthetic limits files and gives exact slab X, clipped decompressed Y and decompressed DOI for known sides;
   - missing keys and out-of-range DOI give NaN with exact per-reason counts;
   - malformed files are rejected;
   - swapping files recomputes without calling the reader;
   - the repo-root `*_limits_full_system.txt` files (6,375 keys each) load.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 101/101** (9 new for T14); `--real` → **PASS 104/104**; GUI compile exit 0. Engine: `load_limits`, `Limits`, `slab_view`, `decompressed_doi`, `unresolved_slab_pairs` in `src/ldat_inspector.py`; no GUI change (T15).
+  - **Slab X:** equals `src/utils.py:get_slab_cornell`'s X on hand-built hits for all 8 positions of a Cornell minimodule, alone and with each neighbour (22 cases: 4 edge, 6 seeded coin flips, 12 adjacent). It also equals the written-out rule, fine X − 0.8 mm for even slabs and + 0.8 mm for odd slabs (B1).
+  - **Decompressed Y and DOI** on 10 known sides in rows 1 and 3 (to 1e-9 mm):
+    - Y 57.6, 51.2 and 76.8 (clipped low and high; 2 clipped), 64.0, 76.8 (exactly at the right limit, not clipped), 6.4 and 25.6 (row 3, no offset);
+    - DOI 10.0, 0.0 and 20.0 (both bounds kept); −0.4 and 22.4 mm are out of range.
+  - **Exclusions:** Y {missing key 2, invalid limits 1} and DOI {missing key 2, invalid limits 1, out of range 2}. The NaN count equals the excluded total, so nothing is substituted. "Invalid limits" (left == right) is a reason not in the task text: the list-mode DOI copy has one such entry.
+  - **Malformed files:** 13 are rejected whole: header line, missing column, not a number, NaN, inf, slab 16, negative channel, spaces instead of tabs, duplicate key, a bad line after good ones, empty, blank lines only, and an absent file. CRLF and blank lines load.
+  - **Swap:** with `iter_pairs`, `process_file`, `process_file_reference` and `process_file_fast` patched to fail, a second COG file moves row 0 from 57.600 to 54.400 mm and leaves the other rows unchanged. Going back to the first file reproduces the first values; the reader is called 0 times and the stored columns are unchanged.
+  - **IMAS:** a dataset marked IMAS is refused by both functions. `unresolved_slab_pairs` reads the ingest counter (9 in the fixture).
+  - **Owner files:** every key belongs to a Cornell time channel and is one of its own slabs (slab // 2 = position).
+    - the repo-root `cog_`/`doi_limits_full_system.txt` have **6,376 keys each**, not the 6,375 in the task text, with no left == right;
+    - the list-mode copies in `files_for_listmode\` have 6,375 keys each, and their DOI copy has 1 left == right entry.
+  - **Mutation checks:** each mutation fails 1–3 checks:
+    - slab X sign swapped;
+    - Y not clipped;
+    - row from `mm % 4`;
+    - missing key given fallback limits;
+    - DOI 0 mm excluded;
+    - DOI left/right swapped;
+    - duplicates accepted;
+    - slab 16 accepted;
+    - left == right not excluded.
+
+    Unmodified, none fail.
+  - **Real Cornell prefix** (`00000003`, 500,000 pairs per file, 780,406 sides, repo-root files; recorded, not a pass criterion):
+    - loading both files takes 0.03 s; all SMs take 0.10 s;
+    - Y: 1,588 missing keys (0.20 %), 37,234 clipped (4.8 %);
+    - DOI: 33,429 out of range (4.3 %), 1,588 missing keys;
+    - 33,790 unresolved-slab pairs were rejected at ingest;
+    - slab X − COG X: median +0.001 mm, |Δ| p95 0.98 mm.
+  - **Other checks:** engine/report 59/59, hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, scale 44/44 (selftest 44/44), unpopulated 6/6, slab convention 16/16.
 - [ ] **T15 — Flood/DOI selectors and provenance** (FR-16–FR-18). *Done when:*
   - the hidden-GUI check covers both file pickers, the flood-view and DOI-unit selectors, IMAS/no-file unavailable states, the DOI cut reset (0–15 ratio vs 0–20 mm), and the excluded counts in titles;
   - PDF provenance lists the limits paths and exclusion counts;

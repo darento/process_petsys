@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 import copy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+import re
 import struct
 
 import numpy as np
@@ -1139,3 +1140,140 @@ def pair_dt(dataset: Dataset, sm_a: int, sm_b: int | None = None, *, selection: 
         return {"dt_ns": dt, "count": 0, "median": None, "p16": None, "p84": None, "width68": None}
     p16, median, p84 = (float(v) for v in np.percentile(dt, [16, 50, 84]))
     return {"dt_ns": dt, "count": int(dt.size), "median": median, "p16": p16, "p84": p84, "width68": p84 - p16}
+
+
+# Cornell COG/DOI limits files (FR-16-FR-18), as written by
+# scripts_cornell/cornell_cog_decompress_params.py and read by
+# cornell_listmode_cog_fixed_position.py: "(time channel, slab)\tleft\tright".
+_LIMITS_LINE = re.compile(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)\t([^\t]+)\t([^\t]+)")
+SLABS_PER_MM = 16
+HALF_SLAB_MM = 0.8  # src/utils.py:get_slab_cornell: slab 2p at X_p - 0.8 mm, 2p + 1 at X_p + 0.8 mm (B1)
+MM_ROW_MM = 25.6  # decompressed COG Y spans one minimodule row
+DOI_DEPTH_MM = 20.0  # crystal thickness of the list-mode DOI mapping
+LIMITS_REASONS = ("missing key", "invalid limits", "out of range")
+
+
+@dataclass(frozen=True, eq=False)
+class Limits:
+    """One limits file: per (time channel, slab) left/right bounds.
+
+    ``keys`` are sorted calibration keys ``(time channel << 5) | slab``, the
+    encoding of ``SideTable.calibration_key``. ``invalid`` counts entries with
+    left == right, which cannot map any value (sides on them are excluded).
+    """
+    path: str
+    keys: np.ndarray
+    left: np.ndarray
+    right: np.ndarray
+
+    def __len__(self):
+        return len(self.keys)
+
+    @property
+    def invalid(self):
+        return int((self.left == self.right).sum())
+
+    def lookup(self, calibration_key):
+        """(left, right) per key, NaN where the file has no entry."""
+        calibration_key = np.asarray(calibration_key, np.int64)
+        index = np.minimum(np.searchsorted(self.keys, calibration_key), max(len(self.keys) - 1, 0))
+        found = self.keys[index] == calibration_key
+        return np.where(found, self.left[index], np.nan), np.where(found, self.right[index], np.nan)
+
+
+def load_limits(path: str) -> Limits:
+    """Parse a whole limits file; any malformed line rejects the file."""
+    keys, left, right = [], [], []
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            text = line.rstrip("\r\n")
+            if not text.strip():
+                continue
+            match = _LIMITS_LINE.fullmatch(text.strip())
+            if match is None:
+                raise ValueError(f"{Path(path).name} line {number}: expected '(time channel, slab)<TAB>left<TAB>right'")
+            channel, slab = int(match[1]), int(match[2])
+            try:
+                low, high = float(match[3]), float(match[4])
+            except ValueError:
+                raise ValueError(f"{Path(path).name} line {number}: limits are not numbers") from None
+            if slab >= SLABS_PER_MM or not (np.isfinite(low) and np.isfinite(high)):
+                raise ValueError(f"{Path(path).name} line {number}: slab must be 0-{SLABS_PER_MM - 1} "
+                                 "and limits finite")
+            keys.append((channel << 5) | slab)
+            left.append(low)
+            right.append(high)
+    if not keys:
+        raise ValueError(f"{Path(path).name}: no limits entries")
+    keys = np.array(keys, np.int64)
+    order = np.argsort(keys, kind="stable")
+    keys = keys[order]
+    repeated = keys[1:][keys[1:] == keys[:-1]]
+    if repeated.size:
+        key = int(repeated[0])
+        raise ValueError(f"{Path(path).name}: duplicate key ({key >> 5}, {key & 31})")
+    return Limits(str(path), keys, np.array(left, np.float64)[order], np.array(right, np.float64)[order])
+
+
+def _require_cornell(dataset: Dataset):
+    if dataset.settings.system != "CORNELL":
+        raise ValueError("Slab views and limits files apply to Cornell datasets only")
+
+
+def slab_view(dataset: Dataset, data: ModuleEvents, cog: Limits) -> dict:
+    """Slab-assigned flood coordinates for one SM's sides (FR-17).
+
+    X is the stored time channel's fine X shifted by half a slab (B1
+    convention: even slab -0.8 mm, odd +0.8 mm). Y is the stored COG Y
+    decompressed with the side's (time channel, slab) limits,
+    ``clip((y - left) * 25.6 / (right - left), 0, 25.6)``, placed in its
+    minimodule row with ``(3 - mm // 4) * 25.6`` (cornell_floodmaps.py). Sides
+    without an entry ("missing key") or on a left == right entry ("invalid
+    limits") have NaN Y and are counted; nothing is substituted.
+
+    Returns ``{"x", "y", "excluded": Counter, "clipped"}``.
+    """
+    _require_cornell(dataset)
+    key = np.asarray(data.calibration_key, np.int64)
+    channels, inverse = np.unique(key >> 5, return_inverse=True)
+    fine_x = np.array([dataset.coordinates[int(ch)][0] for ch in channels], np.float64)
+    x = fine_x[inverse] + np.where(key & 1, HALF_SLAB_MM, -HALF_SLAB_MM)
+    left, right = cog.lookup(key)
+    missing = np.isnan(left)
+    invalid = ~missing & (left == right)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scaled = (data.y - left) * MM_ROW_MM / (right - left)
+    usable = ~(missing | invalid)
+    clipped = int((usable & ((scaled < 0) | (scaled > MM_ROW_MM))).sum())
+    y = np.where(usable, np.clip(scaled, 0.0, MM_ROW_MM) + (3 - data.mm.astype(np.int64) // 4) * MM_ROW_MM,
+                 np.nan)
+    excluded = Counter({"missing key": int(missing.sum()), "invalid limits": int(invalid.sum())})
+    return {"x": x, "y": y, "excluded": +excluded, "clipped": clipped}
+
+
+def decompressed_doi(dataset: Dataset, data: ModuleEvents, doi: Limits) -> dict:
+    """DOI ratio mapped linearly to 0-20 mm with the side's DOI limits (FR-18).
+
+    ``(doi - right) * 20 / (left - right)`` as in
+    cornell_listmode_cog_fixed_position.py: a linear light-sharing mapping, not
+    an independently validated depth. Values outside [0, 20] mm ("out of
+    range"), missing keys and left == right entries are NaN and counted.
+
+    Returns ``{"doi_mm", "excluded": Counter}``.
+    """
+    _require_cornell(dataset)
+    left, right = doi.lookup(data.calibration_key)
+    missing = np.isnan(left)
+    invalid = ~missing & (left == right)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        depth = (data.doi - right) * DOI_DEPTH_MM / (left - right)
+    usable = ~(missing | invalid)
+    outside = usable & ~((depth >= 0) & (depth <= DOI_DEPTH_MM))
+    excluded = Counter({"missing key": int(missing.sum()), "invalid limits": int(invalid.sum()),
+                        "out of range": int(outside.sum())})
+    return {"doi_mm": np.where(usable & ~outside, depth + 0.0, np.nan), "excluded": +excluded}  # no -0.0
+
+
+def unresolved_slab_pairs(dataset: Dataset) -> int:
+    """Pairs rejected at ingest because a side's slab was unresolved (never in the table)."""
+    return sum(r.errors.get("unresolved Cornell slab", 0) for r in dataset.files if r.success)
