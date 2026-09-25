@@ -29,7 +29,8 @@ from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
     FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
     SLAB_EXTENT_MM, FileResult, FindingThresholds, Selection, Settings, apply_calibration, apply_doi_view,
-    channel_findings, channel_geometry, decompressed_doi, load_limits, slab_view, slab_x_edges,
+    channel_findings, channel_geometry, decompressed_doi, factor_origins, load_limits, slab_origins, slab_view,
+    slab_x_edges,
     unresolved_slab_pairs,
     fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
     minimodule_layout, minimodule_metrics, overview_grid, pair_dt, pair_mask, pair_matrix, process_file,
@@ -75,6 +76,16 @@ def _label(parent, text):
 
 def _reasons(counts):
     return ", ".join(f"{reason} {n:,}" for reason, n in sorted(counts.items())) or "none"
+
+
+# Short labels for keV factor origins (FR-20), in FACTOR_ORIGINS order.
+ORIGIN_SHORT = {"fitted": "fitted", "fitted (check)": "check", "borrowed": "borrowed",
+                "estimated (neighbours)": "est. neighbours", "estimated (median)": "est. median",
+                "no fit": "no fit", "unknown": "unknown", "unpopulated": "unpopulated"}
+
+
+def _origins_text(counts, sep=" • "):
+    return sep.join(f"{ORIGIN_SHORT[name]} {counts[name]:,}" for name in ORIGIN_SHORT if counts.get(name))
 
 
 class _Tooltip:
@@ -198,6 +209,9 @@ class LDATWorkbench(ctk.CTk):
         # Cornell limits files (T15): the COG limits drive the slab flood view (display only);
         # the DOI limits the decompressed-mm DOI view, applied to the dataset by a background job.
         self.limits = {"cog": None, "doi": None}
+        # keV factor origins (T17, FR-20): restrict views / uniformity to fitted factors.
+        self.fitted_only = tk.BooleanVar(value=False)
+        self.uniformity_fitted_only = tk.BooleanVar(value=True)
         self.flood_view = tk.StringVar(value=FLOOD_VIEWS[0])
         self.doi_unit = tk.StringVar(value=DOI_UNITS[0])
         self._flood_combos = []
@@ -352,7 +366,7 @@ class LDATWorkbench(ctk.CTk):
                                             "process files to assess channels", anchor="w", justify="left")
         self.channel_summary.pack(fill="x", padx=9)
         columns = ("sm", "events", "mm", "time", "time_flags", "time_median",
-                   "energy", "energy_flags", "energy_median", "unexpected", "state")
+                   "energy", "energy_flags", "energy_median", "unexpected", "factors", "state")
         # The frame must exist first: a widget packed into a later sibling is stacked below it (hidden).
         frame = ctk.CTkFrame(tab)
         frame.pack(fill="x", padx=9)
@@ -360,8 +374,8 @@ class LDATWorkbench(ctk.CTk):
         for column, heading, width in zip(columns,
                 ("SM", "Ingest sides", "mM seen/expected", "Time assessed", "Time not obs / low / high",
                  "Time median hits", "Energy assessed", "Energy not obs / low / high", "Energy median hits",
-                 "Unexpected hits", "Finding"),
-                (60, 100, 115, 100, 160, 115, 110, 170, 125, 110, 150)):
+                 "Unexpected hits", "keV factor sides borrowed / est.", "Finding"),
+                (60, 95, 110, 95, 150, 110, 105, 160, 120, 100, 185, 140)):
             self.channel_tree.heading(column, text=heading)
             self.channel_tree.column(column, width=width, anchor="center")
         for state, colour in FINDING_COLOURS.items():
@@ -441,6 +455,15 @@ class LDATWorkbench(ctk.CTk):
 
         add_slider(groups[0][0], "Lo", self.energy_low, 1500)
         add_slider(groups[0][0], "Hi", self.energy_high, 1500)
+        origin_row = ctk.CTkFrame(groups[0][0], fg_color="transparent")
+        origin_row.pack(fill="x", padx=4)
+        self.fitted_check = ctk.CTkCheckBox(origin_row, text="Fitted keV factors only", variable=self.fitted_only,
+                                            command=self._refresh_all, state="disabled")
+        self.fitted_check.pack(side="left", padx=4)
+        _Tooltip(self.fitted_check, "Leave out sides whose slab keV factor was borrowed or estimated "
+                                    "(from the calibration's _status.txt)")
+        self.fitted_note = ctk.CTkLabel(origin_row, text="", text_color="#7d848b", font=("Arial", 10))
+        self.fitted_note.pack(side="left", padx=4)
         unit_row = ctk.CTkFrame(groups[1][0], fg_color="transparent")
         unit_row.pack(fill="x", padx=4)
         _label(unit_row, "Unit")
@@ -990,6 +1013,8 @@ class LDATWorkbench(ctk.CTk):
                     for button in (self.uniformity_button, self.system_report, self.module_report):
                         button.configure(state="normal" if self.dataset.modules else "disabled")
                     self._reset_energy_range()
+                    self._update_origin_controls()
+                    self._draw_channels()  # its keV factor column follows the calibration
                     self._refresh_all()
                     self._log("Energy view updated without rereading LDAT (keV)" if self.calibrated.get()
                               else "Energy view updated without rereading LDAT (a.u.)")
@@ -1045,6 +1070,7 @@ class LDATWorkbench(ctk.CTk):
         self.calibrated.set(dataset.settings.calibrated)
         self._fit_control_state()
         self._update_limits_controls()  # an IMAS dataset has no slab or mm DOI views
+        self._update_origin_controls()
         self._reset_energy_range()
         successful = [f for f in dataset.files if f.success]
         self._log(f"Merged {sum(f.pairs_accepted for f in successful):,} coincidence pairs, "
@@ -1082,7 +1108,7 @@ class LDATWorkbench(ctk.CTk):
                   self.y_low, self.y_high)]
         if not np.isfinite(values).all() or any(values[i] >= values[i+1] for i in (0, 2, 4, 6)):
             raise ValueError("Each filter must have a finite low value below its high value")
-        return Selection(*values)
+        return Selection(*values, fitted_only=self.fitted_only.get() and self._origins_available())
 
     def _refresh_all(self):
         """Validate the cuts, mark every drawn tab stale and redraw the visible one."""
@@ -1253,6 +1279,15 @@ class LDATWorkbench(ctk.CTk):
             else:
                 self._log(f"Experimental fit SM {sm}: {extra['status']}")
                 fit_readouts.append(f"Background fit: unavailable ({extra['status']})")
+        origins = factor_origins(self.dataset, data, spatial & np.isfinite(data.energy))
+        if calibrated and self.dataset.settings.system == "CORNELL":
+            note = ("keV factors (plotted sides):\n" + _origins_text(origins, "\n")
+                    if self.dataset.calibration_status is not None else "keV factor origin unknown\n(no _status.txt)")
+            if selection.fitted_only:
+                note += "\nfitted factors only"
+            # below the fit readout (top right), over the low-energy side of the spectrum
+            self.energy_ax.text(0.02, 0.86, note, transform=self.energy_ax.transAxes, ha="left", va="top",
+                                fontsize=7, bbox=_NOTE_BOX)
         if fit_readouts:
             self.energy_ax.text(0.98, 0.97, "\n".join(fit_readouts), transform=self.energy_ax.transAxes,
                                 ha="right", va="top", fontsize=8, color="#9f322c",
@@ -1318,6 +1353,60 @@ class LDATWorkbench(ctk.CTk):
         self._switch_rectangle()
         self.canvas.draw_idle()
         self._draw_summary(sm, selection, int(chosen.sum()))
+
+    def _origins_available(self):
+        """Factor origins exist: a keV Cornell dataset whose calibration has a status sidecar."""
+        dataset = self.dataset
+        return bool(dataset and dataset.settings.calibrated and dataset.settings.system == "CORNELL"
+                    and dataset.calibration_status is not None)
+
+    def _origins_reason(self):
+        dataset = self.dataset
+        if not dataset or not dataset.settings.calibrated:
+            return "raw a.u. (no keV factors)"
+        if dataset.settings.system != "CORNELL":
+            return "Cornell slab calibrations only"
+        return "no _status.txt next to the calibration (origin unknown)"
+
+    def _update_origin_controls(self):
+        available = self._origins_available()
+        self.fitted_check.configure(state="normal" if available else "disabled")
+        self.fitted_note.configure(text="" if available else "n/a: " + self._origins_reason())
+        if not available:
+            self.fitted_only.set(False)
+        dataset = self.dataset
+        if dataset and dataset.settings.calibrated and dataset.settings.system == "CORNELL":
+            status = dataset.calibration_status
+            slabs = slab_origins(dataset)
+            self._log(f"keV factor origins: {Path(status.path).name} ({len(status):,} slabs); mapped slabs: "
+                      f"{_origins_text(slabs)}" if status is not None
+                      else "keV factor origins unknown: the calibration has no _status.txt sidecar")
+
+    def _factor_cell(self, sm):
+        """Channel Status: ingest sides of ``sm`` on borrowed / estimated keV factors."""
+        dataset = self.dataset
+        if not dataset.settings.calibrated or dataset.settings.system != "CORNELL":
+            return "—"
+        data = dataset.modules.get(sm)
+        if data is None or not len(data):
+            return "0 / 0" if dataset.calibration_status is not None else "unknown"
+        if dataset.calibration_status is None:
+            return "unknown"
+        counts = factor_origins(dataset, data)
+        estimated = counts["estimated (neighbours)"] + counts["estimated (median)"]
+        return f"{counts['borrowed']:,} / {estimated:,}"
+
+    def _factor_summary(self):
+        dataset = self.dataset
+        if not dataset.settings.calibrated or dataset.settings.system != "CORNELL":
+            return ""
+        if dataset.calibration_status is None:
+            return "\nkeV factor origin unknown: the calibration has no _status.txt sidecar"
+        sides = Counter()
+        for data in dataset.modules.values():
+            sides.update(factor_origins(dataset, data))
+        return (f"\nkeV factor origins (calibration status file) • ingest sides: {_origins_text(sides)}"
+                f"\nmapped slabs: {_origins_text(slab_origins(dataset))}")
 
     def _select_limits(self, kind):
         if self._busy or self._report_busy:
@@ -1675,7 +1764,7 @@ class LDATWorkbench(ctk.CTk):
             tree.insert("", "end", iid=str(sm), tags=(row["state"],), values=(
                 f"SM {sm}", f"{row['events']:,}", f"{seen_mm}/{len(self.dataset.expected_mm.get(sm, ()))}",
                 assessed(t), flags(t), median(t), assessed(e), flags(e), median(e),
-                f"{unexpected} ch" if unexpected else "—", row["state"]))
+                f"{unexpected} ch" if unexpected else "—", self._factor_cell(sm), row["state"]))
             states[row["state"]] += 1
             channel_states.update(t["states"])
             channel_states.update(e["states"])
@@ -1683,7 +1772,8 @@ class LDATWorkbench(ctk.CTk):
         self.channel_summary.configure(text=(
             f"{len(rows)} SuperModules: " + ", ".join(f"{states[s]} {s}" for s in order if states[s])
             + "  •  channels: " + ", ".join(f"{channel_states[s]:,} {s}" for s in order if channel_states[s])
-            + f"\n{FINDINGS_POPULATION} (not a dead/hot hardware verdict) • {self.thresholds.text()}"))
+            + f"\n{FINDINGS_POPULATION} (not a dead/hot hardware verdict) • {self.thresholds.text()}"
+            + self._factor_summary()))
         if keep in self._findings:
             tree.selection_set(str(keep))
             self._draw_channel_detail(keep)
@@ -2382,6 +2472,12 @@ class LDATWorkbench(ctk.CTk):
         _entry(controls, self.target, 85)
         _label(controls, "Tolerance %")
         _entry(controls, self.tolerance, 85)
+        available = self._origins_available()
+        ctk.CTkCheckBox(controls, text="Fitted keV factors only", variable=self.uniformity_fitted_only,
+                        state="normal" if available else "disabled").pack(side="left", padx=10)
+        origin_note = ctk.CTkLabel(controls, text="" if available else "n/a: " + self._origins_reason(),
+                                   text_color="#7d848b")
+        origin_note.pack(side="left")
         tree = ttk.Treeview(window, columns=("sm", "events", "peak", "res", "dev", "status"), show="headings")
         for col, heading in (("sm", "SM"), ("events", "Sides"), ("peak", "Centroid (keV)"),
                              ("res", "Resolution %"), ("dev", "Deviation %"), ("status", "Result")):
@@ -2400,7 +2496,10 @@ class LDATWorkbench(ctk.CTk):
 
         def fill():
             try:
-                rows = uniformity(self.dataset, self._selection(), float(self.target.get()),
+                selection = self._selection()
+                if self._origins_available():
+                    selection = replace(selection, fitted_only=self.uniformity_fitted_only.get())
+                rows = uniformity(self.dataset, selection, float(self.target.get()),
                                   float(self.tolerance.get()))
             except ValueError as exc:
                 messagebox.showerror("Uniformity", str(exc))

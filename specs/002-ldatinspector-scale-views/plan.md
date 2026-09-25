@@ -152,10 +152,21 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 ### Calibration factor provenance (FR-20)
 
-- **Loader:** `load_calibration_status(encal_path)` reads `<encal stem>_status.txt` when present, giving `(time channel, slab)` → one of fitted / check / borrowed / estimated-neighbours / estimated-median / no-fit.
-- **Storage:** the dense key array built at calibration time gains a parallel `int8` origin code, so a side's origin is one lookup on `calibration_key`. Nothing is added to per-side storage.
-- **Views and reports:** per-SM origin counts come from a `bincount` on the active SM slice. `Selection` gets an optional `fitted_factors_only` flag used by photopeak/uniformity fits, off by default in views and on by default in uniformity.
-- **No sidecar:** origin is "unknown" for every key.
+- **Loader:** `load_calibration_status(encal_path)` reads `<encal stem>_status.txt` when present into a `CalibrationStatus` (sorted calibration keys and `int8` codes, `FACTOR_ORIGINS`): fitted / fitted (check) / borrowed / estimated (neighbours) / estimated (median) / no fit / unknown.
+  - Each status is matched exactly against the texts `cornell_slab_en_cal.py` writes: `fit`, `fit; check: …`, `borrowed from slab N`, `estimated from neighbour slabs [..]`, `estimated from minimodule median (N slabs)` and `no fit…`.
+  - An unrecognised status, a bad line, slab ≥ 16, a duplicate key or a file with no entries rejects the sidecar, and with it the calibration (the calibration error dialog). No origin is guessed.
+  - A key missing from the sidecar is "unknown".
+- **Storage:** `apply_calibration` loads the sidecar (Cornell, keV only) and sets a per-side `int8` origin view on the table (`SideTable.origin`, `ModuleEvents.origin`; about 3.9 MB on the 3.85 M-side whole file). It replaces the planned "no per-side storage" lookup, because the fitted-only cut needs a per-side test in `Selection.mask`. The DOI view keeps the origins, raw a.u. has none, and `Dataset.calibration_status` records the file.
+- **Counts:**
+  - `factor_origins(dataset, data, mask)` counts sides by origin (a `bincount` on the SM slice). It is empty in raw a.u. and for IMAS (no slab factors). Without a sidecar every side is "unknown".
+  - `slab_origins(dataset, sms)` counts mapped slabs by origin, two per time channel (B1: slabs 2p and 2p + 1). Slabs of the config's unpopulated minimodules are "unpopulated", not "no fit".
+- **Fitted-only cut:** `Selection.fitted_only` keeps only sides whose *own* factor is fitted or fitted (check); the partner is still subject to the energy window. An unknown origin is never assumed fitted, so with no sidecar the cut keeps nothing, and the GUI disables it then.
+  - **GUI:** a "Fitted keV factors only" checkbox in the energy group, off by default, applies to every view's population. Photopeak Uniformity has its own switch, on by default. Both are disabled with a grey "n/a: raw a.u. / Cornell only / no _status.txt" note when origins are unavailable.
+- **Display:**
+  - The SuperModule energy plot carries a note with the origin counts of the plotted sides ("no fit" sides have no keV, so they are not plotted), or "keV factor origin unknown (no _status.txt)".
+  - Channel Status has a "keV factor sides borrowed / est." column per SM, plus summary lines with the ingest sides and the mapped slabs by origin.
+  - The console logs the sidecar and its mapped-slab counts on processing or calibration.
+- **Reports:** the provenance lists the sidecar path, the ingest sides and mapped slabs by origin in the report scope, and whether the fits used fitted factors only. Without a sidecar it reads "keV factor origins: unknown (… never assumed fitted)". SM pages list their sides by origin.
 - **Unpopulated minimodules (B3):** they come from the config, so their slabs are neither expected nor counted as unavailable.
 
 ### Reports (FR-14)

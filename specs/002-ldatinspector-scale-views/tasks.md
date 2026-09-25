@@ -376,12 +376,55 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   - on a real Cornell prefix, the recovered-side count is recorded against the 3.9 % non-adjacent baseline;
   - provenance and the GUI label show the active rule.
 
-- [ ] **T17 — Estimated calibration factors in the inspector** (FR-20; with T12). *Done when:*
+- [x] **T17 — Estimated calibration factors in the inspector** (FR-20; with T12). *Done when:*
   - `ldat_views_check.py` loads a synthetic `.encal` with a `_status.txt` sidecar and counts sides using fitted, borrowed and estimated factors per SM exactly;
   - estimated/borrowed slabs are excluded from per-slab fit and uniformity inputs when so selected;
   - an `.encal` without a sidecar reports provenance "unknown" rather than "fitted";
   - the energy view, Channel Status and PDF provenance show the counts;
   - on the real `…coincCompact11s_resolved.encal`, counts match its status file.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 143/143** (19 new for T17); `--real` → **PASS 146/146**; GUI compile exit 0. Engine `load_calibration_status`, `CalibrationStatus`, `FACTOR_ORIGINS`, `factor_origins`, `slab_origins`, `Selection.fitted_only` and `SideTable.origin`; GUI switches, note, column and summary; report provenance (see plan).
+  - **Engine**, on a synthetic `.encal` plus status for every mapped Cornell slab:
+    - SM 0 sides: fitted 60, check 8, borrowed 12, est. neighbours 10, est. median 6, no fit 4 and unknown 4 (a key in the `.encal` but not in the status). SM 1: fitted 10, borrowed 6. The counts are exact per SM and in total;
+    - slabs: SM 0 has 256 (250 fitted, one of each other origin); the half-populated SM 2 has 128 unpopulated (not "no fit") and 128 fitted; over the map 7,680, with 1,280 unpopulated;
+    - fitted only keeps exactly the fitted and check sides (68 of 100 in the window), and the per-minimodule selected count follows it;
+    - origins survive the DOI view, are absent in raw a.u. and are restored when keV returns;
+    - without a sidecar every side and slab is "unknown" and fitted only keeps 0; IMAS reports nothing;
+    - 5 malformed sidecars reject the calibration (unrecognised status, missing tab, slab 16, duplicate, header only).
+  - **Hidden GUI:**
+    - Channel Status reads "12 / 16" (SM 0) and "6 / 0" (SM 1), and its summary gives the ingest sides and mapped slabs by origin (with unpopulated 1,280);
+    - the energy note lists the origin counts of the plotted sides, and the checkbox is enabled;
+    - "Fitted keV factors only" gives 68 selected sides and says so on the plot;
+    - Photopeak Uniformity defaults to fitted only: SM 0 has 68 of 104 sides, equal to the engine;
+    - without a sidecar: "unknown" in the column, the note and the summary, and the switch is disabled with a "no _status.txt" note;
+    - raw a.u.: "—", no note, the switch disabled;
+    - no error dialogs.
+  - **PDF:**
+    - the provenance has the sidecar path, "Ingest sides by keV factor origin (SM 0): fitted 60, fitted (check) 8, borrowed 12, estimated (neighbours) 10, estimated (median) 6, no fit 4, unknown 4", the mapped slabs (fitted 250…) and "fitted keV factors only (borrowed and estimated left out)"; the SM page lists its origins;
+    - without a sidecar: "keV factor origins: unknown … never assumed fitted".
+  - **Real resolved calibration (sidecar):**
+    - its counts equal the status file: fitted 5,356, check 114, borrowed 791, est. neighbours 80, est. median 59 and no fit 1,280;
+    - mapped over the Cornell map, the 1,280 "no fit" slabs are exactly the unpopulated ones (no fit 0).
+  - **Mutation checks:**
+    - borrowed read as fitted: 10 fail;
+    - fitted only dropping "check": 3;
+    - no sidecar assumed fitted: 1;
+    - unpopulated counted as no fit: 3;
+    - unknown status text accepted: 1;
+    - GUI never offering origins: 3;
+    - no origin lines in the PDF: 2.
+
+    Unmodified, none fail.
+  - **Found while checking:** on the real canvas the energy note first overlapped the fit readout and the Channel Status line was cut off. The note is now one origin per line below the readout, and the summary drops the file name and uses two lines.
+  - **Real Cornell whole file** (`00000003`, 3,853,684 sides, resolved encal; recorded, not a pass criterion):
+    - sides: fitted 3,182,098, check 62,472, borrowed 586,004 (15.2 %), est. neighbours 17,863, est. median 5,247; none without keV;
+    - the side counts take 0.012 s, and the Channel Status redraw 0.09 s;
+    - fitted-only uniformity leaves out a median 15.8 % of sides per SM (max 22.4 %, SM 23), and moves μ by a median of +1.84 keV (max +3.24 keV: SM 23, 506.3 → 509.6 keV). The borrowed outer slabs pull the SM photopeak down;
+    - screenshots are in the session scratchpad `t17/`.
+  - **Other checks:** hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, unpopulated 6/6, slab convention 16/16, slab calibration 15/15, scale 44/44 (selftest 44/44), engine/report 59/59.
+  - **Owner review pending:**
+    - the defaults: fitted only off in the views and on in uniformity, and "fitted (check)" counted as fitted;
+    - that a malformed sidecar rejects the calibration.
 
 ## Reports and validation
 

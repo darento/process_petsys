@@ -10,9 +10,9 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 import numpy as np
 
-from src.ldat_inspector import (SLAB_EXTENT_MM, TIMESTAMP_SECONDS, Selection,channel_status, fit_on_display_bins,
-                                flood_counts, slab_totals, slab_view, slab_x_edges, uniformity,
-                                unresolved_slab_pairs)
+from src.ldat_inspector import (SLAB_EXTENT_MM, TIMESTAMP_SECONDS, Selection, channel_status, factor_origins,
+                                fit_on_display_bins, flood_counts, slab_origins, slab_totals, slab_view,
+                                slab_x_edges, uniformity, unresolved_slab_pairs)
 
 
 def report_rows(dataset, selection: Selection, target=511.0, tolerance_pct=10.0):
@@ -62,6 +62,33 @@ def _limits_lines(dataset, selection, limits, slab_flood, only_sm):
     return lines
 
 
+def _counts(counts):
+    return ", ".join(f"{name} {n:,}" for name, n in counts.items() if n) or "none"
+
+
+def _origin_lines(dataset, selection, only_sm):
+    """keV factor origins of the Cornell calibration (FR-20): sides, slabs, and the fit population."""
+    settings = dataset.settings
+    if not settings.calibrated or settings.system != "CORNELL":
+        return []
+    status = dataset.calibration_status
+    if status is None:
+        return ["keV factor origins: unknown (no _status.txt sidecar next to the calibration; never assumed fitted)"]
+    sms = None if only_sm is None else {only_sm}
+    sides = {}
+    for sm, data in sorted(dataset.modules.items()):
+        if sms is None or sm in sms:
+            for name, n in factor_origins(dataset, data).items():
+                sides[name] = sides.get(name, 0) + n
+    scope = "all SMs" if only_sm is None else f"SM {only_sm}"
+    return [f"keV factor origins: {status.path}",
+            f"Ingest sides by keV factor origin ({scope}): {_counts(sides)}",
+            f"Mapped slabs by keV factor origin ({scope}): {_counts(slab_origins(dataset, sms))}",
+            "Photopeak/uniformity fits and counts: " + ("fitted keV factors only (borrowed and estimated left out)"
+                                                        if selection.fitted_only
+                                                        else "all keV factors (borrowed and estimated included)")]
+
+
 def _provenance(dataset, selection, limits=None, slab_flood=False, only_sm=None):
     limits = {"doi": dataset.doi_limits, **(limits or {})}
     settings = dataset.settings
@@ -96,6 +123,7 @@ def _provenance(dataset, selection, limits=None, slab_flood=False, only_sm=None)
         *( [f"Unavailable calibrated energy: {sum(np.count_nonzero(~np.isfinite(data.energy)) for data in dataset.modules.values()):,} detector sides (missing/invalid calibration factor)."]
           if settings.calibrated else []),
         *_limits_lines(dataset, selection, limits, slab_flood, only_sm),
+        *_origin_lines(dataset, selection, only_sm),
         ("No singles data in this LDAT input; decompressed DOI is a linear light-sharing mapping, not a validated depth."
          if dataset.doi_mm else "No singles data in this LDAT input; DOI is a light-sharing ratio, not depth in mm."),
         *(["Cornell one-time-channel slabs retain the legacy random neighbour assignment before keV calibration."]
@@ -171,6 +199,9 @@ def _module_page(pdf, dataset, selection, row, cog=None):
             f"Peak position: {fit['mu']:.1f} keV" if fit["mu"] is not None else "Peak position: unavailable",
             f"Resolution: {fit['resolution']:.1f}%" if fit["resolution"] is not None else "Resolution: unavailable",
             f"Uniformity: {row['result']}",
+            *([f"keV factor sides: {_counts(factor_origins(dataset, data))}"]
+              if data is not None and dataset.settings.calibrated and dataset.settings.system == "CORNELL"
+              and dataset.calibration_status is not None else []),
             "", "Time channels not observed (first 15):",
             str(sorted(status["unobserved_time"])[:15]),
             "Energy channels not observed (first 15):",

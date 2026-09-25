@@ -165,12 +165,15 @@ class SideTable:
     active energy view: the ``raw_energy`` array itself when uncalibrated.
     ``doi`` is the active DOI view: the stored light-sharing ratio
     (``columns["doi"]``) unless a decompressed-mm view is applied (FR-18).
+    ``origin`` holds each side's keV factor origin code (``FACTOR_ORIGINS``,
+    FR-20) when a calibration with a status sidecar is applied, else None.
     """
 
-    def __init__(self, columns: dict, energy=None, doi=None):
+    def __init__(self, columns: dict, energy=None, doi=None, origin=None):
         self.columns = columns
         self.energy = columns["raw_energy"] if energy is None else energy
         self.doi = columns["doi"] if doi is None else doi
+        self.origin = origin
 
     @classmethod
     def from_pairs(cls, file_index: int, **sides):
@@ -243,19 +246,20 @@ class SideTable:
         except KeyError:
             raise AttributeError(name) from None
 
-    def with_energy(self, energy):
-        """Same sides and columns with a different active energy view (the DOI view is kept)."""
-        return SideTable(self.columns, energy, self.doi)
+    def with_energy(self, energy, origin=None):
+        """Same sides with a different energy view and its factor origins (the DOI view is kept)."""
+        return SideTable(self.columns, energy, self.doi, origin)
 
     def with_doi(self, doi):
         """Same sides and columns with a different active DOI view (None: the stored ratio)."""
-        return SideTable(self.columns, self.energy, doi)
+        return SideTable(self.columns, self.energy, doi, self.origin)
 
     @property
     def nbytes(self):
         own = sum(values.nbytes for values in self.columns.values())
         return (own + (0 if self.energy is self.columns["raw_energy"] else self.energy.nbytes)
-                + (0 if self.doi is self.columns["doi"] else self.doi.nbytes))
+                + (0 if self.doi is self.columns["doi"] else self.doi.nbytes)
+                + (0 if self.origin is None else self.origin.nbytes))
 
     def by_sm(self):
         """``{sm: ModuleEvents}`` views onto this table's contiguous SM rows."""
@@ -283,6 +287,7 @@ class ModuleEvents:
         for name in self._OWN:
             setattr(self, name, getattr(table, name)[start:stop])
         self.doi_ratio = table.columns["doi"][start:stop]
+        self.origin = None if table.origin is None else table.origin[start:stop]
 
     def __len__(self):
         return self._stop - self._start
@@ -303,6 +308,7 @@ class ModuleEvents:
         view._table = table
         view.energy = table.energy[self._start:self._stop]
         view.doi = table.doi[self._start:self._stop]
+        view.origin = None if table.origin is None else table.origin[self._start:self._stop]
         return view
 
 
@@ -443,6 +449,8 @@ class Dataset:
     # Active DOI view (FR-18; see apply_doi_view): the DOI limits file when decompressed mm.
     doi_limits: "Limits | None" = None
     doi_excluded: Counter = field(default_factory=Counter)
+    # keV factor origins of the applied Cornell calibration (FR-20; see load_calibration_status).
+    calibration_status: "CalibrationStatus | None" = None
 
     @property
     def doi_mm(self) -> bool:
@@ -496,12 +504,17 @@ def apply_calibration(dataset: Dataset, path: str, enabled: bool,
 
     Missing Cornell slab/channel factors remain NaN (never plausible keV).
     Raw columns and file/channel counters are shared with the original view.
+    A Cornell calibration's ``_status.txt`` sidecar, when present, gives each
+    side's factor origin (FR-20); a malformed sidecar rejects the calibration.
     """
+    status = None
     if enabled:
         if not Path(path).is_file():
             raise FileNotFoundError("Select an existing energy calibration")
         converter = converter or KevConverter(path, file_type=(
             "cornell" if dataset.settings.system == "CORNELL" else "mu"))
+        if dataset.settings.system == "CORNELL":
+            status = load_calibration_status(path)
 
     def converted(raw, keys):
         if not enabled:
@@ -519,9 +532,11 @@ def apply_calibration(dataset: Dataset, path: str, enabled: bool,
         return raw * factors[inverse]
 
     # Only the energy column changes; partner energies follow through ``partner``.
-    table = dataset.table.with_energy(converted(dataset.table.raw_energy, dataset.table.calibration_key))
+    keys = dataset.table.calibration_key
+    table = dataset.table.with_energy(converted(dataset.table.raw_energy, keys),
+                                      status.lookup(keys) if status is not None else None)
     modules = {sm: data.with_table(table) for sm, data in dataset.modules.items()}
-    return replace(dataset, table=table, modules=modules,
+    return replace(dataset, table=table, modules=modules, calibration_status=status,
                    settings=replace(dataset.settings, calibrated=enabled, calibration_path=path))
 
 
@@ -535,10 +550,14 @@ class Selection:
     x_high: float = float("inf")
     y_low: float = -float("inf")
     y_high: float = float("inf")
+    # Only sides whose own keV factor was fitted (FR-20); an unknown origin is never assumed fitted.
+    fitted_only: bool = False
 
     def mask(self, data: ModuleEvents, *, energy: bool = True, doi: bool = True):
         keep = ((data.x >= self.x_low) & (data.x <= self.x_high)
                 & (data.y >= self.y_low) & (data.y <= self.y_high))
+        if self.fitted_only:
+            keep &= (data.origin <= ORIGIN_CHECK) if data.origin is not None else False
         if doi:  # a NaN DOI (decompressed view, excluded side) fails every DOI cut
             keep &= (data.doi >= self.doi_low) & (data.doi <= self.doi_high)
         if energy:
@@ -1363,3 +1382,122 @@ def slab_totals(dataset: Dataset, cog: Limits, selection: Selection | None = Non
 def unresolved_slab_pairs(dataset: Dataset) -> int:
     """Pairs rejected at ingest because a side's slab was unresolved (never in the table)."""
     return sum(r.errors.get("unresolved Cornell slab", 0) for r in dataset.files if r.success)
+
+
+# keV factor origins of a Cornell slab calibration (FR-20), from the status sidecar that
+# scripts_cornell/cornell_slab_en_cal.py writes next to the .encal ("(t_ch, slab)\tstatus").
+FACTOR_ORIGINS = ("fitted", "fitted (check)", "borrowed", "estimated (neighbours)", "estimated (median)",
+                  "no fit", "unknown")
+ORIGIN_CHECK = 1  # codes <= this are fitted factors
+ORIGIN_UNKNOWN = FACTOR_ORIGINS.index("unknown")
+_STATUS_RULES = (
+    (re.compile(r"fit"), 0),
+    (re.compile(r"fit; check: .+"), 1),
+    (re.compile(r"borrowed from slab \d+"), 2),
+    (re.compile(r"estimated from neighbour slabs \[\d+(, \d+)*\]"), 3),
+    (re.compile(r"estimated from minimodule median \(\d+ slabs\)"), 4),
+    (re.compile(r"no fit(: .+)?"), 5),
+)
+_STATUS_LINE = re.compile(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)\t(.+)")
+
+
+@dataclass(frozen=True, eq=False)
+class CalibrationStatus:
+    """Per (time channel, slab) factor origin codes; ``keys`` sorted calibration keys."""
+    path: str
+    keys: np.ndarray
+    codes: np.ndarray
+
+    def __len__(self):
+        return len(self.keys)
+
+    def lookup(self, calibration_key):
+        """int8 origin code per key; ``ORIGIN_UNKNOWN`` where the sidecar has no entry."""
+        calibration_key = np.asarray(calibration_key, np.int64)
+        index = np.minimum(np.searchsorted(self.keys, calibration_key), max(len(self.keys) - 1, 0))
+        found = self.keys[index] == calibration_key
+        return np.where(found, self.codes[index], ORIGIN_UNKNOWN).astype(np.int8)
+
+
+def calibration_status_path(encal_path: str) -> Path:
+    path = Path(encal_path)
+    return path.with_name(path.stem + "_status.txt")
+
+
+def load_calibration_status(encal_path: str) -> CalibrationStatus | None:
+    """The ``<encal stem>_status.txt`` sidecar, or None when there is none.
+
+    Every line after the optional ``ID(t_ch, slab)\tstatus`` header must be a
+    key and a status the calibration script writes; anything else rejects the
+    sidecar (and so the calibration) rather than guessing an origin.
+    """
+    path = calibration_status_path(encal_path)
+    if not path.is_file():
+        return None
+    keys, codes = [], []
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, 1):
+            text = line.strip()
+            if not text or (not keys and text.startswith("ID(")):
+                continue
+            match = _STATUS_LINE.fullmatch(text)
+            if match is None:
+                raise ValueError(f"{path.name} line {number}: expected '(time channel, slab)<TAB>status'")
+            status = match[3].strip()
+            code = next((code for rule, code in _STATUS_RULES if rule.fullmatch(status)), None)
+            if code is None or int(match[2]) >= SLABS_PER_MM:
+                raise ValueError(f"{path.name} line {number}: unrecognised status or slab: {text!r}")
+            keys.append((int(match[1]) << 5) | int(match[2]))
+            codes.append(code)
+    if not keys:
+        raise ValueError(f"{path.name}: no status entries")
+    keys = np.array(keys, np.int64)
+    order = np.argsort(keys, kind="stable")
+    keys = keys[order]
+    repeated = keys[1:][keys[1:] == keys[:-1]]
+    if repeated.size:
+        raise ValueError(f"{path.name}: duplicate key ({int(repeated[0]) >> 5}, {int(repeated[0]) & 31})")
+    return CalibrationStatus(str(path), keys, np.array(codes, np.int8)[order])
+
+
+def factor_origins(dataset: Dataset, data: ModuleEvents, mask=None) -> Counter:
+    """Detector sides by keV factor origin (FR-20), all or within ``mask``.
+
+    Empty in raw a.u. and for IMAS (no slab factors). A Cornell calibration
+    without a sidecar gives "unknown" for every side, never "fitted".
+    """
+    if not dataset.settings.calibrated or dataset.settings.system != "CORNELL":
+        return Counter()
+    if data.origin is None:
+        count = len(data) if mask is None else int(np.count_nonzero(mask))
+        return Counter({"unknown": count}) if count else Counter()
+    codes = data.origin if mask is None else data.origin[mask]
+    counts = np.bincount(codes.astype(np.int64), minlength=len(FACTOR_ORIGINS))
+    return +Counter({name: int(n) for name, n in zip(FACTOR_ORIGINS, counts)})
+
+
+def slab_origins(dataset: Dataset, sms=None) -> Counter:
+    """Mapped Cornell slabs by factor origin (FR-20); unpopulated minimodules count as "unpopulated".
+
+    Each mapped time channel at position p carries slabs 2p and 2p + 1 (B1).
+    Slabs of the config's unpopulated minimodules are "unpopulated", not a
+    missing keV factor. Empty in raw a.u. and for IMAS.
+    """
+    if not dataset.settings.calibrated or dataset.settings.system != "CORNELL":
+        return Counter()
+    unpopulated = unpopulated_minimodules(dataset.config)
+    counts, keys = Counter(), []
+    for channel, (sm, mm) in dataset.channel_modules.items():
+        if sms is not None and sm not in sms:
+            continue
+        if channel not in dataset.coordinates or ChannelType.TIME not in dataset.channel_types.get(channel, ()):
+            continue
+        position = int(dataset.coordinates[channel][2])
+        if mm in unpopulated.get(sm, ()):
+            counts["unpopulated"] += 2
+        else:
+            keys += [(channel << 5) | (2 * position), (channel << 5) | (2 * position + 1)]
+    status = dataset.calibration_status
+    codes = (status.lookup(keys) if status is not None else np.full(len(keys), ORIGIN_UNKNOWN)).astype(np.int64)
+    counts.update({name: int(n) for name, n in zip(FACTOR_ORIGINS, np.bincount(codes, minlength=len(FACTOR_ORIGINS)))})
+    return +counts
