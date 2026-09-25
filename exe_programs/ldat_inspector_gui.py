@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
+import multiprocessing
 from pathlib import Path
 import os
 import queue
@@ -20,11 +21,13 @@ from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
 import numpy as np
 
+from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
-    MAX_PAIRS_PER_FILE, Selection, Settings, apply_calibration, channel_status, fit_peak,
+    FileResult, Selection, Settings, apply_calibration, channel_status, fit_peak,
     fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results, process_file, rate_series,
     pair_offset_series, uniformity,
 )
+from src.ldat_memory import estimate_memory
 
 
 __version__ = "0.1.0"
@@ -62,6 +65,16 @@ class LDATWorkbench(ctk.CTk):
         self._selector = None
         self._colorbar = None
         self._residual_window = None
+
+        # Processing pool, shared cancel flag and per-file progress (spec 002 T4).
+        self._pool = None
+        self._cancel = None
+        self._file_progress = None
+        self._workers = 0
+        self._reader = None  # checks substitute a slow reader; None uses process_file
+        self._estimate_token = 0
+        self._estimate_after = None
+        self.whole_files = tk.BooleanVar(value=False)
 
         self.system = tk.StringVar(value="IMAS")
         self.max_pairs = tk.StringVar(value="10000")
@@ -151,13 +164,29 @@ class LDATWorkbench(ctk.CTk):
             r = ctk.CTkFrame(processing, fg_color="transparent")
             r.pack(fill="x", padx=5)
             ctk.CTkLabel(r, text=text, width=174, anchor="w").pack(side="left")
-            _entry(r, var, width=74)
-        self.process_button = ctk.CTkButton(processing, text="Process files (Ctrl+P)",
+            box = _entry(r, var, width=74)
+            if var is self.max_pairs:
+                self.max_pairs_entry = box
+        self.whole_switch = ctk.CTkSwitch(processing, text="Whole files (no pair limit)",
+                                          variable=self.whole_files, command=self._whole_files_changed)
+        self.whole_switch.pack(anchor="w", padx=10, pady=(2, 0))
+        buttons = ctk.CTkFrame(processing, fg_color="transparent")
+        buttons.pack(fill="x", padx=10, pady=(5, 2))
+        self.process_button = ctk.CTkButton(buttons, text="Process files (Ctrl+P)",
                                             fg_color="#288047", command=self._start_processing)
-        self.process_button.pack(fill="x", padx=10, pady=(5, 2))
+        self.process_button.pack(side="left", fill="x", expand=True)
+        self.cancel_button = ctk.CTkButton(buttons, text="Cancel", width=62, fg_color="#9b3b30",
+                                           command=self._cancel_processing, state="disabled")
+        self.cancel_button.pack(side="left", padx=(4, 0))
         self.progress = ctk.CTkProgressBar(processing)
-        self.progress.pack(fill="x", padx=10, pady=(2, 5))
+        self.progress.pack(fill="x", padx=10, pady=(2, 2))
         self.progress.set(0)
+        self.estimate_text = ctk.CTkLabel(processing, text="Estimated memory: add LDAT files",
+                                          anchor="w", justify="left", wraplength=240,
+                                          font=("Arial", 11))
+        self.estimate_text.pack(fill="x", padx=10, pady=(0, 5))
+        for var in (self.max_pairs, self.min_channels, self.min_channel_energy):
+            var.trace_add("write", lambda *_: self._schedule_estimate())
 
         actions = self._card(top, "Analysis and reports", width=170)
         self.uniformity_button = ctk.CTkButton(actions, text="Photopeak Uniformity", command=self._uniformity)
@@ -495,6 +524,7 @@ class LDATWorkbench(ctk.CTk):
         self._update_file_list()
         if paths:
             self._log(f"Selected {len(self.files)} LDAT files; no file count is tied to CPU cores.")
+            self._schedule_estimate()
 
     def _clear_files(self):
         if self._busy or self._report_busy:
@@ -504,6 +534,60 @@ class LDATWorkbench(ctk.CTk):
         self.file_count.configure(text="0 files")
         self._update_file_list()
         self._log("File selection cleared")
+        self._schedule_estimate()
+
+    def _whole_files_changed(self):
+        self.max_pairs_entry.configure(state="disabled" if self.whole_files.get() else "normal")
+        self._schedule_estimate()
+
+    def _pairs_limit(self):
+        """Pairs read per file, or None for whole files."""
+        return None if self.whole_files.get() else int(self.max_pairs.get())
+
+    def _current_settings(self):
+        settings = Settings(self.config_path, self.calibration_path, self.system.get(),
+                            self._pairs_limit(), int(self.min_channels.get()),
+                            float(self.min_channel_energy.get()), self.calibrated.get())
+        settings.validate()
+        return settings
+
+    def _schedule_estimate(self):
+        """Refresh the memory estimate shortly after inputs stop changing."""
+        if self._estimate_after is not None:
+            self.after_cancel(self._estimate_after)
+        self._estimate_after = self.after(400, self._start_estimate)
+
+    def _start_estimate(self, *, then_process=None):
+        """Estimate in a worker thread; ``then_process`` = (settings, files) to start after."""
+        self._estimate_after = None
+        files = tuple(self.files)
+        if not files:
+            self.estimate_text.configure(text="Estimated memory: add LDAT files", text_color=("gray10", "gray90"))
+            return
+        try:
+            settings = self._current_settings()
+        except (ValueError, OSError):
+            settings = None  # config or cuts incomplete: upper bound without sampling
+        try:
+            limit = self._pairs_limit()
+        except ValueError:
+            return
+        self._estimate_token += 1
+        token = self._estimate_token
+
+        def run():
+            try:
+                estimate = estimate_memory(files, settings, limit)
+                self._events.put(("estimate", token, estimate, then_process))
+            except Exception as exc:
+                self._events.put(("estimate", token, None, then_process, str(exc)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_estimate(self, estimate):
+        warn = estimate.exceeds_available
+        self.estimate_text.configure(text=estimate.text() + (" — exceeds free RAM" if warn else ""),
+                                     text_color="#c0392b" if warn else ("gray10", "gray90"))
 
     def _update_file_list(self):
         self.file_list.delete("1.0", "end")
@@ -516,68 +600,128 @@ class LDATWorkbench(ctk.CTk):
         try:
             if not self.files:
                 raise ValueError("Add at least one LDAT file")
-            settings = Settings(self.config_path, self.calibration_path, self.system.get(),
-                                int(self.max_pairs.get()), int(self.min_channels.get()),
-                                float(self.min_channel_energy.get()), self.calibrated.get())
-            settings.validate()
+            settings = self._current_settings()
             selection = self._selection()
             del selection
         except Exception as exc:
-            messagebox.showerror("Input", str(exc))
+            messagebox.showerror("Input", str(exc), parent=self)
             return
         self._busy = True
         self._abort.clear()
         self.process_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
         self.calib_switch.configure(state="disabled")
         self.progress.set(0)
-        self._log(f"Processing {len(self.files)} files (at most 2 workers; ≤{MAX_PAIRS_PER_FILE:,} pairs per file)")
-        files = tuple(self.files)
+        self._log("Estimating memory before processing...")
+        self._start_estimate(then_process=(settings, tuple(self.files)))
+
+    def _confirm_and_launch(self, estimate, settings, files):
+        """After the pre-run estimate: ask when it exceeds free RAM, then start."""
+        if self._abort.is_set():
+            self._processing_stopped("Processing cancelled before it started")
+            return
+        if estimate is not None and estimate.exceeds_available and not messagebox.askyesno(
+                "Memory", f"{estimate.text()}.\n\nThe estimate exceeds the free physical memory. "
+                          "Process anyway?", parent=self):
+            self._processing_stopped("Processing not started: estimated memory exceeds free RAM")
+            return
+        self._launch_pool(settings, files)
+
+    def _launch_pool(self, settings, files):
+        context = multiprocessing.get_context("spawn")
+        self._cancel = context.Event()
+        self._file_progress = context.Array("d", len(files))
+        self._workers = max(1, min(len(files), (os.cpu_count() or 1) - 2))
+        pool = ProcessPoolExecutor(max_workers=self._workers, mp_context=context,
+                                   initializer=init_worker, initargs=(self._cancel, self._file_progress))
+        self._pool = pool
+        reader = self._reader or process_file
+        scope = ("whole files" if settings.max_pairs is None
+                 else f"first {settings.max_pairs:,} pairs per file")
+        self._log(f"Processing {len(files)} files with {self._workers} worker processes ({scope})")
 
         def run():
             results = []
             try:
                 setup = load_setup(settings)
-                with ProcessPoolExecutor(max_workers=min(2, len(files), max(1, (os.cpu_count() or 1) - 1))) as pool:
-                    futures = {pool.submit(process_file, path, settings, i): i
-                               for i, path in enumerate(files)}
-                    for future in as_completed(futures):
-                        i = futures[future]
-                        if self._abort.is_set():
-                            break
-                        try:
-                            result = future.result()
-                        except Exception as exc:
-                            from src.ldat_inspector import FileResult
-                            result = FileResult(i, files[i], error=str(exc))
-                        results.append(result)
-                        self._events.put(("file", result, len(results), len(files)))
-                if not self._abort.is_set():
-                    self._events.put(("complete", merge_results(settings, sorted(results, key=lambda r: r.index), setup)))
+                futures = {pool.submit(reader, path, settings, i): i for i, path in enumerate(files)}
+                for future in as_completed(futures):
+                    if self._abort.is_set():
+                        break
+                    i = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = FileResult(i, files[i], error=str(exc))
+                    results.append(result)
+                    self._events.put(("file", result, len(results), len(files), settings.max_pairs is None))
+                if self._abort.is_set():
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    self._events.put(("cancelled", len(results), len(files)))
+                    return
+                pool.shutdown(wait=False)
+                results.sort(key=lambda r: r.index)
+                self._events.put(("complete", merge_results(settings, results, setup, consume=True)))
             except Exception as exc:
+                pool.shutdown(wait=False, cancel_futures=True)
                 self._events.put(("error", str(exc)))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _cancel_processing(self):
+        """Stop workers at their next chunk; the loaded dataset (if any) stays."""
+        if not self._busy:
+            return
+        self._abort.set()
+        if self._cancel is not None:
+            self._cancel.set()
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+        self.cancel_button.configure(state="disabled")
+        self._log("Cancelling: workers stop after their current chunk...")
+
+    def _processing_stopped(self, message):
+        self._busy = False
+        self._pool = None
+        self.progress.set(0)
+        self.process_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
+        self.calib_switch.configure(state="normal")
+        self._log(message)
 
     def _poll_events(self):
         try:
             while True:
                 event = self._events.get_nowait()
-                if event[0] == "file":
-                    _, result, done, count = event
-                    self.progress.set(done / count)
+                if event[0] == "estimate":
+                    token, estimate, then_process = event[1:4]
+                    if estimate is not None and token == self._estimate_token:
+                        self._show_estimate(estimate)
+                    elif estimate is None:
+                        self._log(f"Memory estimate unavailable: {event[4]}")
+                    if then_process is not None:
+                        self._confirm_and_launch(estimate, *then_process)
+                elif event[0] == "file":
+                    _, result, done, count, whole = event
+                    if self._file_progress is not None and 0 <= result.index < len(self._file_progress):
+                        self._file_progress[result.index] = 1.0
                     note = f"{result.pairs_accepted:,}/{result.pairs_read:,} pairs"
                     if result.prefix_limited:
                         note += " (file prefix)"
+                    elif whole and result.success:
+                        note += " (whole file)"
                     if result.errors:
                         note += "; rejected: " + ", ".join(
                             f"{reason}={number}" for reason, number in result.errors.items())
                     self._log(f"{Path(result.path).name}: {note}" if result.success
                               else f"{Path(result.path).name}: FAILED — {result.error}")
+                elif event[0] == "cancelled":
+                    kept = "previous dataset kept" if self.dataset else "no dataset loaded"
+                    self._processing_stopped(f"Processing cancelled after {event[1]}/{event[2]} files; {kept}")
                 elif event[0] == "complete":
                     self.dataset = event[1]
-                    self._busy = False
-                    self.process_button.configure(state="normal")
-                    self.calib_switch.configure(state="normal")
+                    self._processing_stopped(f"Processing complete ({self._workers} worker processes)")
+                    self.progress.set(1)
                     self._update_after_processing()
                 elif event[0] == "calibrated":
                     self.dataset = event[1]
@@ -624,12 +768,12 @@ class LDATWorkbench(ctk.CTk):
                     self._log(f"Report failed: {event[1]}")
                     messagebox.showerror("Report", event[1])
                 else:
-                    self._busy = False
-                    self.process_button.configure(state="normal")
-                    self.calib_switch.configure(state="normal")
-                    self._log(f"Processing failed: {event[1]}")
+                    self._processing_stopped(f"Processing failed: {event[1]}")
         except queue.Empty:
             pass
+        if self._busy and self._file_progress is not None and self._pool is not None:
+            fractions = list(self._file_progress)
+            self.progress.set(sum(fractions) / max(len(fractions), 1))
         if self.winfo_exists():
             self.after(80, self._poll_events)
 
@@ -1243,7 +1387,12 @@ class LDATWorkbench(ctk.CTk):
             os.startfile(self.last_report)
 
     def _close(self):
+        """Close without waiting for whole-file workers: they stop at their next chunk."""
         self._abort.set()
+        if self._cancel is not None:
+            self._cancel.set()
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from array import array
 from collections import Counter, defaultdict
+import copy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import struct
@@ -28,6 +29,7 @@ MAX_PAIRS_PER_FILE = 1_000_000
 TIMESTAMP_SECONDS = 1e-12
 _HIT = struct.Struct("qfi")
 _HEADER = struct.Struct("2B")
+# ModuleEvents attributes shared with spec 001 (compared by scripts/ldat_scale_check.py).
 _COLUMNS = {
     "energy": "d", "raw_energy": "d", "partner_energy": "d", "partner_raw_energy": "d",
     "calibration_key": "q", "partner_calibration_key": "q",
@@ -52,7 +54,7 @@ class Settings:
     config_path: str
     calibration_path: str
     system: str
-    max_pairs: int = 10000
+    max_pairs: int | None = 10000  # None: whole files
     min_channels: int = 1
     min_channel_energy: float = 0.0
     calibrated: bool = True
@@ -60,8 +62,8 @@ class Settings:
     def validate(self):
         if self.system not in ("IMAS", "CORNELL"):
             raise ValueError("System must be IMAS or CORNELL")
-        if not 1 <= self.max_pairs <= MAX_PAIRS_PER_FILE:
-            raise ValueError(f"Coincidence pairs per file must be 1–{MAX_PAIRS_PER_FILE:,}")
+        if self.max_pairs is not None and not 1 <= self.max_pairs <= MAX_PAIRS_PER_FILE:
+            raise ValueError(f"Coincidence pairs per file must be 1–{MAX_PAIRS_PER_FILE:,} (or whole files)")
         if self.min_channels < 1 or not np.isfinite(self.min_channel_energy):
             raise ValueError("Invalid minimum channels or per-channel energy")
         if not Path(self.config_path).is_file():
@@ -110,15 +112,16 @@ def load_setup(settings: Settings) -> Setup:
     return Setup(config, coords, channel_modules, channel_types, fem, converter)
 
 
-def iter_pairs(path: str, limit: int):
+def iter_pairs(path: str, limit: int | None):
     """Read the same native-layout records as read_compact; reject truncation.
 
-    A limit is a prefix of the file, never a random subsample or full-run rate.
+    A limit is a prefix of the file, never a random subsample or full-run rate;
+    ``None`` reads the whole file.
     """
     if Path(path).stat().st_size == 0:
         raise ValueError("Empty LDAT file")
     with open(path, "rb") as handle:
-        for _ in range(limit):
+        for _ in (range(limit) if limit is not None else iter(int, 1)):
             header = handle.read(_HEADER.size)
             if not header:
                 return
@@ -134,36 +137,159 @@ def iter_pairs(path: str, limit: int):
             yield sides[0], sides[1]
 
 
-@dataclass
-class ModuleEvents:
-    energy: np.ndarray
-    raw_energy: np.ndarray
-    partner_energy: np.ndarray
-    partner_raw_energy: np.ndarray
-    calibration_key: np.ndarray
-    partner_calibration_key: np.ndarray
-    x: np.ndarray
-    y: np.ndarray
-    doi: np.ndarray
-    timestamp: np.ndarray
-    partner_timestamp: np.ndarray
-    mm: np.ndarray
-    file_index: np.ndarray
+# Stored once per detector side (~62 B/side with a calibrated energy column).
+_TABLE_DTYPES = {
+    "raw_energy": "f8", "x": "f8", "y": "f8", "doi": "f8", "timestamp": "i8",
+    "calibration_key": "i4", "partner": "i4", "sm": "i2", "file_index": "i2",
+    "mm": "i1", "random_slab": "?",
+}
+# Per-side values a reader produces, in pair order (rows 2k and 2k + 1 are one pair).
+_SIDE_FIELDS = ("raw_energy", "calibration_key", "x", "y", "doi", "timestamp", "sm", "mm", "random_slab")
+
+
+def _narrowest(values, dtype):
+    """``dtype`` unless the values do not fit (calibration keys of very large channel IDs)."""
+    values = np.asarray(values)
+    info = np.iinfo(dtype) if np.dtype(dtype).kind == "i" else None
+    if info is not None and values.size and (values.max() > info.max or values.min() < info.min):
+        return values.astype(np.int64)
+    return values.astype(dtype, copy=False)
+
+
+class SideTable:
+    """Detector sides of accepted coincidence pairs, sorted by (SM, file, record).
+
+    Each column holds one value per side; ``partner[i]`` is the row of the other
+    side of i's pair, so partner values are never stored twice. ``energy`` is the
+    active energy view: the ``raw_energy`` array itself when uncalibrated.
+    """
+
+    def __init__(self, columns: dict, energy=None):
+        self.columns = columns
+        self.energy = columns["raw_energy"] if energy is None else energy
+
+    @classmethod
+    def from_pairs(cls, file_index: int, **sides):
+        """Build from pair-ordered side arrays (see ``_SIDE_FIELDS``)."""
+        n = len(sides["raw_energy"])
+        columns = {name: np.asarray(sides[name]) for name in _SIDE_FIELDS}
+        columns["file_index"] = np.full(n, file_index)
+        columns["partner"] = np.arange(n) ^ 1
+        return cls._sorted(columns)
+
+    @classmethod
+    def concatenate(cls, tables, *, consume=False):
+        """One table from per-file tables, keeping file order within each SM.
+
+        Each input is already SM-sorted, so every (SM, file) block is copied
+        straight to its final rows, one column at a time. With ``consume`` each
+        input column is released once copied, so peak memory stays close to one
+        table plus one column rather than three copies.
+        """
+        tables = [t for t in tables if t is not None]
+        total = sum(map(len, tables))
+        segments = [dict(zip(*np.unique(t.columns["sm"], return_counts=True))) for t in tables]
+        destination, start = [np.empty(len(t), np.int64) for t in tables], 0
+        firsts = [0] * len(tables)
+        for sm in sorted(set().union(*segments)) if segments else []:
+            for i, counts in enumerate(segments):
+                count = int(counts.get(sm, 0))
+                destination[i][firsts[i]:firsts[i] + count] = np.arange(start, start + count)
+                firsts[i] += count
+                start += count
+        columns = {}
+        for name, dtype in _TABLE_DTYPES.items():
+            if name == "partner":
+                kind = np.int64  # global rows; narrowed below
+            elif tables:
+                kind = np.result_type(*(t.columns[name].dtype for t in tables))
+            else:
+                kind = np.dtype(dtype)
+            out = np.empty(total, kind)
+            for table, rows in zip(tables, destination):
+                values = table.columns[name]
+                out[rows] = rows[values] if name == "partner" else values
+                if consume:
+                    del table.columns[name]
+                    if name == "raw_energy":
+                        table.energy = None
+            columns[name] = _narrowest(out, dtype)
+        return cls(columns)
+
+    @classmethod
+    def _sorted(cls, columns):
+        """Stable sort by SM (keeps file and record order) and remap partner rows."""
+        order = np.argsort(columns["sm"], kind="stable")
+        inverse = np.empty(order.size, np.int64)
+        inverse[order] = np.arange(order.size)
+        sorted_columns = {}
+        for name, dtype in _TABLE_DTYPES.items():
+            values = inverse[columns["partner"][order]] if name == "partner" else columns[name][order]
+            sorted_columns[name] = np.ascontiguousarray(_narrowest(values, dtype))
+        return cls(sorted_columns)
 
     def __len__(self):
-        return len(self.energy)
+        return len(self.columns["raw_energy"])
+
+    def __getattr__(self, name):
+        try:
+            return self.__dict__["columns"][name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def with_energy(self, energy):
+        """Same sides and columns with a different active energy view."""
+        return SideTable(self.columns, energy)
+
+    @property
+    def nbytes(self):
+        own = sum(values.nbytes for values in self.columns.values())
+        return own + (0 if self.energy is self.columns["raw_energy"] else self.energy.nbytes)
+
+    def by_sm(self):
+        """``{sm: ModuleEvents}`` views onto this table's contiguous SM rows."""
+        sm = self.columns["sm"]
+        if not sm.size:
+            return {}
+        starts = np.flatnonzero(np.r_[True, sm[1:] != sm[:-1]])
+        stops = np.r_[starts[1:], sm.size]
+        return {int(sm[a]): ModuleEvents(self, int(a), int(b)) for a, b in zip(starts, stops)}
 
 
-def _empty_modules():
-    return defaultdict(lambda: {key: array(kind) for key, kind in _COLUMNS.items()})
+class ModuleEvents:
+    """One SuperModule's rows of a ``SideTable``.
 
+    Own columns are zero-copy slices; partner columns are gathered through
+    ``partner`` on access and cannot be assigned.
+    """
 
-def _freeze_modules(buffers):
-    return {
-        sm: ModuleEvents(**{key: np.frombuffer(values, dtype=np.dtype(_COLUMNS[key])).copy()
-                            for key, values in cols.items()})
-        for sm, cols in buffers.items()
-    }
+    _OWN = ("energy", "raw_energy", "calibration_key", "x", "y", "doi", "timestamp", "mm",
+            "file_index", "random_slab")
+
+    def __init__(self, table: SideTable, start: int, stop: int):
+        self._table, self._start, self._stop = table, start, stop
+        for name in self._OWN:
+            setattr(self, name, getattr(table, name)[start:stop])
+
+    def __len__(self):
+        return self._stop - self._start
+
+    def _partner(self, name):
+        return getattr(self._table, name)[self._table.partner[self._start:self._stop]]
+
+    partner_energy = property(lambda self: self._partner("energy"))
+    partner_raw_energy = property(lambda self: self._partner("raw_energy"))
+    partner_calibration_key = property(lambda self: self._partner("calibration_key"))
+    partner_timestamp = property(lambda self: self._partner("timestamp"))
+    partner_sm = property(lambda self: self._partner("sm"))
+    partner_mm = property(lambda self: self._partner("mm"))
+
+    def with_table(self, table: SideTable):
+        """The same rows of ``table`` (a new energy view); other slices are shared."""
+        view = copy.copy(self)
+        view._table = table
+        view.energy = table.energy[self._start:self._stop]
+        return view
 
 
 @dataclass
@@ -172,7 +298,7 @@ class FileResult:
     path: str
     pairs_read: int = 0
     pairs_accepted: int = 0
-    modules: dict[int, ModuleEvents] = field(default_factory=dict)
+    table: SideTable | None = None
     time_counts: dict[int, Counter] = field(default_factory=dict)
     energy_counts: dict[int, Counter] = field(default_factory=dict)
     errors: Counter = field(default_factory=Counter)
@@ -182,6 +308,10 @@ class FileResult:
     @property
     def success(self):
         return self.error is None
+
+    @property
+    def modules(self) -> dict[int, ModuleEvents]:
+        return self.table.by_sm() if self.table is not None else {}
 
 
 class _UnresolvedCornellSlab(ValueError):
@@ -198,7 +328,7 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
     try:
         settings.validate()
         setup = load_setup(replace(settings, calibrated=False))
-        buffers = _empty_modules()
+        buffers = {name: array(kind) for name, kind in zip(_SIDE_FIELDS, "dqdddqqqb")}
         t_counts = defaultdict(Counter)
         e_counts = defaultdict(Counter)
         for det1, det2 in iter_pairs(path, settings.max_pairs):
@@ -224,12 +354,13 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
                         raise ValueError("selected minimodule lacks time channel")
                     t_ch = t_hit[2]
                     sm, mm = setup.channel_modules[t_ch]
-                    slab = 0
+                    slab, random_slab = 0, False
                     if settings.system == "CORNELL":
-                        slab, _, _ = get_slab_cornell(selected, setup.channel_types,
-                                                       setup.coordinates)
+                        slab, slab_flag, _ = get_slab_cornell(selected, setup.channel_types,
+                                                              setup.coordinates)
                         if slab is None:
                             raise _UnresolvedCornellSlab
+                        random_slab = slab_flag == 1  # one time channel: coin flip
                     calibration_key = (int(t_ch) << 5) | int(slab)
                     energy = float(raw_energy)
                     x, y = calculate_centroid(selected, setup.coordinates, 1, 2,
@@ -242,38 +373,39 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
                              if ChannelType.TIME in setup.channel_types[ch[2]])
                     energies = (ch[2] for ch in selected
                                 if ChannelType.ENERGY in setup.channel_types[ch[2]])
-                    sides.append((sm, mm, energy, calibration_key, float(x), float(y),
-                                  float(doi), int(t_hit[0]), tuple(times), tuple(energies)))
+                    sides.append(((energy, calibration_key, float(x), float(y), float(doi),
+                                   int(t_hit[0]), sm, mm, random_slab), tuple(times), tuple(energies)))
             except (KeyError, ValueError, TypeError, IndexError, ZeroDivisionError) as exc:
                 result.errors["unresolved Cornell slab" if isinstance(exc, _UnresolvedCornellSlab)
                               else type(exc).__name__] += 1
                 continue
-            for side, partner in ((sides[0], sides[1]), (sides[1], sides[0])):
-                sm, mm, raw, key_id, x, y, doi, timestamp, times, energies = side
-                columns = buffers[sm]
-                for key, value in zip(_COLUMNS, (raw, raw, partner[2], partner[2],
-                                                 key_id, partner[3], x, y, doi,
-                                                 timestamp, partner[7], mm, index)):
-                    columns[key].append(value)
-                t_counts[sm].update(times)
-                e_counts[sm].update(energies)
+            for values, times, energies in sides:
+                for name, value in zip(_SIDE_FIELDS, values):
+                    buffers[name].append(value)
+                t_counts[values[6]].update(times)
+                e_counts[values[6]].update(energies)
             result.pairs_accepted += 1
         # Reaching the prefix limit does not establish whether this was a full run.
         result.prefix_limited = result.pairs_read == settings.max_pairs
-        result.modules = _freeze_modules(buffers)
+        result.table = SideTable.from_pairs(index, **{
+            name: np.frombuffer(values, dtype=values.typecode) if values.typecode != "b"
+            else np.frombuffer(values, dtype=np.int8).astype(bool)
+            for name, values in buffers.items()})
         result.time_counts = dict(t_counts)
         result.energy_counts = dict(e_counts)
     except Exception as exc:
         result.error = str(exc)
-        result.modules = {}
+        result.table = None
         result.time_counts = {}
         result.energy_counts = {}
         result.pairs_accepted = 0
     return result
 
 
-# The GUI and checks call process_file; it switches to the fast reader in spec 002 T2.
-process_file = process_file_reference
+def process_file(path: str, settings: Settings, index: int = 0) -> FileResult:
+    """Read one LDAT file with the fast reader (same results as the reference)."""
+    from src.ldat_fastread import process_file_fast
+    return process_file_fast(path, settings, index)
 
 
 @dataclass
@@ -289,9 +421,12 @@ class Dataset:
     config: dict
     file_spans: dict[int, tuple[int, int]]
     expected_mm: dict[int, set[int]] = field(default_factory=dict)
+    table: SideTable | None = None
 
 
-def merge_results(settings: Settings, files: list[FileResult], setup: Setup | None = None) -> Dataset:
+def merge_results(settings: Settings, files: list[FileResult], setup: Setup | None = None,
+                  *, consume: bool = False) -> Dataset:
+    """Merged dataset; ``consume`` releases the per-file tables while merging."""
     setup = setup or load_setup(settings)
     expected_t = defaultdict(set)
     expected_e = defaultdict(set)
@@ -307,39 +442,24 @@ def merge_results(settings: Settings, files: list[FileResult], setup: Setup | No
             expected_t[sm].add(channel)
         if ChannelType.ENERGY in setup.channel_types[channel]:
             expected_e[sm].add(channel)
-    merged = {}
-    by_sm = defaultdict(list)
     t_counts, e_counts = defaultdict(Counter), defaultdict(Counter)
-    for result in files:
-        if not result.success:
-            continue
-        for sm, data in result.modules.items():
-            by_sm[sm].append(data)
-        for sm, counts in result.time_counts.items():
-            t_counts[sm].update(counts)
-        for sm, counts in result.energy_counts.items():
-            e_counts[sm].update(counts)
-    for sm, parts in by_sm.items():
-        merged[sm] = ModuleEvents(**{
-            key: np.concatenate([getattr(part, key) for part in parts])
-            for key in _COLUMNS
-        })
     spans = {}
     for result in files:
         if not result.success:
             continue
-        for data in result.modules.values():
-            if len(data) == 0:
-                continue
-            low, high = int(data.timestamp.min()), int(data.timestamp.max())
-            if result.index in spans:
-                previous = spans[result.index]
-                low, high = min(low, previous[0]), max(high, previous[1])
-            spans[result.index] = low, high
-    dataset = Dataset(replace(settings, calibrated=False), files, merged,
+        for sm, counts in result.time_counts.items():
+            t_counts[sm].update(counts)
+        for sm, counts in result.energy_counts.items():
+            e_counts[sm].update(counts)
+        if result.table is not None and len(result.table):
+            spans[result.index] = (int(result.table.timestamp.min()), int(result.table.timestamp.max()))
+    table = SideTable.concatenate([r.table for r in files if r.success], consume=consume)
+    # Keep per-file counts and provenance, not a second copy of every side.
+    files = [replace(r, table=None) for r in files]
+    dataset = Dataset(replace(settings, calibrated=False), files, table.by_sm(),
                       dict(expected_t), dict(expected_e), dict(t_counts), dict(e_counts),
                       str(_path_from_config(settings.config_path, setup.config["map_file"])),
-                      setup.config.copy(), spans, dict(expected_mm))
+                      setup.config.copy(), spans, dict(expected_mm), table)
     return apply_calibration(dataset, settings.calibration_path, True,
                              converter=setup.converter) if settings.calibrated else dataset
 
@@ -372,11 +492,10 @@ def apply_calibration(dataset: Dataset, path: str, enabled: bool,
                 factors[i] = 511.0 / factor
         return raw * factors[inverse]
 
-    modules = {sm: replace(data,
-                           energy=converted(data.raw_energy, data.calibration_key),
-                           partner_energy=converted(data.partner_raw_energy, data.partner_calibration_key))
-               for sm, data in dataset.modules.items()}
-    return replace(dataset, modules=modules,
+    # Only the energy column changes; partner energies follow through ``partner``.
+    table = dataset.table.with_energy(converted(dataset.table.raw_energy, dataset.table.calibration_key))
+    modules = {sm: data.with_table(table) for sm, data in dataset.modules.items()}
+    return replace(dataset, table=table, modules=modules,
                    settings=replace(dataset.settings, calibrated=enabled, calibration_path=path))
 
 

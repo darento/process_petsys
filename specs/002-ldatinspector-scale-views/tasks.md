@@ -63,23 +63,71 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   `--real` → the reference reproduces spec 001 T9 exactly for all six 80,000-pair Cornell prefixes (e.g. `00000003`: 62,460 accepted, 11,691 min channels, 5,457 unresolved slab, 392 `ValueError`). The 200,000-pair fast comparison is red until T2.
 
   Existing checks: 59/59, 14/14, 8/8, 29/29. Compile exit 0.
-- [ ] **T2 — numba fast reader** (FR-1). Write `src/ldat_fastread.py` and declare `numba==0.63.1` in `process_petsys.yml`. *Done when:*
+- [x] **T2 — numba fast reader** (FR-1). Write `src/ldat_fastread.py` and declare `numba==0.63.1` in `process_petsys.yml`. *Done when:*
   - `ldat_scale_check.py --selftest` shows fast = reference on all fixtures: exact accepted/read counts, error-label counts and channel counters; columns identical, except slab bits of `random_slab` sides, whose counts match;
   - `--real` matches the reference on the 200,000-pair Cornell `00000003` prefix and reproduces spec 001 T9's six 80,000-pair rows;
   - single-core throughput is recorded against the 14,500 pairs/s baseline;
   - the tie count is reported.
-- [ ] **T3 — Compact SM-sorted side table with partner SM/mM** (FR-2, FR-11). *Done when:*
+
+  **Red baseline:** T1's 15 fast comparisons failed ("not implemented"). The first real run matched every count and label exactly but failed on centroid Y: numba lowers `(E + 1e-5) ** 2` to `x * x`, while CPython calls the C runtime `pow`. That gave 49 of 78,062 sides at ≤ 3 ulp (2.8e-14 mm). `x * x` differs from Python's `**` on 115 of 200,000 random values, and `ucrtbase` `pow` on 0.
+
+  **Verified 2026-09-25:**
+  - `src/ldat_fastread.py:process_file_fast`: numba header scan, NumPy header stripping into aligned hit arrays in 250,000-pair chunks, and a numba per-pair kernel following the reference's order. The squared weight calls the C `pow` through an external symbol.
+  - `python scripts/ldat_scale_check.py --selftest` → **PASS 32/32**.
+  - `--real` → **PASS 13/13**: the fast reader reproduces all six spec 001 T9 80,000-pair rows, and equals the reference exactly on the 200,000-pair Cornell `00000003` prefix (all columns, counters and labels; slab only compared as a pair on the 67,179 coin-flip sides).
+  - **Throughput, single core:** reference 14,349 pairs/s, fast **589,619 pairs/s (41×)**.
+  - **Exact minimodule-energy ties:** 0.
+  - `numba==0.63.1` is declared in `process_petsys.yml`.
+  - **Not yet:** `process_file` still points to the reference; it switches in T4, where `ldat_inspector_check.py`'s `get_slab_cornell` patch must be adapted. `ModuleEvents.random_slab` is set per file and is not merged until T3.
+- [x] **T3 — Compact SM-sorted side table with partner SM/mM** (FR-2, FR-11). *Done when:*
   - fixtures give the expected `partner_sm`/`partner_mm` for every side;
   - measured table bytes/side ≤ 64;
   - calibration switching replaces only `energy`;
   - the four existing checks pass with unchanged counts. The `ldat_issue_check.py:260` fixture is updated and noted.
-- [ ] **T4 — Whole files, all cores, Cancel, memory estimate** (FR-2–FR-4). *Done when:*
+
+  **Verified 2026-09-25:**
+  - `src/ldat_inspector.py` has `SideTable`: one row per side, sorted by (SM, file, record), and `partner` rows instead of duplicated partner columns. `ModuleEvents` is now a view: its own columns are zero-copy slices, and partner columns (including the new `partner_sm` / `partner_mm`) are gathered on access and cannot be assigned. `FileResult.modules` comes from `FileResult.table`. Both readers build the table from pair-ordered sides, and the reference now also keeps its coin-flip flag. `merge_results` concatenates per-file tables and drops them from `dataset.files`; `apply_calibration` swaps only the energy column.
+  - `python scripts/ldat_scale_check.py --selftest` → **PASS 44/44**, with 12 new T3 checks on both mappings: partner rows pair up, partner SM/mM on every side, partner values from the partner row, a two-file merge keeping pairs and file order, calibration replacing only energy (`table.columns` shared), and **62.0 B/side** with a calibrated energy column. Fast = reference now also covers `partner_sm`, `partner_mm` and `random_slab`.
+  - `--real` → **13/13**; fast reader 605,429 pairs/s single core.
+  - **Changed spec 001 check:** `ldat_issue_check.py` no longer overwrites module attributes. `_single_module_dataset` builds the same 30,000-side normal(511, 20) SM 0 spectrum as a `SideTable`. The paired partner energies are now that spectrum's other side instead of a constant 511.
+  - **Results:** issue 8/8 and `--real` 8/8; engine/report 59/59; revision 14/14; hidden GUI 29/29; unpopulated 6/6 and `--real` 8/8; slab convention 16/16; compile exit 0.
+- [x] **T4 — Whole files, all cores, Cancel, memory estimate** (FR-2–FR-4). *Done when:*
   - the estimate appears after file/pairs changes, and a warning dialog appears when a synthetic estimate exceeds the mocked available RAM;
   - a hidden-GUI check processes a multi-file synthetic set in whole-file mode with more than 2 workers;
   - Cancel mid-run returns control within 2 s, keeps the previous dataset and logs the cancel;
   - a subprocess test closes the window mid-run and exits within 5 s;
   - prefix and whole-file labels appear in the log and provenance.
-- [ ] **T5 — Real whole-file acceptance** (FR-1, FR-2). *Done when:* `ldat_scale_check.py --real --whole` processes all six Cornell `coincCompact11s_00000003`–`08` files in under 5 min. It records wall time, accepted/read pairs per file, the pre-run estimate, main-process peak working set (estimate within ±25 %) and worker peaks.
+
+  **Verified 2026-09-25:** `python scripts/ldat_processing_check.py` → **PASS 15/15**.
+  - **Engine:** whole-file mode reads all 36 fixture pairs; the fast reader reports per-file progress (1.000) and stops between chunks on Cancel with no partial data. `merge_results(consume=True)` gives the same table while freeing per-file columns: `SideTable.concatenate` now copies each (SM, file) block straight to its final rows, one column at a time. The estimate gives sampled pairs and accepted sides exactly on fixtures, equals baseline + sides × 80 B, and is labelled an upper bound without a config.
+  - **Hidden GUI:**
+    - the estimate appears after file selection;
+    - an estimate above a mocked free-RAM figure asks first, and declining does not process;
+    - the whole-file 4-file run used **4 worker processes**, with "(whole files)" and "(whole file)" in the log and "whole files (no pair limit)" in the PDF provenance;
+    - **Cancel returned control in 0.03 s** and kept the previous dataset ("previous dataset kept" in the log).
+  - **Subprocess:** closing the window mid-run exited in **0.36 s**.
+  - **Implementation:**
+    - `process_file` now calls `src.ldat_fastread.process_file_fast`;
+    - the GUI uses a spawn-context `ProcessPoolExecutor` with `min(files, cpu_count - 2)` workers, a shared cancel `Event` and a per-file progress `Array` (`init_worker`);
+    - memory figures live in `src/ldat_memory.py` (`GlobalMemoryStatusEx` / `GetProcessMemoryInfo`, no new dependency);
+    - "Whole files" is off by default, since FR-2 says "when the operator requests it".
+  - **Changed spec 001 check:** `ldat_inspector_check.py` runs its patched `get_slab_cornell` case on `process_file_reference`, because the patch cannot reach the fast reader; the fast reader's label is compared in the scale check.
+  - **All other checks:** engine/report 59/59, revision 14/14, issue 8/8 (`--real` 8/8), hidden GUI 29/29, scale 44/44 (`--real` 13/13), unpopulated 6/6 (`--real` 8/8), slab convention 16/16, slab calibration 15/15; compile exit 0.
+- [x] **T5 — Real whole-file acceptance** (FR-1, FR-2). *Done when:* `ldat_scale_check.py --real --whole` processes all six Cornell `coincCompact11s_00000003`–`08` files in under 5 min. It records wall time, accepted/read pairs per file, the pre-run estimate, main-process peak working set (estimate within ±25 %) and worker peaks.
+
+  **Red baseline:** the first `--whole` run met the time target but read the process memory as `None`. `src/ldat_memory.working_set` passed the 64-bit `GetCurrentProcess` pseudo-handle through undeclared ctypes types, so it was truncated. The estimate the owner saw in the GUI (1.9 GB) therefore had no baseline. Fixed by declaring the argument and return types. `ldat_processing_check.py` now requires a real working set, free RAM and a non-zero baseline on Windows (16/16).
+
+  **Verified 2026-09-25:** `python scripts/ldat_scale_check.py --whole` → **PASS 8/8**. Setup: config `cornell_full_system.yaml`, calibration `…coincCompact11s_resolved.encal`, ≥ 4 channels, ≥ 0.2 a.u., whole files.
+  - **Counts:** all six whole files match the owner's GUI run exactly: `00000003` 2,471,032 / 1,926,842 read/accepted through `00000008` 2,486,035 / 1,935,729. That is 14,857,750 pairs read, 11,576,118 accepted and 23,152,236 detector sides.
+  - **Time:** **11.7 s total** (9.5 s reading with 6 worker processes, 2.2 s merge + keV calibration), against the < 5 min target.
+  - **Memory:** estimate **2.00 GB** vs measured main-process peak **2.08 GB (−3.8 %)**, within ±25 %. Baseline 0.14 GB; 83.5 B/side above baseline against the assumed 80. Estimated sides 23,166,235 vs actual 23,152,236. Table 62.0 B/side (1.44 GB).
+  - **keV:** available on 23,152,236 / 23,152,236 sides.
+  - **Worker peaks (recorded, not capped):** working set 1.93–1.95 GB each, 11.61 GB summed. A single-file probe shows ~1.1 GB private memory added by processing one whole file; the rest is the memory-mapped 760 MB file (reclaimable page cache). About 1.64 GB is committed before reading starts, likely numerical-library thread buffers on 24 cores (not verified).
+  - **Worker-memory follow-up (owner-approved, 2026-09-25):**
+    - `process_file_fast` copies only each chunk's accepted rows and frees the full-size chunk buffers. The private memory added for one whole file fell from 1.12 to 0.68 GB (177 B/side).
+    - The estimate now adds the concurrent workers: the largest files read at once × `WORKER_BYTES_PER_SIDE` = 180 B. The memory-mapped file is not counted, since it is reclaimable page cache. The GUI line and the free-RAM warning use main + workers.
+    - Re-measured `--whole` → **PASS 9/9**: 11.6 s total; main estimate 2.00 GB vs peak 2.08 GB (−3.7 %). Worker estimate **4.17 GB vs measured 4.20 GB (−0.8 %)**, 0.70 GB private per worker. Worker working-set peaks 1.58–1.59 GB, down from 1.93–1.95 GB.
+    - `ldat_processing_check.py` pins the worker part of the estimate (17/17). Scale 44/44 (`--real` 13/13), engine/report 59/59, hidden GUI 29/29, revision 14/14, issue 8/8; compile exit 0.
 
 ## Views
 

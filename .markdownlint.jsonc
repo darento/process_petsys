@@ -1,0 +1,5 @@
+// markdownlint config for this repo (used by the VS Code markdownlint extension).
+{
+  // Specs and docs keep one paragraph or requirement per line.
+  "MD013": false
+}

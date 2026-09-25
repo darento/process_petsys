@@ -37,6 +37,8 @@ def _provenance(dataset, selection):
         result = f"{file.pairs_accepted:,}/{file.pairs_read:,} accepted coincidence pairs"
         if file.prefix_limited:
             result += " (read prefix; not whole-file rate)"
+        elif settings.max_pairs is None and file.success:
+            result += " (whole file)"
         if file.errors:
             result += " (rejected: " + ", ".join(
                 f"{reason}={count}" for reason, count in file.errors.items()) + ")"
@@ -50,7 +52,8 @@ def _provenance(dataset, selection):
         f"Energy calibration: {settings.calibration_path if settings.calibrated else 'OFF (raw PETsys a.u.)'}",
         f"Ingest cuts: at least {settings.min_channels} energy channels; "
         f"per-channel >= {settings.min_channel_energy:g} a.u.; "
-        f"max {settings.max_pairs:,} coincidence pairs / file",
+        + ("whole files (no pair limit)" if settings.max_pairs is None
+           else f"max {settings.max_pairs:,} coincidence pairs / file"),
         f"Display: BOTH detector energies {selection.energy_low:g}..{selection.energy_high:g} "
         f"{'keV' if settings.calibrated else 'a.u.'}; "
         f"DOI ratio {selection.doi_low:g}..{selection.doi_high:g}",
