@@ -237,12 +237,14 @@ def get_slab_cornell(det_list: list[list], chtype_map: dict, local_map: dict) ->
     if abs(diff) > 1:
         # Add algorithm to determine slab when the two time channels are not adjacent
         return None, 2, None
+    # Slab 2p sits at X_p - 0.8 mm and slab 2p+1 at X_p + 0.8 mm; light shared
+    # with the lower-X neighbour (diff == 1) places the event in slab 2p.
     if diff == 1:
         slab = cornell_slabs[max_time_ch_pos][0]
-        x_pos = local_map[max_time_ch][0] + half_slab_width
+        x_pos = local_map[max_time_ch][0] - half_slab_width
     else:
         slab = cornell_slabs[max_time_ch_pos][1]
-        x_pos = local_map[max_time_ch][0] - half_slab_width
+        x_pos = local_map[max_time_ch][0] + half_slab_width
     return slab, 3, x_pos
 
 

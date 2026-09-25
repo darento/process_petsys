@@ -449,17 +449,19 @@ def get_slab_cornell_vectorized(
     flags[mask_diff_gt1] = 2
     # slab_ids already -1
 
-    # diff == 1: slab index 1, x + 0.8
+    # Slab 2p sits at X_p - 0.8 mm and slab 2p+1 at X_p + 0.8 mm, as in the
+    # scalar get_slab_cornell.
+    # diff == 1 (lower-X neighbour): slab index 0, x - 0.8
     mask_diff_1 = mask_ne_multi & (diff == 1)
-    slab_ids[mask_diff_1] = max_time_pos[mask_diff_1] * 2 + 1
-    x_positions[mask_diff_1] = max_time_x[mask_diff_1] + half_slab_width
+    slab_ids[mask_diff_1] = max_time_pos[mask_diff_1] * 2 + 0
+    x_positions[mask_diff_1] = max_time_x[mask_diff_1] - half_slab_width
     flags[mask_diff_1] = 3
 
     # diff != 1 (implies -1 or 0? 0 shouldn't happen if pos distinct, but logic says else)
-    # Original: else -> slab index 0, x - 0.8
+    # else (higher-X neighbour): slab index 1, x + 0.8
     mask_diff_other = mask_ne_multi & (np.abs(diff) <= 1) & (diff != 1)
-    slab_ids[mask_diff_other] = max_time_pos[mask_diff_other] * 2 + 0
-    x_positions[mask_diff_other] = max_time_x[mask_diff_other] - half_slab_width
+    slab_ids[mask_diff_other] = max_time_pos[mask_diff_other] * 2 + 1
+    x_positions[mask_diff_other] = max_time_x[mask_diff_other] + half_slab_width
     flags[mask_diff_other] = 3
 
     return slab_ids, flags, x_positions, safe_max_time_ch
