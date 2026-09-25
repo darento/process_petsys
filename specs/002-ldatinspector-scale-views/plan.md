@@ -71,7 +71,10 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 - States: `NOT OBSERVED` (0 hits), `LOW` (< `low_frac` × median), `HIGH` (> `high_frac` × median), `OK`.
 - `INSUFFICIENT EVENTS` applies when the SM has fewer than 100 ingest sides (spec 001's rule) or its per-type median is below `min_median`.
 - **Provisional defaults**, editable in the tab and printed in reports: `low_frac = 0.15` (RAWInspector's count-based dead test), `high_frac = 3.0`, `min_median = 20` hits.
-- Row state priority: not observed > high > low > OK. Colours follow RAWInspector: OK `#b3ffb3`, not observed `#ffb3b3`, high `#ffc4e1`, low `#ffd9b3`, insufficient `#dce0e4`. Text states stay alongside the colours.
+- Row state priority: not observed > high > low > insufficient > OK. A type that could not be assessed ranks below any finding but above OK, so a row reads OK only when both types were assessed. Colours follow RAWInspector: OK `#b3ffb3`, not observed `#ffb3b3`, high `#ffc4e1`, low `#ffd9b3`, insufficient `#dce0e4`. Text states stay alongside the colours.
+- A mapped SM with no ingest sides reads `NO DATA` (coloured like not observed); its channels read insufficient events.
+- The median is taken over the SM's expected channels of that type, zeros included. Hits on mapped channels the config does not expect (unpopulated minimodules) are not assessed; they are listed per SM as unexpected hits.
+- Engine API: `FindingThresholds(low_frac, high_frac, min_median, min_events=100)`, `channel_findings(dataset, sm, thresholds)` and `system_channel_findings(dataset, thresholds)`. Each insufficient type carries its reason (too few sides, or the median below the minimum).
 - Wording is always "occupancy in the coincidence ingest population".
 
 ### Minimodule layout and metrics (FR-8, FR-9, FR-13)

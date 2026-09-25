@@ -131,7 +131,25 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
 
 ## Views
 
-- [ ] **T6 — Channel findings engine** (FR-5, FR-7). *Done when:* `scripts/ldat_views_check.py` fixtures with known not-observed, low, high, OK and insufficient channels (plus Cornell inactive minimodules) give exact per-channel states, row priority and threshold changes on both maps.
+- [x] **T6 — Channel findings engine** (FR-5, FR-7). *Done when:* `scripts/ldat_views_check.py` fixtures with known not-observed, low, high, OK and insufficient channels (plus Cornell inactive minimodules) give exact per-channel states, row priority and threshold changes on both maps.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 16/16**; `--real` → **PASS 17/17**.
+  - **Engine** (`src/ldat_inspector.py`): `FindingThresholds` (defaults 0.15 / 3.0 / 20 hits / 100 sides, validated), `channel_findings`, `system_channel_findings`, `FINDING_PRIORITY`, `FINDING_COLOURS`. Counts are the existing per-SM `time_counts` / `energy_counts`: one hit per channel of each accepted side's selected minimodule after the per-channel cut. Spec 001's `channel_status` stays until T7/T10/T12 replace its uses.
+  - **Fixtures:** synthetic datasets on the real IMAS 1DAQ (120 SMs) and Cornell full-system (30 SMs) maps, with 8 SM cases on IMAS and 9 on Cornell. Per-channel states and medians match a hand-written rule exactly on both maps. Pinned cases:
+    - boundaries 14 → LOW, 15 → OK, 300 → OK, 301 → HIGH, 0 → NOT OBSERVED (median 100);
+    - 98 ingest sides, and a time median of 19, read insufficient events with their reasons (FR-7), not not-observed;
+    - a time median of 0 (more than half the channels empty) is insufficient, while an energy channel at 0 still makes the row NOT OBSERVED;
+    - row priority NOT OBSERVED > HIGH > LOW > INSUFFICIENT > OK, and NO DATA for a mapped SM without sides;
+    - threshold changes: low 0.04 clears LOW; high 10 clears HIGH (1000 is not > 1000) and LOW remains; min median 101 and 19, and min sides 98, move the rows as expected;
+    - invalid thresholds are rejected (low 1 or −0.1, high 1, median −1, NaN, sides 0 or 2.5);
+    - Cornell half-populated SM 2: only its 8 populated minimodules are assessed (64 + 64 channels, median 100). 4 channels in unpopulated minimodules with 5,000 hits are listed as unexpected and do not change the row (OK).
+  - **Mutations:** swapping HIGH/LOW priority fails 2 checks; inclusive thresholds (`>=`, `<=`) fail 6.
+  - **Real Cornell (owner data, observational):**
+    - `--real` prefix of 500,000 pairs of `00000003` (390,203 accepted): 30 rows, no hits in unpopulated minimodules.
+    - Whole six files (11,576,118 pairs, recorded, not a pass criterion): rows 12 OK, 9 LOW, 9 NOT OBSERVED; channels 6,366 OK, 19 LOW, 15 NOT OBSERVED, 0 HIGH.
+    - The 15 not-observed channels have exactly 0 hits in the whole files: SM 3 time 4368/4419, SM 9 time 135562, SM 12 time 262457/262624/262648 and energy 262422, SM 13 time 262989 and energy 263031, SM 15 energy 528703, SM 20 time 525717, SM 23 time 656768/656791, SM 24 time 659786, SM 28 energy 787417.
+    - All 19 low channels are time channels, at 0.03–0.149 × median, except SM 16 time 529182 with only 5 hits (0.0003 × median).
+  - **Other checks:** engine/report 59/59, scale 44/44; compile exit 0.
 - [ ] **T7 — Channel Status tab** (FR-5, FR-6). *Done when:* the hidden-GUI check shows RAWInspector-style row tags and text states, threshold Apply updates rows, clicking a row draws the channel map and bars for that SM, and "Open in SuperModule" selects it. It also checks the compile.
 - [ ] **T8 — Minimodule layout and metrics engine** (FR-8, FR-13). *Done when:*
   - both real maps give 4×4 grids;

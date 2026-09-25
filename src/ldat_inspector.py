@@ -679,6 +679,95 @@ def channel_status(dataset: Dataset, sm: int, *, min_events=100):
             "unobserved_energy": expected_e - active_e}
 
 
+# Channel findings (spec 002 FR-5-FR-7). Occupancy of the coincidence ingest
+# population, never a dead/hot hardware verdict: each accepted side counts one
+# hit per channel of its selected minimodule that passed the per-channel cut.
+FINDINGS_POPULATION = "channel hit counts in the coincidence ingest population"
+# Row state priority, highest first. A type that could not be assessed ranks
+# below any finding but above OK, so a row is OK only when everything was.
+FINDING_PRIORITY = ("NOT OBSERVED", "HIGH", "LOW", "INSUFFICIENT EVENTS", "OK")
+# RAWInspector ADC Status colours. A mapped SM with no ingest sides is marked
+# like a not-observed channel.
+FINDING_COLOURS = {"OK": "#b3ffb3", "NOT OBSERVED": "#ffb3b3", "HIGH": "#ffc4e1",
+                   "LOW": "#ffd9b3", "INSUFFICIENT EVENTS": "#dce0e4", "NO DATA": "#ffb3b3"}
+
+
+@dataclass(frozen=True)
+class FindingThresholds:
+    """Provisional defaults (plan): RAWInspector's count-based dead test for low."""
+
+    low_frac: float = 0.15    # LOW: hits < low_frac x median
+    high_frac: float = 3.0    # HIGH: hits > high_frac x median
+    min_median: float = 20.0  # per-type median below this: insufficient events
+    min_events: int = 100     # SM ingest sides below this: insufficient events
+
+    def validate(self):
+        if not (np.isfinite(self.low_frac) and 0 <= self.low_frac < 1):
+            raise ValueError("Low fraction must be at least 0 and below 1")
+        if not (np.isfinite(self.high_frac) and self.high_frac > 1):
+            raise ValueError("High factor must be above 1")
+        if not (np.isfinite(self.min_median) and self.min_median >= 0):
+            raise ValueError("Minimum median must be a nonnegative number of hits")
+        if int(self.min_events) != self.min_events or self.min_events < 1:
+            raise ValueError("Minimum ingest sides must be a positive integer")
+        return self
+
+    def text(self):
+        return (f"low < {self.low_frac:g} × median, high > {self.high_frac:g} × median; "
+                f"insufficient below a median of {self.min_median:g} hits "
+                f"or {self.min_events:,} ingest sides")
+
+
+def _type_findings(expected, counts, events, thresholds):
+    channels = sorted(expected)
+    hits = np.array([counts.get(ch, 0) for ch in channels], dtype=np.int64)
+    median = float(np.median(hits)) if hits.size else None
+    if events < thresholds.min_events:
+        reason = f"{events:,} ingest sides < {thresholds.min_events:,}"
+    elif median is None:
+        reason = "no expected channels"
+    elif median < thresholds.min_median:
+        reason = f"median {median:g} hits < {thresholds.min_median:g}"
+    else:
+        reason = None
+    if reason:
+        states = ["INSUFFICIENT EVENTS"] * len(channels)
+    else:
+        states = np.select([hits == 0, hits > thresholds.high_frac * median,
+                            hits < thresholds.low_frac * median],
+                           ["NOT OBSERVED", "HIGH", "LOW"], "OK").tolist()
+    return {"channels": channels, "hits": hits, "states": states, "median": median,
+            "counts": Counter(states), "insufficient": reason,
+            # hits on mapped channels the config does not expect (e.g. unpopulated minimodules)
+            "unexpected": {ch: n for ch, n in sorted(counts.items()) if ch not in expected}}
+
+
+def channel_findings(dataset: Dataset, sm: int, thresholds: FindingThresholds = FindingThresholds()):
+    """Per-channel occupancy states for one SM, per channel type, and its row state.
+
+    Each channel's hit count is compared with the median of its type (time or
+    energy) over that SM's expected channels, zeros included.
+    """
+    thresholds.validate()
+    data = dataset.modules.get(sm)
+    events = len(data) if data is not None else 0
+    findings = {"sm": sm, "events": events, "thresholds": thresholds}
+    for name, expected, counts in (
+            ("time", dataset.expected_time.get(sm, set()), dataset.time_counts.get(sm, Counter())),
+            ("energy", dataset.expected_energy.get(sm, set()), dataset.energy_counts.get(sm, Counter()))):
+        findings[name] = _type_findings(expected, counts, events, thresholds)
+    present = set(findings["time"]["states"]) | set(findings["energy"]["states"])
+    findings["state"] = ("NO DATA" if events == 0 or not present
+                         else next(s for s in FINDING_PRIORITY if s in present))
+    return findings
+
+
+def system_channel_findings(dataset: Dataset, thresholds: FindingThresholds = FindingThresholds()):
+    """``channel_findings`` for every mapped SM (and any SM with sides), in SM order."""
+    sms = set(dataset.expected_time) | set(dataset.expected_energy) | set(dataset.modules)
+    return [channel_findings(dataset, sm, thresholds) for sm in sorted(sms)]
+
+
 def uniformity(dataset: Dataset, selection: Selection, target=511.0, tolerance_pct=10.0):
     if target <= 0 or tolerance_pct < 0:
         raise ValueError("Target and tolerance must be nonnegative with positive target")
