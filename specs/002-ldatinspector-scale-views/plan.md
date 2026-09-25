@@ -112,10 +112,12 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
   - Engine: `overview_grid(dataset, metrics, metric)` builds the composite (`TILE_VALUE / EMPTY / UNPOPULATED / UNAVAILABLE`, pixel → (SM, mM), reasons). The GUI computes `minimodule_metrics` in a daemon thread: counts only for the count views, and counts plus fits for the fit views. The result arrives through the existing event queue and is cached per (dataset, selection) for the last four requests. A newer request supersedes the running job, which stops at its next SuperModule.
   - The spec 001 "Flood maps" view stays as a fifth option, placed by `supermodule_layout`.
 - **Coincidences:**
-  - SM × SM matrix of accepted pairs where both sides pass the current display cuts, each pair counted once.
-  - Clicking a cell selects an SM pair.
-  - A Δt histogram (`t_a − t_b`, ns, fixed sign for the ordered pair; or one SM against all partners) with median and central-68 % width.
+  - SM × SM matrix of accepted pairs where both sides pass the current display cuts, each pair counted once. Every mapped SM is on both axes; the diagonal holds pairs with both sides in one SM. Log colour scale; 0 pairs is grey.
+  - Clicking a cell selects an SM pair (SM a = row, SM b = column); SM a / SM b boxes also choose it, SM b may be "All partners".
+  - A Δt histogram (`t_a − t_b`, ns, fixed sign for the ordered pair; or one SM against all partners) with median and central-68 % width (p84 − p16). The histogram spans the core ± 4 central-68 % widths, clipped to the data; pairs outside are counted on the plot, and the statistics use every pair.
   - Labelled: geometry and time of flight contribute; not a clock or CTR calibration.
+  - Engine: `pair_mask(dataset, selection)` (per side: both sides of its pair pass `Selection.mask`), `pair_matrix(dataset, selection, mask=)` and `pair_dt(dataset, sm_a, sm_b=None, mask=)`, all through the `partner` column. A pair with both sides in one SM is counted once in Δt, with the lower row as side a (sign arbitrary, and labelled so). Differences are taken in integer ps, then converted to ns.
+  - GUI: the mask and matrix come from a daemon thread and are cached per (dataset, selection) for two selections (the mask is one bool per side). Δt is computed on the Tk thread from the cached mask (milliseconds per SM). The tab is redrawn on cut changes when visible; stepping SMs does not touch it.
 
 ### Limits files and slab view (FR-16–FR-18)
 

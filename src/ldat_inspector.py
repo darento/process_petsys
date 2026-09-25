@@ -1060,3 +1060,82 @@ def pair_offset_series(dataset: Dataset, sm: int, file_index: int, bins: int = 6
         if 0 <= position < bins:
             medians[position] = np.median(difference_ns[bin_ids == position])
     return edges, medians
+
+
+# Coincidences (spec 002 FR-11, FR-12). Pair-level views use the partner column:
+# a pair counts when both of its sides pass the display cuts.
+def coincidence_sms(dataset: Dataset):
+    """SMs on the coincidence matrix axes: every mapped SM and any SM with sides."""
+    return sorted(set(dataset.expected_time) | set(dataset.expected_energy) | set(dataset.modules))
+
+
+def pair_mask(dataset: Dataset, selection: Selection):
+    """Per table row: True when both sides of that row's pair pass ``selection``.
+
+    ``Selection.mask`` already requires both energies in the window; DOI and
+    ROI are then required of each side through the partner row.
+    """
+    table = dataset.table
+    if table is None or not len(table):
+        return np.zeros(0, bool)
+    side = selection.mask(ModuleEvents(table, 0, len(table)))
+    return side & side[table.partner]
+
+
+def pair_matrix(dataset: Dataset, selection: Selection, *, mask=None):
+    """Symmetric SM x SM counts of accepted pairs passing the cuts, each pair counted once.
+
+    Returns ``{"sms", "counts" (n x n int64), "pairs" (pairs counted),
+    "ingest_pairs" (all accepted pairs)}``; ``counts[i, j]`` for i != j is the
+    number of pairs with one side in ``sms[i]`` and the other in ``sms[j]``,
+    and the diagonal holds pairs with both sides in one SM.
+    """
+    sms = coincidence_sms(dataset)
+    n = len(sms)
+    table = dataset.table
+    if table is None or not len(table) or not n:
+        return {"sms": sms, "counts": np.zeros((n, n), np.int64), "pairs": 0, "ingest_pairs": 0}
+    if mask is None:
+        mask = pair_mask(dataset, selection)
+    rows = np.flatnonzero(mask)
+    partner = table.partner[rows]
+    first = rows < partner  # one row per pair
+    lookup = np.full(max(sms) + 1, -1, np.int64)
+    lookup[sms] = np.arange(n)
+    a = lookup[table.sm[rows[first]]]
+    b = lookup[table.sm[partner[first]]]
+    counts = np.bincount(a * n + b, minlength=n * n).reshape(n, n).astype(np.int64)
+    counts = counts + counts.T - np.diag(np.diag(counts))
+    return {"sms": sms, "counts": counts, "pairs": int(first.sum()), "ingest_pairs": len(table) // 2}
+
+
+def pair_dt(dataset: Dataset, sm_a: int, sm_b: int | None = None, *, selection: Selection | None = None,
+            mask=None):
+    """Paired hit time difference ``t_a - t_b`` (ns) for pairs passing the cuts.
+
+    ``t_a`` is the side in ``sm_a``; ``t_b`` its partner, in ``sm_b`` or, when
+    ``sm_b`` is None, in any SM. A pair with both sides in ``sm_a`` is counted
+    once, with the lower table row as side a (its sign is arbitrary). The
+    difference mixes geometry, time of flight and the timing chain: it is an
+    observation, not a clock offset or CTR calibration.
+
+    Returns ``{"dt_ns", "count", "median", "p16", "p84", "width68"}``; the
+    statistics are None without pairs. ``width68`` = p84 - p16 (central 68 %).
+    """
+    data = dataset.modules.get(sm_a)
+    dt = np.zeros(0)
+    if data is not None and len(data):
+        table = dataset.table
+        if mask is None:
+            mask = pair_mask(dataset, selection if selection is not None else Selection())
+        rows = np.arange(data._start, data._stop)
+        partner = table.partner[data._start:data._stop]
+        partner_sm = table.sm[partner]
+        keep = mask[data._start:data._stop] & ((partner_sm != sm_a) | (rows < partner))
+        if sm_b is not None:
+            keep &= partner_sm == sm_b
+        dt = (data.timestamp[keep] - table.timestamp[partner[keep]]).astype(np.float64) * (TIMESTAMP_SECONDS * 1e9)
+    if not dt.size:
+        return {"dt_ns": dt, "count": 0, "median": None, "p16": None, "p84": None, "width68": None}
+    p16, median, p84 = (float(v) for v in np.percentile(dt, [16, 50, 84]))
+    return {"dt_ns": dt, "count": int(dt.size), "median": median, "p16": p16, "p84": p84, "width68": p84 - p16}

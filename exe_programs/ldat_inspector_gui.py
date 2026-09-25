@@ -18,7 +18,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.collections import LineCollection
-from matplotlib.colors import Normalize, to_rgba
+from matplotlib.colors import LogNorm, Normalize, to_rgba
 from matplotlib.patches import Patch
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
@@ -30,8 +30,8 @@ from src.ldat_inspector import (
     FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
     FileResult, FindingThresholds, Selection, Settings, apply_calibration, channel_findings, channel_geometry,
     fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
-    minimodule_layout, minimodule_metrics, overview_grid, process_file, rate_series, pair_offset_series,
-    supermodule_layout, system_channel_findings, uniformity,
+    minimodule_layout, minimodule_metrics, overview_grid, pair_dt, pair_mask, pair_matrix, process_file,
+    rate_series, pair_offset_series, supermodule_layout, system_channel_findings, uniformity,
 )
 from src.ldat_memory import estimate_memory
 
@@ -43,7 +43,11 @@ STATE_EDGES = {"OK": "#4c9a5b", "NOT OBSERVED": "#d62728", "HIGH": "#c2185b", "L
 FLOOD_MODE = "Flood maps"
 TILE_COLOURS = {TILE_UNPOPULATED: "#d5d8dc", TILE_UNAVAILABLE: "#7d848b"}
 SM_TAB = "SuperModule"
-TABS = ("Channel Status", SM_TAB, "System Overview", "Timestamps")
+COINC_TAB = "Coincidences"
+TABS = ("Channel Status", SM_TAB, "System Overview", COINC_TAB, "Timestamps")
+ALL_PARTNERS = "All partners"
+DT_LABEL = ("Observational: geometry and time of flight contribute to the paired time difference; "
+            "it is not a clock offset or a CTR calibration.")
 STEP_DEBOUNCE_MS = 150  # wheel and Page Up/Down redraw once the stepping pauses
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
@@ -168,11 +172,20 @@ class LDATWorkbench(ctk.CTk):
         self._mm_layout = None
         # Tabs whose content is out of date; only the visible tab is redrawn.
         self._stale = set()
+        # Coincidences (T11): pair mask + SM x SM matrix from a thread, cached per (dataset, selection).
+        self.pair_a = tk.StringVar()
+        self.pair_b = tk.StringVar(value=ALL_PARTNERS)
+        self.dt_bins = tk.StringVar(value="100")
+        self._pair_cache = []
+        self._pair_token = 0
+        self._pair_job = None
+        self._pair_current = None
+        self._matrix_ax = self._dt_ax = None
 
         self._build_top()
         self._build_tabs()
         self._drawers = {SM_TAB: self._refresh_selected, "System Overview": self._draw_overview,
-                         "Timestamps": self._draw_timestamps}
+                         COINC_TAB: self._draw_coincidences, "Timestamps": self._draw_timestamps}
         self._log("Select an IMAS or Cornell config and LDAT files; calibration can be applied later.")
         self.bind("<Control-o>", lambda _: self._select_files())
         self.bind("<Control-p>", lambda _: self._start_processing())
@@ -284,6 +297,7 @@ class LDATWorkbench(ctk.CTk):
         self._build_channels()
         self._build_explorer()
         self._build_overview()
+        self._build_coincidences()
         self._build_timestamps()
 
     def _build_channels(self):
@@ -477,6 +491,29 @@ class LDATWorkbench(ctk.CTk):
         self.overview_canvas.get_tk_widget().pack(fill="both", expand=True)
         self.overview_canvas.mpl_connect("button_press_event", self._overview_click)
 
+    def _build_coincidences(self):
+        tab = self.tabs.tab(COINC_TAB)
+        controls = ctk.CTkFrame(tab)
+        controls.pack(fill="x", padx=8, pady=5)
+        _label(controls, "Δt: SM a")
+        self.pair_a_combo = ctk.CTkComboBox(controls, variable=self.pair_a, values=["—"], width=100,
+                                            state="readonly", command=lambda _: self._draw_pair_dt())
+        self.pair_a_combo.pack(side="left", padx=4)
+        _label(controls, "vs SM b")
+        self.pair_b_combo = ctk.CTkComboBox(controls, variable=self.pair_b, values=[ALL_PARTNERS], width=130,
+                                            state="readonly", command=lambda _: self._draw_pair_dt())
+        self.pair_b_combo.pack(side="left", padx=4)
+        _label(controls, "Bins")
+        ctk.CTkComboBox(controls, variable=self.dt_bins, values=["50", "100", "200", "400"], width=80,
+                        state="readonly", command=lambda _: self._draw_pair_dt()).pack(side="left", padx=4)
+        self.pair_info = ctk.CTkLabel(controls, text="Click a matrix cell to choose an SM pair", anchor="w")
+        self.pair_info.pack(side="left", fill="x", expand=True, padx=8)
+        ctk.CTkLabel(tab, text=DT_LABEL, anchor="w").pack(fill="x", padx=10)
+        self.coinc_fig = Figure(figsize=(15, 5.5), dpi=100)
+        self.coinc_canvas = FigureCanvasTkAgg(self.coinc_fig, master=tab)
+        self.coinc_canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.coinc_canvas.mpl_connect("button_press_event", self._pair_click)
+
     def _build_timestamps(self):
         tab = self.tabs.tab("Timestamps")
         controls = ctk.CTkFrame(tab)
@@ -644,6 +681,10 @@ class LDATWorkbench(ctk.CTk):
         self._overview_ax = self._overview_pick = None
         self.overview_open.configure(state="disabled")
         self.overview_info.configure(text="Click a minimodule tile for its SM, mM and value")
+        self._pair_token += 1  # a running pair job's result is ignored
+        self._pair_cache, self._pair_job, self._pair_current = [], None, None
+        self._matrix_ax = self._dt_ax = None
+        self.pair_info.configure(text="Click a matrix cell to choose an SM pair")
         if self._step_after is not None:
             self.after_cancel(self._step_after)
         self._step_after, self._sm_ids, self._stale = None, [], set()
@@ -655,7 +696,8 @@ class LDATWorkbench(ctk.CTk):
             self._selector.disconnect_events()
             self._selector = None
         for figure, canvas in ((self.fig, self.canvas), (self.channel_fig, self.channel_canvas),
-                               (self.overview_fig, self.overview_canvas), (self.time_fig, self.time_canvas)):
+                               (self.overview_fig, self.overview_canvas), (self.coinc_fig, self.coinc_canvas),
+                               (self.time_fig, self.time_canvas)):
             figure.clear()
             canvas.draw_idle()
         self._colorbar = None
@@ -906,6 +948,8 @@ class LDATWorkbench(ctk.CTk):
                     self._overview_done(*event[1:])
                 elif event[0] == "sm_metrics":
                     self._sm_metrics_done(*event[1:])
+                elif event[0] == "pairs":
+                    self._pairs_done(*event[1:])
                 elif event[0] == "report":
                     self._report_busy = False
                     self.last_report = event[1]
@@ -948,6 +992,10 @@ class LDATWorkbench(ctk.CTk):
         self.module_var.set(values[0] if values else "")
         self._sm_ids, self._sm_cache, self._sm_wanted, self._mm_layout = ids, [], None, None
         self._update_step_controls()
+        self.pair_a_combo.configure(values=values or ["—"])
+        self.pair_b_combo.configure(values=[ALL_PARTNERS, *values])
+        self.pair_a.set(values[0] if values else "")
+        self.pair_b.set(ALL_PARTNERS)
         labels = [f"{f.index}: {Path(f.path).name}" for f in successful]
         self.time_combo.configure(values=labels or ["—"])
         self.time_file.set(labels[0] if labels else "")
@@ -1686,6 +1734,158 @@ class LDATWorkbench(ctk.CTk):
         if self._overview_pick is None:
             return
         self._open_sm(self._overview_pick[0])
+
+    def _pair_entry(self, selection):
+        """Cached pair mask and SM x SM matrix, or None after starting a background job."""
+        for entry in self._pair_cache:
+            if entry["dataset"] is self.dataset and entry["selection"] == selection:
+                return entry
+        job = (id(self.dataset), selection)
+        if self._pair_job == job:
+            return None
+        self._pair_token += 1
+        token, dataset = self._pair_token, self.dataset
+        self._pair_job = job
+
+        def run():
+            import time
+            start = time.perf_counter()
+            try:
+                mask = pair_mask(dataset, selection)
+                matrix = pair_matrix(dataset, selection, mask=mask)
+            except Exception as exc:  # reported on the Tk thread
+                self._events.put(("pairs", token, dataset, selection, None, None, str(exc)))
+                return
+            self._events.put(("pairs", token, dataset, selection, mask, matrix, time.perf_counter() - start))
+
+        threading.Thread(target=run, daemon=True).start()
+        return None
+
+    def _pairs_done(self, token, dataset, selection, mask, matrix, detail):
+        if token != self._pair_token:
+            return  # superseded or inputs changed
+        self._pair_job = None
+        entry = {"dataset": dataset, "selection": selection, "mask": mask, "matrix": matrix,
+                 "error": None if matrix is not None else detail}
+        self._pair_cache = [entry] + self._pair_cache[:1]  # masks are one bool per side: keep two
+        if matrix is None:
+            self._log(f"Coincidence matrix unavailable: {detail}")
+        else:
+            self._log(f"Coincidences: {matrix['pairs']:,} of {matrix['ingest_pairs']:,} pairs pass the cuts "
+                      f"({detail:.1f} s)")
+        self._stale.add(COINC_TAB)
+        self._draw_visible()
+
+    def _draw_coincidences(self):
+        if not self.dataset:
+            return
+        entry = self._pair_entry(self._selection())
+        figure = self.coinc_fig
+        figure.clear()
+        self._pair_current = self._matrix_ax = self._dt_ax = None
+        if entry is None or entry["error"]:
+            axis = figure.add_subplot(111)
+            axis.text(0.5, 0.5, "Computing the SM × SM pair matrix…" if entry is None
+                      else f"Coincidence matrix unavailable: {entry['error']}", transform=axis.transAxes,
+                      ha="center", va="center", fontsize=12, color="#555b61")
+            axis.set_axis_off()
+            self.coinc_canvas.draw_idle()
+            return
+        self._pair_current = entry
+        matrix = entry["matrix"]
+        sms, counts = matrix["sms"], matrix["counts"]
+        grid = figure.add_gridspec(1, 2, width_ratios=(1, 1.3), wspace=0.28, left=0.05, right=0.98,
+                                   top=0.9, bottom=0.12)
+        axis = self._matrix_ax = figure.add_subplot(grid[0, 0])
+        self._dt_ax = figure.add_subplot(grid[0, 1])
+        cmap = matplotlib.colormaps["viridis"].copy()
+        cmap.set_bad("#eceef0")
+        top = int(counts.max()) if counts.size else 0
+        image = axis.imshow(np.ma.masked_equal(counts, 0), cmap=cmap, norm=LogNorm(1, max(top, 2)),
+                            interpolation="nearest")
+        step = max(1, -(-len(sms) // 30))
+        ticks = list(range(0, len(sms), step))
+        axis.set_xticks(ticks, [str(sms[i]) for i in ticks], fontsize=7, rotation=90)
+        axis.set_yticks(ticks, [str(sms[i]) for i in ticks], fontsize=7)
+        axis.set(xlabel="SM b", ylabel="SM a")
+        units = "keV" if self.dataset.settings.calibrated else "raw a.u."
+        axis.set_title(f"Accepted pairs, both sides pass the display cuts ({units})\n"
+                       f"{matrix['pairs']:,} of {matrix['ingest_pairs']:,} pairs, each counted once • "
+                       "grey: 0 pairs", fontsize=9)
+        figure.colorbar(image, ax=axis, shrink=0.85, pad=0.02, label="pairs (log scale)")
+        self._draw_pair_dt()
+
+    def _pair_sms(self):
+        try:
+            sm_a = int(self.pair_a.get().removeprefix("SM "))
+        except ValueError:
+            return None, None
+        b = self.pair_b.get()
+        return sm_a, None if b == ALL_PARTNERS else int(b.removeprefix("SM "))
+
+    def _draw_pair_dt(self):
+        """Δt histogram of the chosen pair (or SM a against all partners), from the cached mask."""
+        entry = self._pair_current
+        if entry is None or entry["dataset"] is not self.dataset or self._dt_ax is None:
+            return
+        sm_a, sm_b = self._pair_sms()
+        axis = self._dt_ax
+        axis.clear()
+        for patch in [p for p in self._matrix_ax.patches if p.get_gid() == "pick"]:
+            patch.remove()
+        if sm_a is None:
+            self.coinc_canvas.draw_idle()
+            return
+        result = pair_dt(self.dataset, sm_a, sm_b, mask=entry["mask"])
+        partner = "all partners" if sm_b is None else f"SM {sm_b}"
+        if result["count"]:
+            dt = result["dt_ns"]
+            # core ± 4 central-68 % widths, within the data; pairs outside are counted, not hidden
+            width = result["width68"] or 1.0
+            low = max(float(dt.min()), result["p16"] - 4 * width)
+            high = min(float(dt.max()), result["p84"] + 4 * width)
+            if high <= low:
+                low, high = low - 1.0, high + 1.0
+            outside = int(((dt < low) | (dt > high)).sum())
+            axis.hist(dt, bins=int(self.dt_bins.get()), range=(low, high), color="#347dc1", alpha=0.8)
+            if outside:
+                axis.text(0.02, 0.97, f"{outside:,} pairs outside the plotted range\n"
+                          f"(all {dt.min():+.1f} to {dt.max():+.1f} ns; statistics use every pair)",
+                          transform=axis.transAxes, ha="left", va="top", fontsize=8, color="#555b61")
+            axis.axvline(result["median"], color="#e64c46", lw=1.6, label=f"median {result['median']:+.2f} ns")
+            axis.axvspan(result["p16"], result["p84"], color="#e64c46", alpha=0.08,
+                         label=f"central 68 %: {result['width68']:.2f} ns wide")
+            axis.legend(fontsize=8, loc="upper right")
+            text = (f"SM {sm_a} ↔ {partner}: {result['count']:,} pairs • median {result['median']:+.2f} ns • "
+                    f"central 68 % width {result['width68']:.2f} ns")
+        else:
+            axis.text(0.5, 0.5, "No pairs pass the cuts", transform=axis.transAxes, ha="center", color="#555b61")
+            text = f"SM {sm_a} ↔ {partner}: no pairs pass the cuts"
+        same = " (both sides in one SM: sign arbitrary)" if sm_b == sm_a else ""
+        axis.set(xlabel="t(SM a) − t(partner) (ns; PETsys ps timestamps)", ylabel="Pairs")
+        axis.set_title(f"Paired hit time difference • SM {sm_a} − {partner}{same}\n"
+                       "geometry and time of flight contribute; not a clock or CTR calibration", fontsize=9)
+        self.pair_info.configure(text=text)
+        sms = entry["matrix"]["sms"]
+        if sm_a in sms:
+            row = sms.index(sm_a)
+            cells = [(row, sms.index(sm_b)), (sms.index(sm_b), row)] if sm_b in sms else []
+            boxes = [((col - 0.5, r - 0.5), 1, 1) for r, col in cells] or [((-0.5, row - 0.5), len(sms), 1)]
+            for origin, width, height in boxes:
+                self._matrix_ax.add_patch(Rectangle(origin, width, height, fill=False, edgecolor="#e64c46",
+                                                    lw=1.6, gid="pick"))
+        self.coinc_canvas.draw_idle()
+
+    def _pair_click(self, event):
+        entry = self._pair_current
+        if entry is None or event.inaxes is not self._matrix_ax or event.xdata is None:
+            return
+        sms = entry["matrix"]["sms"]
+        row, col = int(round(event.ydata)), int(round(event.xdata))
+        if 0 <= row < len(sms) and 0 <= col < len(sms):
+            self.pair_a.set(f"SM {sms[row]}")
+            self.pair_b.set(f"SM {sms[col]}")
+            self._draw_pair_dt()
 
     def _draw_overview_floods(self):
         """Spec 001 per-SM flood maps, placed by ``supermodule_layout``."""

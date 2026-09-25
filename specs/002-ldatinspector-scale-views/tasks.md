@@ -242,11 +242,35 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   - **Changed spec 001 checks:** `ldat_gui_check.py` expected 5 tabs; it now expects 4 and shows the SuperModule tab first, because only the visible tab redraws (29/29). `ldat_revision_check.py` also shows that tab first (14/14). The T7 and T9 "Open …" checks now also confirm that the SuperModule tab is drawn for that SM.
   - **Other checks:** engine/report 59/59, processing 17/17, issue 8/8, scale 44/44, unpopulated 6/6.
   - **Owner review pending:** stepping feel, the summary layout and the split position on the owner's screen.
-- [ ] **T11 — Coincidence matrix and Δt** (FR-11, FR-12). *Done when:*
+- [x] **T11 — Coincidence matrix and Δt** (FR-11, FR-12). *Done when:*
   - fixtures with a known pair list give the exact symmetric SM × SM counts under cuts, counting each pair once;
   - Δt sign, median and central-68 % width match fixtures;
   - the hidden GUI selects a pair from a cell click;
   - labels state the observational limits.
+
+  **Verified 2026-09-25:** `python scripts/ldat_views_check.py` → **PASS 92/92** (16 new for T11); `--real` → **PASS 94/94**; GUI compile exit 0. FR-11's partner column was already in the table (T1/T2); T11 uses it.
+  - **Engine, on a hand-built Cornell pair list** (153 pairs, timestamps near 2.9 × 10¹⁴ ps):
+    - SM 0–1: 101 passing pairs, half stored with the SM 1 side first. SM 0–2: 20 passing, plus 5 failing the partner energy, 5 failing DOI on the SM 2 side only and 5 failing ROI X on the SM 0 side only. SM 3–3: 10 passing. SM 4–5: 7 passing;
+    - the matrix equals a pair-by-pair recount: symmetric, 138 of 153 pairs, 0–1 = 101, 0–2 = 20, 3–3 = 10 (diagonal counted once). Without cuts all 153 pairs are counted once, and 0–2 = 35;
+    - Δt(0, 1) equals the fixture values exactly, with median +3.0 ns; Δt(1, 0) is the negation (−3.0 ns). p16 −14.0, p84 20.0 and width 34.0 ns equal `np.percentile` of the fixture;
+    - SM 0 against all partners gives 121 pairs; SM 3–3 gives 10 (each pair once, also against all partners); an SM without pairs gives no statistics (None);
+    - a precomputed mask gives the same matrix and Δt.
+  - **Hidden GUI:**
+    - the tab shows "Computing the SM × SM pair matrix…" and then the matrix from a background job (not the Tk thread), equal to `pair_matrix`, titled "both sides pass the display cuts", "each counted once";
+    - the default Δt is SM 0 against all partners (121 pairs, row highlighted);
+    - a canvas click on (SM 0, SM 1) selects the pair and gives "101 pairs • median +3.00 ns • central 68 % width 34.00 ns", with 101 pairs in the histogram and both cells highlighted. The mirrored cell gives −3.00 ns; the diagonal cell (SM 3) gives 10 pairs, titled "sign arbitrary";
+    - the tab label and the Δt title state that geometry and time of flight contribute and that Δt is not a clock or CTR calibration; an SM without passing pairs reads "no pairs pass the cuts";
+    - a cut change (DOI high 0.9 → 1.0) recomputes the matrix (0–2 becomes 25), and going back redraws at once from the cache;
+    - stepping SMs does not make the tab stale; invalidating inputs clears it; no error dialogs.
+  - **Mutation checks:** requiring only the own side to pass fails 3 checks, counting same-SM pairs per side fails 2 and flipping the Δt sign fails 2; unmodified, none fail.
+  - **Real Cornell** (`00000003` whole file, 3,853,684 sides, resolved calibration, default cuts; recorded, not a pass criterion):
+    - 389,780 of 1,926,842 pairs pass the cuts. The mask and matrix take 0.10 s (engine), and the tab is drawn 0.65 s after loading. 315 SM pairs have coincidences; the diagonal and each SM's nearby SMs have none;
+    - the largest cell is SM 10–SM 25 with 15,446 pairs: median +3.93 ns, central-68 % width 1.58 ns, and −3.93 ns reversed. It computes in 2 ms, and the GUI redraw takes 0.14 s;
+    - the histogram shows two peaks, near +3.2 and +4.5 ns (two axially separated sources: time of flight). 175 pairs fall outside the plotted range (all pairs span −100.3 to +69.0 ns).
+  - **Found while checking:** at first the histogram spanned the full data range, so on real data the peak took one or two of 100 bins. It now spans the core ± 4 central-68 % widths and states how many pairs are outside.
+  - **Changed spec 001 check:** `ldat_gui_check.py` now expects 5 tabs again (29/29).
+  - **Other checks:** engine/report 59/59, revision 14/14, processing 17/17, issue 8/8, scale 44/44, unpopulated 6/6.
+  - **Owner review pending:** matrix and Δt readability on Cornell and IMAS (120 × 120).
 
 ## Cornell slab view and decompression
 
