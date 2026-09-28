@@ -10,9 +10,11 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 import numpy as np
 
-from src.ldat_inspector import (SLAB_EXTENT_MM, TIMESTAMP_SECONDS, Selection, channel_status, factor_origins,
-                                fit_on_display_bins, flood_counts, slab_origins, slab_totals, slab_view,
-                                slab_rule_text, slab_x_edges, uniformity, unresolved_slab_pairs)
+from src.ldat_inspector import (FINDINGS_POPULATION, SLAB_EXTENT_MM, TIMESTAMP_SECONDS, FindingThresholds,
+                                Selection, channel_status, factor_origins, fit_on_display_bins, flood_counts,
+                                minimodule_layout, minimodule_metrics, slab_origins, slab_totals, slab_view,
+                                slab_rule_text, slab_x_edges, system_channel_findings, uniformity,
+                                unresolved_slab_pairs)
 
 
 def report_rows(dataset, selection: Selection, target=511.0, tolerance_pct=10.0):
@@ -30,6 +32,37 @@ def _text(axis, lines, *, top=0.95, fontsize=9, linespacing=1.55):
     axis.axis("off")
     axis.text(0.05, top, "\n".join(lines), transform=axis.transAxes,
               va="top", family="monospace", fontsize=fontsize, linespacing=linespacing)
+
+
+# _text starts at 0.95 of the default axes: 698 px down from the top on an 11.7 x 8.3 in,
+# 100 dpi page. Pixels per line are at most fontsize x linespacing x 1.42 (measured).
+_TEXT_ROOM_PX = 698 - 25
+
+
+def _text_pages(pdf, groups, *, fontsize, linespacing, continued, min_fontsize=6.0):
+    """Save text on as many pages as needed: shrink the font to ``min_fontsize``, then continue.
+
+    ``groups`` are the wrapped pieces of each logical line; a page break never splits one.
+    """
+    per_line = lambda size: size * linespacing * 1.42  # noqa: E731
+    lines = [piece for group in groups for piece in group]
+    chunks = [lines]
+    if len(lines) * per_line(fontsize) > _TEXT_ROOM_PX:
+        if len(lines) * per_line(min_fontsize) <= _TEXT_ROOM_PX:
+            fontsize = _TEXT_ROOM_PX / (len(lines) * linespacing * 1.42)
+        else:
+            fontsize = min_fontsize
+            capacity = int(_TEXT_ROOM_PX // per_line(fontsize)) - 1  # leaves room for "(continued)"
+            chunks = [[]]
+            for group in groups:
+                if chunks[-1] and len(chunks[-1]) + len(group) > capacity:
+                    chunks.append([])
+                chunks[-1].extend(group)
+    for page, chunk in enumerate(chunks):
+        fig = Figure(figsize=(11.7, 8.3), dpi=100)
+        _text(fig.add_subplot(111), ([f"{continued} (continued)"] if page else []) + chunk,
+              fontsize=fontsize, linespacing=linespacing)
+        pdf.savefig(fig)
 
 
 def _reasons(counts):
@@ -60,6 +93,19 @@ def _limits_lines(dataset, selection, limits, slab_flood, only_sm):
     else:
         lines.append("DOI view: light-sharing ratio")
     return lines
+
+
+def _scope(dataset):
+    """Whole-file or prefix scope of the ingest (FR-14)."""
+    max_pairs = dataset.settings.max_pairs
+    return ("whole files (no pair limit)" if max_pairs is None
+            else f"prefix, max {max_pairs:,} coincidence pairs / file")
+
+
+def _calibration(dataset):
+    settings = dataset.settings
+    return (f"keV with {Path(settings.calibration_path).name}" if settings.calibrated
+            else "raw PETsys a.u. (no keV calibration)")
 
 
 def _counts(counts):
@@ -111,11 +157,10 @@ def _provenance(dataset, selection, limits=None, slab_flood=False, only_sm=None)
         f"Map: {dataset.map_path}",
         f"Energy calibration: {settings.calibration_path if settings.calibrated else 'OFF (raw PETsys a.u.)'}",
         f"Ingest cuts: at least {settings.min_channels} energy channels; "
-        f"per-channel >= {settings.min_channel_energy:g} a.u.; "
-        + ("whole files (no pair limit)" if settings.max_pairs is None
-           else f"max {settings.max_pairs:,} coincidence pairs / file"),
+        f"per-channel >= {settings.min_channel_energy:g} a.u.; " + _scope(dataset),
         *([slab_rule_text(dataset, None if only_sm is None else {only_sm})
-           + ("" if only_sm is None else f" (SM {only_sm})")] if settings.system == "CORNELL" else []),
+           + ("" if only_sm is None else " (all files; pairs, not per SM)" if settings.slab_rule == "legacy"
+              else f" (SM {only_sm})")] if settings.system == "CORNELL" else []),
         f"Display: BOTH detector energies {selection.energy_low:g}..{selection.energy_high:g} "
         f"{'keV' if settings.calibrated else 'a.u.'}; "
         f"DOI {'mm' if dataset.doi_mm else 'ratio'} {selection.doi_low:g}..{selection.doi_high:g}",
@@ -137,9 +182,8 @@ def _provenance(dataset, selection, limits=None, slab_flood=False, only_sm=None)
     ]
 
 
-def _overview(pdf, dataset, selection, rows, *, target, tolerance_pct, only_sm, limits=None, slab_flood=False):
-    fig = Figure(figsize=(11.7, 8.3), dpi=100)
-    axis = fig.add_subplot(111)
+def _overview(pdf, dataset, selection, rows, *, target, tolerance_pct, only_sm, limits=None, slab_flood=False,
+              thresholds=FindingThresholds()):
     selected = rows if only_sm is None else [row for row in rows if row["sm"] == only_sm]
     ok = sum(row["result"] == "IN TOLERANCE" for row in selected)
     not_ok = sum(row["result"] == "OUT OF TOLERANCE" for row in selected)
@@ -155,14 +199,14 @@ def _overview(pdf, dataset, selection, rows, *, target, tolerance_pct, only_sm, 
          if dataset.settings.calibrated else "Photopeak uniformity: unavailable (raw a.u.; no keV calibration)"),
         f"In tolerance: {ok}; out of tolerance: {not_ok}; fit unavailable: {unavailable}",
         "These are observational fits, not clinical PASS/FAIL decisions.",
+        f"Channel findings thresholds: {thresholds.text()}",
         "",
     ]
     # Wrap long paths to stay inside the page; matplotlib writes text into the PDF.
     import textwrap
-    lines = heading + [piece for line in _provenance(dataset, selection, limits, slab_flood, only_sm)
-                       for piece in textwrap.wrap(line, width=118, subsequent_indent="    ")]
-    _text(axis, lines, fontsize=8.0)
-    pdf.savefig(fig)
+    groups = [[line] for line in heading] + [textwrap.wrap(line, width=118, subsequent_indent="    ") or [""]
+                                             for line in _provenance(dataset, selection, limits, slab_flood, only_sm)]
+    _text_pages(pdf, groups, fontsize=8.0, linespacing=1.55, continued=heading[0])
 
 
 def _tables(pdf, rows, calibrated=True):
@@ -183,6 +227,127 @@ def _tables(pdf, rows, calibrated=True):
                          f"{mu:>7}   {res:>5}    {row['result']}")
         _text(axis, lines, fontsize=8.0)
         pdf.savefig(fig)
+
+
+def _findings_pages(pdf, dataset, findings, thresholds):
+    """Channel Status table (FR-5-FR-7): one row per SuperModule in the report scope."""
+    def flags(kind):
+        return "insufficient" if kind["insufficient"] else " / ".join(
+            str(kind["counts"].get(state, 0)) for state in ("NOT OBSERVED", "LOW", "HIGH"))
+
+    def median(kind):
+        return "--" if kind["median"] is None else f"{kind['median']:,.0f}"
+
+    states = {}
+    for row in findings:
+        states[row["state"]] = states.get(row["state"], 0) + 1
+    order = ("NOT OBSERVED", "HIGH", "LOW", "INSUFFICIENT EVENTS", "NO DATA", "OK")
+    heading = ["CHANNEL FINDINGS - " + FINDINGS_POPULATION + ", before display cuts",
+               f"Scope: {_scope(dataset)}; not a dead/hot hardware verdict",
+               f"Thresholds: {thresholds.text()}",
+               f"{len(findings)} SuperModules: " + ", ".join(f"{states[s]} {s}" for s in order if s in states),
+               "SM     Ingest  mM seen  T chan  T NO/LOW/HIGH  T median  E chan  E NO/LOW/HIGH  E median"
+               "  Unexpected  Finding",
+               "-" * 118]
+    for start in range(0, max(len(findings), 1), 34):
+        fig = Figure(figsize=(11.7, 8.3), dpi=100)
+        axis = fig.add_subplot(111)
+        lines = list(heading)
+        for row in findings[start:start + 34]:
+            sm, t, e = row["sm"], row["time"], row["energy"]
+            data = dataset.modules.get(sm)
+            expected = dataset.expected_mm.get(sm, set())
+            seen = len(set(np.unique(data.mm).tolist()) & expected) if data is not None else 0
+            unexpected = len(t["unexpected"]) + len(e["unexpected"])
+            lines.append(f"{sm:>3} {row['events']:>10,}  {seen:>3}/{len(expected):<3}  "
+                         f"{len(t['channels']):>6}  {flags(t):>13}  {median(t):>8}  "
+                         f"{len(e['channels']):>6}  {flags(e):>13}  {median(e):>8}  "
+                         f"{(str(unexpected) + ' ch') if unexpected else '--':>10}  {row['state']}")
+        _text(axis, lines, fontsize=7.6)
+        pdf.savefig(fig)
+
+
+def _minimodule_page(pdf, dataset, selection, sm, metrics, populated, findings, thresholds):
+    """Per-minimodule counts and photopeak (FR-13) and the SM's flagged channels (FR-5)."""
+    import textwrap
+    calibrated = dataset.settings.calibrated
+    units = "keV" if calibrated else "a.u."
+    lines = [f"SUPERMODULE {sm} - MINIMODULES AND CHANNEL FINDINGS",
+             f"Scope: {_scope(dataset)}; energy: {_calibration(dataset)}",
+             "Ingest: accepted detector sides (ingest population). Selected: sides passing the display cuts "
+             f"(both energies {selection.energy_low:g}..{selection.energy_high:g} {units}, DOI, ROI"
+             + (", fitted keV factors only" if selection.fitted_only else "") + ").",
+             ("Fit: photopeak on ROI/DOI sides with the energy window off (spec 001 fit guards)." if calibrated
+              else "Fit: unavailable in raw a.u. (no keV calibration)."),
+             "",
+             "mM      Ingest    Selected   Fit sides   Centroid keV   Res %   Status",
+             "-" * 96]
+    mms = sorted(set(populated) | {mm for s, mm in metrics if s == sm})
+    fitted = assessed = 0
+    for mm in mms:
+        row = metrics.get((sm, mm)) or {"ingest": 0, "selected": 0, "fit_sides": 0, "fit": None}
+        fit = row["fit"]
+        mu = res = "--"
+        if not populated.get(mm, True):
+            status = "unpopulated (config)"
+        else:
+            assessed += 1
+            if fit is not None and fit["status"] == "FIT":
+                mu, res, status = f"{fit['mu']:.1f}", f"{fit['resolution']:.1f}", "FIT"
+                fitted += 1
+            else:
+                status = fit["status"] if fit is not None else "not computed"
+        lines.append(f"{mm:>2} {row['ingest']:>11,} {row['selected']:>11,} {row['fit_sides']:>11,}"
+                     f"   {mu:>12}   {res:>5}   {status}")
+    lines.append(f"Fitted minimodules: {fitted}/{assessed} populated" if calibrated
+                 else f"Populated minimodules: {assessed}")
+    lines += ["", f"CHANNEL FINDINGS - {findings['state']} ({FINDINGS_POPULATION}, before display cuts)",
+              f"Thresholds: {thresholds.text()}"]
+    for kind in ("time", "energy"):
+        found = findings[kind]
+        observed = int((found["hits"] > 0).sum())
+        lines.append(f"{kind.upper():<6} {observed}/{len(found['channels'])} observed"
+                     + ("" if found["median"] is None else f", median {found['median']:,.0f} hits"))
+        if found["insufficient"]:
+            lines.append(f"       insufficient: {found['insufficient']}")
+            groups = (("0 hits", [ch for ch, n in zip(found["channels"], found["hits"]) if n == 0]),)
+        else:
+            counts = found["counts"]
+            lines.append(f"       {counts['NOT OBSERVED']} not observed / {counts['LOW']} low / "
+                         f"{counts['HIGH']} high")
+            groups = [(label.lower(), [ch for ch, s in zip(found["channels"], found["states"]) if s == label])
+                      for label in ("NOT OBSERVED", "LOW", "HIGH")]
+        for label, ids in groups:
+            if ids:
+                lines += textwrap.wrap(f"{label}: " + ", ".join(map(str, ids)), width=130,
+                                       initial_indent="       ", subsequent_indent="         ")
+        if found["unexpected"]:
+            lines += textwrap.wrap("unexpected hits (unpopulated mM): " + ", ".join(
+                f"{ch} ({n:,})" for ch, n in found["unexpected"].items()), width=130,
+                initial_indent="       ", subsequent_indent="         ")
+    lines.append("Observational: no channel is declared dead or hot from a coincidence sample.")
+    lines += _timestamp_lines(dataset, dataset.modules.get(sm))
+    groups = [textwrap.wrap(line, width=140, subsequent_indent="    ") or [""] for line in lines]
+    _text_pages(pdf, groups, fontsize=7.6, linespacing=1.4, continued=lines[0])
+
+
+def _timestamp_lines(dataset, data):
+    """Observed per-file timestamp spans of one SM, one line per file (moved from the detail page)."""
+    if data is None:
+        return []
+    lines = ["", "Observed timestamp spans per file (not full-run rates; paired hit difference is not clock drift):"]
+    for file in dataset.files:
+        if not file.success:
+            continue
+        in_file = data.file_index == file.index
+        timestamps = data.timestamp[in_file]
+        if timestamps.size >= 2:
+            seconds = (float(timestamps.max()) - float(timestamps.min())) * TIMESTAMP_SECONDS
+            paired = (timestamps.astype(float) - data.partner_timestamp[in_file].astype(float)) * 1e-3
+            lines.append(f"  [{file.index}] {seconds:.3f} s / {timestamps.size:,} sides"
+                         + (" (prefix)" if file.prefix_limited else "")
+                         + f"; median paired hit difference {np.median(paired):+.2f} ns")
+    return lines
 
 
 def _module_page(pdf, dataset, selection, row, cog=None):
@@ -210,20 +375,10 @@ def _module_page(pdf, dataset, selection, row, cog=None):
             str(sorted(status["unobserved_time"])[:15]),
             "Energy channels not observed (first 15):",
             str(sorted(status["unobserved_energy"])[:15]),
-            "", "No singles bucket; no dead-channel proof from this sample."]
-    if data is not None:
-        info.extend(("", "Observed timestamp spans per file (not full-run rates):"))
-        for file in dataset.files:
-            if not file.success:
-                continue
-            timestamps = data.timestamp[data.file_index == file.index]
-            if timestamps.size >= 2:
-                seconds = (float(timestamps.max()) - float(timestamps.min())) * TIMESTAMP_SECONDS
-                paired = (data.timestamp[data.file_index == file.index].astype(float)
-                          - data.partner_timestamp[data.file_index == file.index].astype(float)) * 1e-3
-                info.append(f"  [{file.index}] {seconds:.3f} s / {timestamps.size:,} sides"
-                            + (" (prefix)" if file.prefix_limited else ""))
-                info.append(f"      median paired hit difference: {np.median(paired):+.2f} ns (not clock drift)")
+            "", "No singles bucket; no dead-channel proof from this sample.",
+            "Per-file timestamp spans: on the next page."]
+    import textwrap  # the info panel shares the page width with the energy plot
+    info = [piece for line in info for piece in (textwrap.wrap(line, width=80, subsequent_indent="    ") or [""])]
     _text(ax_info, info, fontsize=7.4, linespacing=1.25)
     if data is not None and len(data):
         spatial = selection.mask(data, energy=False)
@@ -266,8 +421,13 @@ def _module_page(pdf, dataset, selection, row, cog=None):
 
 
 def write_report(path, dataset, selection: Selection, *, sm=None, target=511.0,
-                 tolerance_pct=10.0, cog_limits=None, doi_limits=None, slab_flood=False):
+                 tolerance_pct=10.0, cog_limits=None, doi_limits=None, slab_flood=False,
+                 thresholds: FindingThresholds = FindingThresholds()):
     """Write a PDF atomically; every view uses the same report_rows measurements.
+
+    Pages: provenance, SuperModule summary, channel findings (``thresholds``),
+    then per SM its detail page and its minimodule / channel-findings page.
+    Findings and minimodule rows come from the same engine functions as the GUI.
 
     ``cog_limits`` / ``doi_limits`` are the loaded limits files, listed in the
     provenance (the dataset's DOI view file is listed by default). ``slab_flood``
@@ -279,9 +439,14 @@ def write_report(path, dataset, selection: Selection, *, sm=None, target=511.0,
     if slab_flood and (cog_limits is None or dataset.settings.system != "CORNELL"):
         raise ValueError("The slab flood view needs a Cornell dataset and a COG limits file")
     limits = {"cog": cog_limits, "doi": doi_limits if doi_limits is not None else dataset.doi_limits}
+    thresholds.validate()
     rows = report_rows(dataset, selection, target, tolerance_pct)
     if sm is not None and sm not in {row["sm"] for row in rows}:
         raise ValueError(f"SuperModule {sm} is not in the selected mapping")
+    findings = [row for row in system_channel_findings(dataset, thresholds) if sm is None or row["sm"] == sm]
+    by_sm = {row["sm"]: row for row in findings}
+    metrics = minimodule_metrics(dataset, selection, sms=None if sm is None else [sm])
+    layout = minimodule_layout(dataset)
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     partial = target_path.with_suffix(target_path.suffix + ".partial")
@@ -290,11 +455,15 @@ def write_report(path, dataset, selection: Selection, *, sm=None, target=511.0,
             pdf.infodict()["Title"] = f"LDATInspector {dataset.settings.system} offline report"
             pdf.infodict()["Subject"] = "PETsys coincidence LDAT inspection"
             _overview(pdf, dataset, selection, rows, target=target,
-                      tolerance_pct=tolerance_pct, only_sm=sm, limits=limits, slab_flood=slab_flood)
+                      tolerance_pct=tolerance_pct, only_sm=sm, limits=limits, slab_flood=slab_flood,
+                      thresholds=thresholds)
             selected_rows = rows if sm is None else [row for row in rows if row["sm"] == sm]
             _tables(pdf, selected_rows, dataset.settings.calibrated)
+            _findings_pages(pdf, dataset, findings, thresholds)
             for row in selected_rows:
                 _module_page(pdf, dataset, selection, row, cog_limits if slab_flood else None)
+                _minimodule_page(pdf, dataset, selection, row["sm"], metrics,
+                                 layout.get(row["sm"], {}).get("populated", {}), by_sm[row["sm"]], thresholds)
         os.replace(partial, target_path)
     finally:
         partial.unlink(missing_ok=True)
