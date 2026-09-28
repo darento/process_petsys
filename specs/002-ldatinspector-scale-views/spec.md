@@ -69,7 +69,7 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
   - the axis labels give Z and θ, and the flood-map mode thumbnails use the same orientation;
   - the flood-map mode thumbnails of every system share one absolute colour scale (0 to the system's peak bin) with one colour bar, so relative intensity across SMs shows the source position (owner, 2026-09-28). The metric modes already use one system-wide scale.
 
-  The SuperModule tab and PDF flood maps stay in local X/Y. The IMAS layout is unchanged. The placement is only as real as the config geometry (`cornell_full_system.yaml` marks `ring_r`/`ring_z`/`ring_yx` as a TODO until the cassette survey).
+  The SuperModule tab and PDF flood maps stay in local X/Y. The IMAS layout is unchanged. The placement uses only the order of the `ring_z` values and the cassette angles of `ring_yx` in `cornell_full_system.yaml`, which the owner confirmed as the real Cornell geometry on 2026-09-28. `ring_r` is not used: it is the distance used for the skew-calibration phantom (the diameter of the activity there), not a cassette radius.
 
 ### Common
 

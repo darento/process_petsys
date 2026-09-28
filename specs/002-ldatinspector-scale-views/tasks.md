@@ -564,7 +564,7 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - **red:** a new hidden-GUI check found three different scales ((0.1, 18), (0.1, 24), (0.1, 31)) and no colour bar;
     - **fix:** every thumbnail uses vmin 0, vmax = the system's peak bin, with one colour bar "sides per bin (one scale, all SMs)" and "one colour scale for all SMs" in the title. This applies to COG/RTP and slab views on both systems;
     - **green:** views 171/171 (`--real` 174/174). All other checks unchanged. Real screenshot: `t18/overview_flood.png`.
-  - **Caveat:** the placement follows `cornell_full_system.yaml`, whose `ring_r`/`ring_z`/`ring_yx` are marked TODO until the cassette survey.
+  - **Geometry provenance:** the placement follows `ring_z` and `ring_yx` in `cornell_full_system.yaml`. The owner confirmed them as the real Cornell geometry on 2026-09-28, and the config's TODO was removed. `ring_r` (the skew-phantom distance) is not used.
 
 - [x] **T13 — Integrated validation and owner review** (FR-1–FR-21; after T14–T17). *Done when:* all new and existing checks pass, compile exits 0 and the T5 real run is recorded. Owner GUI review is recorded on the Cornell set, and real IMAS is either performed or explicitly waived by the owner. Only then set the spec to `shipped`.
 
