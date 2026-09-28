@@ -914,13 +914,17 @@ def minimodule_layout(dataset: Dataset):
     A minimodule's centre is (mean fine X of its time channels, mean fine Y of
     its energy channels). Rows and columns are the distinct centres (within
     half a minimodule), so no shape is assumed and ``mM_disposition`` is not
-    used. Row 0 is the largest Y (top, as the flood map is viewed); column 0 is
-    the smallest X. Unpopulated minimodules keep their cell with
-    ``populated`` False.
+    used. IMAS: row 0 is the largest Y (top, as the flood map is viewed) and
+    column 0 the smallest X. Cornell (FR-21, the real-system orientation of
+    ``supermodule_layout``): local X is axial with Z = sm_z - (x - 48), so rows
+    run down with X (Z decreasing); local Y is tangential towards increasing
+    θ, so columns run right with Y. Unpopulated minimodules keep their cell
+    with ``populated`` False.
 
     Returns ``{sm: {"shape": (rows, cols), "cells": {mm: (row, col)},
     "centres": {mm: (x, y)}, "populated": {mm: bool}}}``.
     """
+    cornell = dataset.settings.system == "CORNELL"
     points = defaultdict(lambda: defaultdict(lambda: {"x": [], "y": []}))
     for ch, (sm, mm) in dataset.channel_modules.items():
         if ch not in dataset.coordinates or ch not in dataset.channel_types:
@@ -941,8 +945,12 @@ def minimodule_layout(dataset: Dataset):
         # half the smallest spread of one minimodule's channels separates neighbouring centres
         width = min(max(np.ptp(by_mm[mm]["x"]), np.ptp(by_mm[mm]["y"])) for mm in mms)
         tolerance = max(width / 2, 1e-6)
-        cols, ncols = _clusters(xs, tolerance)
-        rows, nrows = _clusters(-ys, tolerance)
+        if cornell:
+            rows, nrows = _clusters(xs, tolerance)
+            cols, ncols = _clusters(ys, tolerance)
+        else:
+            cols, ncols = _clusters(xs, tolerance)
+            rows, nrows = _clusters(-ys, tolerance)
         cells = {mm: (int(r), int(c)) for mm, r, c in zip(mms, rows, cols)}
         if len(set(cells.values())) != len(cells):
             raise ValueError(f"SM {sm}: minimodules share a grid cell; the map's centres are not a grid")
@@ -954,16 +962,21 @@ def minimodule_layout(dataset: Dataset):
 def supermodule_layout(dataset: Dataset):
     """SuperModule placement from the config geometry: ``(rows, cols, {sm: (row, col)})``.
 
-    Cornell: row = ring (SM within its cassette, ``sm % len(ring_z)``), column =
-    cassette (``sm // len(ring_z)``). IMAS: ring-major, ``len(ring_yx)``
-    SuperModules per ring. Moved from spec 001's GUI ``_layout``.
+    Cornell (FR-21): the unrolled cylinder of ``scripts_cornell``'s
+    ``sm_map_gen``. SM = z index + len(ring_z) x cassette; row = rank of the
+    SM's ``ring_z`` value, largest (top) first; column = rank of its
+    cassette's angle atan2(Y, X) of ``ring_yx`` in [0, 360), ascending.
+    IMAS: ring-major, ``len(ring_yx)`` SuperModules per ring (spec 001's GUI
+    ``_layout``).
     """
     config = dataset.config
     sms = sorted(set(dataset.expected_time) | set(dataset.expected_energy) | set(dataset.modules))
     ncols = max(len(config.get("ring_yx") or {}), 1)
     if dataset.settings.system == "CORNELL":
-        rings = len(config.get("ring_z") or [0, 1, 2])
-        cells = {sm: (sm % rings, sm // rings) for sm in sms}
+        z_rows, cassette_cols = _cornell_axes(config, sms)
+        rings = len(z_rows)
+        per_cassette = len(config.get("ring_z") or [0, 1, 2])
+        cells = {sm: (z_rows[sm % per_cassette], cassette_cols[sm // per_cassette]) for sm in sms}
         ncols = max(ncols, max((c for _, c in cells.values()), default=0) + 1)
     else:
         rings = max(len(config.get("ring_z") or []), 1)
@@ -972,6 +985,49 @@ def supermodule_layout(dataset: Dataset):
     if len(set(cells.values())) != len(cells):
         raise ValueError("SuperModules share a cell in the configured ring geometry")
     return rings, ncols, cells
+
+
+def _cornell_angles(config, sms):
+    """{cassette: θ in degrees [0, 360)} from ``ring_yx`` ([Y, X] per cassette); unconfigured ones after 360."""
+    per_cassette = len(config.get("ring_z") or [0, 1, 2])
+    ring_yx = {int(k): v for k, v in (config.get("ring_yx") or {}).items()}
+    angles = {}
+    for cassette in sorted({sm // per_cassette for sm in sms} | set(ring_yx)):
+        if cassette in ring_yx:
+            y, x = ring_yx[cassette]
+            angles[cassette] = float(np.degrees(np.arctan2(y, x))) % 360.0
+        else:
+            angles[cassette] = 360.0 + cassette
+    return angles
+
+
+def _cornell_axes(config, sms):
+    """Cornell rows {z index: row} (largest ``ring_z`` first) and columns {cassette: col} (θ ascending)."""
+    ring_z = list(config.get("ring_z") or [0, 1, 2][::-1])
+    z_rows = {z: row for row, z in enumerate(sorted(range(len(ring_z)), key=lambda i: -ring_z[i]))}
+    angles = _cornell_angles(config, sms)
+    cassette_cols = {c: col for col, c in enumerate(sorted(angles, key=lambda c: (angles[c], c)))}
+    return z_rows, cassette_cols
+
+
+def supermodule_axis_labels(dataset: Dataset):
+    """Tick labels and titles of the System Overview grid: ``(row_labels, col_labels, row_title, col_title)``."""
+    rings, ncols, _ = supermodule_layout(dataset)
+    config = dataset.config
+    if dataset.settings.system != "CORNELL":
+        return [str(r) for r in range(rings)], [str(c) for c in range(ncols)], "Ring", "Azimuthal SuperModule"
+    sms = sorted(set(dataset.expected_time) | set(dataset.expected_energy) | set(dataset.modules))
+    ring_z = list(config.get("ring_z") or [])
+    z_rows, cassette_cols = _cornell_axes(config, sms)
+    angles = _cornell_angles(config, sms)
+    rows = [""] * rings
+    for z, row in z_rows.items():
+        rows[row] = f"Z {ring_z[z]:+g} mm" if z < len(ring_z) else f"z {z}"
+    cols = [""] * ncols
+    for cassette, col in cassette_cols.items():
+        if col < ncols:
+            cols[col] = f"θ {angles[cassette]:.0f}°" if angles[cassette] < 360 else f"c {cassette}"
+    return rows, cols, "Axial Z (config ring_z)", "Cassette angle θ (config ring_yx)"
 
 
 RAW_FIT = {"status": "unavailable: raw a.u. (no keV calibration)", "mu": None, "resolution": None}

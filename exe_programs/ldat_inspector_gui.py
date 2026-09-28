@@ -35,7 +35,8 @@ from src.ldat_inspector import (
     unresolved_slab_pairs,
     fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
     minimodule_layout, minimodule_metrics, overview_grid, pair_dt, pair_mask, pair_matrix, process_file,
-    rate_series, pair_offset_series, supermodule_layout, system_channel_findings, uniformity,
+    rate_series, pair_offset_series, supermodule_axis_labels, supermodule_layout, system_channel_findings,
+    uniformity,
 )
 from src.ldat_memory import estimate_memory
 
@@ -2018,15 +2019,15 @@ class LDATWorkbench(ctk.CTk):
                       bbox={"facecolor": "#303438", "alpha": 0.55, "edgecolor": "none", "pad": 0.6})
         rows, cols = grid["sm_shape"]
         mm_rows, mm_cols = grid["mm_shape"]
-        cornell = self.dataset.settings.system == "CORNELL"
-        axis.set_xticks([c * (mm_cols + 1) + (mm_cols - 1) / 2 for c in range(cols)], [str(c) for c in range(cols)],
-                        fontsize=7)
-        axis.set_yticks([r * (mm_rows + 1) + (mm_rows - 1) / 2 for r in range(rows)], [str(r) for r in range(rows)],
-                        fontsize=7)
+        row_labels, col_labels, row_title, col_title = supermodule_axis_labels(self.dataset)
+        axis.set_xticks([c * (mm_cols + 1) + (mm_cols - 1) / 2 for c in range(cols)], col_labels, fontsize=7)
+        axis.set_yticks([r * (mm_rows + 1) + (mm_rows - 1) / 2 for r in range(rows)], row_labels, fontsize=7)
         axis.tick_params(length=0)
         for spine in axis.spines.values():
             spine.set_visible(False)
-        axis.set(xlabel="Cassette" if cornell else "Azimuthal SuperModule", ylabel="Ring")
+        if self.dataset.settings.system == "CORNELL":  # FR-21: unrolled cylinder, as scripts_cornell's geometry
+            col_title += " • in each SM: → local Y (θ), ↓ local X (−Z)"
+        axis.set(xlabel=col_title, ylabel=row_title)
         units = "keV" if self.dataset.settings.calibrated else "raw a.u."
         population = {"ingest": "all accepted sides, before display cuts",
                       "selected": f"paired energy + DOI + ROI cuts ({units})"}.get(
@@ -2049,7 +2050,8 @@ class LDATWorkbench(ctk.CTk):
                     frameon=False)
         if self._overview_pick in grid["cells"].values():
             self._highlight_tile(*self._overview_pick)
-        figure.subplots_adjust(left=0.03, right=1.0, top=0.93, bottom=0.12)
+        figure.subplots_adjust(left=0.07 if self.dataset.settings.system == "CORNELL" else 0.03,  # "Z +102 mm"
+                               right=1.0, top=0.93, bottom=0.12)
         self.overview_canvas.draw_idle()
 
     def _highlight_tile(self, sm, mm):
@@ -2253,13 +2255,14 @@ class LDATWorkbench(ctk.CTk):
     def _draw_overview_floods(self):
         """Per-SM flood maps placed by ``supermodule_layout``: COG/RTP (spec 001) or slab view."""
         rows, cols, placement = supermodule_layout(self.dataset)
+        oriented = self.dataset.settings.system == "CORNELL"  # FR-21: → local Y (θ), ↓ local X (−Z)
         self._overview_grid = self._overview_ax = None
         self.overview_fig.clear()
         axes = self.overview_fig.subplots(rows, cols, squeeze=False)
         selection = self._selection()
         slab = self._slab_active()
         extent = SLAB_EXTENT_MM if slab else 102.0
-        excluded, clipped, shown_total = Counter(), 0, 0
+        excluded, clipped, shown_total, floods = Counter(), 0, 0, []
         for sm, (row, col) in placement.items():
             axis = axes[row, col]
             data = self.dataset.modules.get(sm)
@@ -2274,17 +2277,31 @@ class LDATWorkbench(ctk.CTk):
                     clipped += view["clipped"]
                 shown_total += int(mask.sum())
                 if mask.any():
-                    counts, xedges, yedges = flood_counts(x[mask], y[mask], 28, extent,
-                                                          slab_x_edges(self.dataset, sm) if slab else None)
-                    cmap = matplotlib.colormaps["plasma"].copy()
-                    cmap.set_bad("white")
-                    axis.pcolormesh(xedges, yedges, counts, cmap=cmap, vmin=0.1)
+                    floods.append((axis, *flood_counts(x[mask], y[mask], 28, extent,
+                                                       slab_x_edges(self.dataset, sm) if slab else None)))
             axis.text(0.03, 0.97, str(sm), transform=axis.transAxes, va="top", fontsize=7,
                       bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none"})
+        # one absolute colour scale for every SM (owner review 2026-09-28): relative
+        # intensity across the system shows where the sources are; empty bins stay white
+        peak = max((float(counts.max()) for _, counts, _, _ in floods), default=1.0)
+        cmap = matplotlib.colormaps["plasma"].copy()
+        cmap.set_bad("white")
+        mesh = None
+        for axis, counts, xedges, yedges in floods:
+            if oriented:
+                mesh = axis.pcolormesh(yedges, xedges, counts.T, cmap=cmap, vmin=0.0, vmax=peak)
+            else:
+                mesh = axis.pcolormesh(xedges, yedges, counts, cmap=cmap, vmin=0.0, vmax=peak)
+        if mesh is not None:
+            bar = self.overview_fig.colorbar(mesh, cax=self.overview_fig.add_axes([0.955, 0.08, 0.01, 0.82]))
+            bar.set_label("sides per bin (one scale, all SMs)", fontsize=8)
+            bar.ax.tick_params(labelsize=7)
         for axis in axes.flat:
             axis.set_xticks([])
             axis.set_yticks([])
             axis.set_aspect("equal")
+            if oriented:
+                axis.set(xlim=(0, extent), ylim=(extent, 0))  # local X increases downward
         if slab:
             title = (f"Slab flood maps (decompressed Y, {Path(self.limits['cog'].path).name}) • "
                      f"{shown_total:,} sides passing the cuts • excluded: {_reasons(excluded)} • "
@@ -2293,8 +2310,11 @@ class LDATWorkbench(ctk.CTk):
             title = f"COG/RTP flood maps (spec 001 centroid) • {shown_total:,} sides passing the cuts"
             if self.dataset.settings.slab_rule != "legacy":
                 title += f" • {_slab_rule_note(self.dataset)}"
+        if oriented:
+            title += " • rows Z (+ at top), columns θ; in each SM → local Y, ↓ local X"
+        title += " • one colour scale for all SMs"
         self.overview_fig.suptitle(title, fontsize=9)
-        self.overview_fig.subplots_adjust(left=0.01, right=0.99, top=0.95,
+        self.overview_fig.subplots_adjust(left=0.01, right=0.94, top=0.95,
                                            bottom=0.02, wspace=0.08, hspace=0.07)
         self.overview_canvas.draw_idle()
 
@@ -2610,13 +2630,15 @@ class LDATWorkbench(ctk.CTk):
         cornell = dataset.settings.system == "CORNELL"
         limits = {kind: value if cornell else None for kind, value in self.limits.items()}
         slab = self._slab_active()
+        thresholds = self.thresholds
         self._log(f"Writing {'system' if sm is None else 'SM '+str(sm)} PDF in background...")
 
         def run():
             try:
                 from src.ldat_report import write_report
                 write_report(path, dataset, selection, sm=sm, target=target, tolerance_pct=tolerance,
-                             cog_limits=limits["cog"], doi_limits=limits["doi"], slab_flood=slab)
+                             cog_limits=limits["cog"], doi_limits=limits["doi"], slab_flood=slab,
+                             thresholds=thresholds)
                 self._events.put(("report", path))
             except Exception as exc:
                 self._events.put(("report_error", str(exc)))
