@@ -603,3 +603,14 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   **Owner sign-off 2026-09-28:** "everything now looks good, ready to ship" (orientation, report and absolute flood scale).
 
   **Verdict: PASS.** Every FR has a passing check and owner review; real IMAS is waived. Spec status set to `shipped`.
+
+## Change 3
+
+- [x] **T19 — Prefix choices up to the worker-result limit** (FR-22; Change 3). *Done when:* the GUI offers only the FR-22 choices (default 10k, disabled in whole-file mode); `Settings.validate` accepts 30 M and rejects 30 M + 1 and 0; the worst-case result size for 30 M is below 4 GiB; a real 30 M Cornell prefix returns through a spawn worker; whole files estimated above 30 M are listed in the estimate and refused before any worker starts, prefixes never are; the existing checks and the GUI compile still pass; the owner checks the combo box in the GUI.
+
+  **Reproduction 2026-09-28** (`Source_200microCi_60s_coincCompact.ldat`, 25.2 GB, raw mode): the whole file read in one process gives 99,273,393 pairs, 60,081,663 accepted, in 137 s; peak private 22.2 GB (peak working set 45.8 GB counts the mapped file). Its pickled result is 6.61 GB (55.0 B/side). Returning bytes from a spawn `ProcessPoolExecutor`: 1.5, 2.5, 3.9 GiB OK; 4.1 and 6 GiB fail with `OSError: [WinError 87] El parámetro no es correcto`, the GUI's error.
+
+  **Verified 2026-09-28:** `python scripts/ldat_pair_choices_check.py --real` → **PASS 12/12**: choices 10k … 30M parse, 30M = `MAX_PAIRS_PER_FILE`, validation bounds, worst case 59 B/side × 60 M sides = 3.54 GB, GUI combo box values/default/whole-file state, and the real 30 M prefix through a spawn worker: 18,111,524/30,000,000 accepted, 1.99 GB result. GUI compile exit 0; hidden GUI 29/29, engine/report 59/59, revision 14/14, processing 17/17. **Owner GUI check 2026-09-28:** the dropdown is OK; the owner asked to refuse whole files above 30 M.
+
+  **Verified 2026-09-28 (refusal):** `python scripts/ldat_pair_choices_check.py --real` → **PASS 19/19**. The new checks: a synthetic 140-pair file against a cap patched to 100 is listed whole but not as a prefix; the GUI estimate label shows the refusal, and `_confirm_and_launch` shows the error without starting workers; the real 25 GB file is refused whole ("Source_200microCi_60s_coincCompact.ldat ~100 M") and allowed as a 30 M prefix. GUI compile exit 0; hidden GUI 29/29, engine/report 59/59, revision 14/14, processing 17/17, scale 65/65. **Owner GUI check 2026-09-28:** "it looks fine and the error appears trying to process the whole file". Spec status set back to `shipped`.
+

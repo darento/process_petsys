@@ -60,6 +60,8 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 ### Processing orchestration (FR-2–FR-4)
 
 - `Settings.max_pairs = None` means whole file. The GUI gets a "Whole files" switch next to the pairs field; prefix mode keeps its label.
+- **Prefix choices (FR-22):** the pairs field is a read-only combo box of `PAIR_CHOICES` ("10k" … "30M"); `_pair_count` turns a choice into pairs. `MAX_PAIRS_PER_FILE = 30_000_000` in `src/ldat_inspector.py`, enforced by `Settings.validate`: 2 × 30 M sides × 59 B (55 B measured, 4 B more if calibration keys widen to int64) = 3.54 GB < 4 GiB. Writing worker results to disk was declined (Change 3).
+- **Whole files over the cap (FR-22):** `estimate_memory` records `over_cap` = (path, estimated pairs) for each file whose size / sampled bytes per pair exceeds `MAX_PAIRS_PER_FILE`, only when `max_pairs is None`. The GUI adds `over_cap_text()` in red to the estimate label, and `_confirm_and_launch` shows it as an error and does not start workers. The estimate is approximate; a file just over 30M is still below the 4 GiB limit (about 36M at 100 % acceptance).
 - Workers: `min(len(files), os.cpu_count() - 2)`. Each is a `ProcessPoolExecutor` process with an initializer that receives a shared cancel `Event` and a per-file progress `Array`. The kernel checks cancel between chunks.
 - **Cancel:** set the event, then `shutdown(wait=False, cancel_futures=True)`. The GUI keeps the previous dataset (or its empty state) and logs the cancel.
 - **Closing the window:** does the same, so close never waits for a whole-file worker.
@@ -227,6 +229,7 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 | 19 | `Settings.slab_rule`, `cornell_slab` oracle wrapper, kernel branch, `recovered_slab` flag, `slab_rule_text` |
 | 20 | `load_calibration_status`, origin codes, `fitted_factors_only`, view/report counts |
 | 21 | Cornell `supermodule_layout` / `minimodule_layout` orientation, `supermodule_axis_labels`, System Overview ticks and flood thumbnails |
+| 22 | `MAX_PAIRS_PER_FILE`, `Settings.validate`, GUI `PAIR_CHOICES` combo box, `_pair_count`, `MemoryEstimate.over_cap`, `_confirm_and_launch` refusal |
 | 15 | `scripts/ldat_scale_check.py`, `scripts/ldat_views_check.py`, existing four checks, owner review |
 
 ## Checks

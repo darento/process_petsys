@@ -18,6 +18,7 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
 - **FR-2** — WHEN the operator requests it, the inspector SHALL read entire files without a per-file pair cap, with retained per-side columns for every accepted pair. Before processing starts, the inspector SHALL show an estimated memory use for the selected files and pairs-per-file setting (from file sizes and sampled bytes per pair), warn when the estimate exceeds the available physical memory, and let the operator proceed or change the selection; the estimate SHALL be within ±25 % of the measured main-process peak on the six-file Cornell set. There is no fixed memory cap. Reduced column precision is allowed only where it cannot change a displayed or reported value beyond its printed precision. The prefix mode remains available and labelled.
 - **FR-3** — WHEN several files are selected, processing SHALL use the available CPU cores (leaving the UI responsive) instead of a fixed two-worker limit.
 - **FR-4** — WHEN processing is running, a Cancel action SHALL stop the workers, leave the previous dataset (or an empty state) intact, and log what was cancelled; closing the window SHALL not wait for full-file workers.
+- **FR-22** — WHEN the operator reads a prefix, the pairs per file SHALL be chosen from 10k, 100k, 1M, 2M, 5M, 10M, 20M and 30M (default 10k). 30M is the largest prefix whose per-file worker result stays below the 4 GiB Windows inter-process message limit even if every pair is accepted. In whole-file mode (FR-2), the pre-run estimate SHALL list every selected file whose estimated pair count exceeds 30M, and processing SHALL be refused with that list and the advice to read a prefix or split the acquisition into several files (Change 3).
 
 ### Channel status (first tab, RAWInspector "ADC Status" analogue)
 
@@ -101,3 +102,7 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
 
 - **FR-21 added** — owner, reviewing T9: "I would like to have the same orientation as in the real system". Checked against `cornell_lor_display.py` / `cornell_skew_cal_bigdata.py`: the T9 overview put Z vertically between SMs but local X (axial) horizontally inside them. The owner chose Z vertical / θ horizontal and kept the SuperModule-tab flood in local X/Y.
 - **Real IMAS waived** (owner, 2026-09-28: no IMAS data available). IMAS stays covered by synthetic fixtures on the real IMAS maps only.
+
+## Change 3 (owner request, approved 2026-09-28)
+
+- **FR-22 added** — reading the 25 GB Cornell `Source_200microCi_60s_coincCompact.ldat` whole failed with `[WinError 87] El parámetro no es correcto`. Measured: the file reads in one process (99.3 M pairs, 60.1 M accepted, 22.2 GB peak private memory), but its 6.61 GB result cannot be returned from a worker; a spawn-pool transfer fails above 4 GiB (3.9 GiB OK, 4.1 GiB fails). The owner declined workers writing results to disk (extra complexity; large acquisitions should be several files) and asked for prefix choices up to that limit instead of a free number with a 1 M cap. After checking the dropdown in the GUI (OK), the owner asked to refuse whole files above 30M pairs as well.

@@ -28,7 +28,10 @@ from src.utils import (KevConverter, get_maxEnergy_sm_mM, get_max_en_channel, ge
                        get_slab_cornell)
 
 
-MAX_PAIRS_PER_FILE = 1_000_000
+# Largest prefix (FR-22): a worker returns each file's result in one pickled message, and
+# Windows fails messages over 4 GiB ("[WinError 87]"). Sides take 55-62 B, so 30 M pairs
+# stay below 3.8 GB even if every pair is accepted.
+MAX_PAIRS_PER_FILE = 30_000_000
 # Cornell slab assignment when the two strongest time channels are not adjacent (FR-19).
 SLAB_RULES = {"legacy": "legacy (non-adjacent rejected)",
               "recover_non_adjacent": "recover non-adjacent (FR-19)"}

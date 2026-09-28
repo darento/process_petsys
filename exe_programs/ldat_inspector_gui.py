@@ -58,6 +58,8 @@ STEP_DEBOUNCE_MS = 150  # wheel and Page Up/Down redraw once the stepping pauses
 LIMITS_KINDS = {"cog": "COG limits", "doi": "DOI limits"}
 FLOOD_VIEWS = ("COG / RTP", "Slab (decompressed)")
 DOI_UNITS = ("Ratio", "Decompressed mm")
+# Prefix sizes offered per file (FR-22); the largest is MAX_PAIRS_PER_FILE.
+PAIR_CHOICES = ("10k", "100k", "1M", "2M", "5M", "10M", "20M", "30M")
 DOI_CUTS = {"Ratio": ("0", "15"), "Decompressed mm": ("0", "20")}  # the DOI cut resets with the unit
 DOI_MM_LABEL = "Decompressed DOI (mm-equivalent)"
 DOI_MM_NOTE = "linear light-sharing mapping,\nnot a validated depth"
@@ -70,6 +72,13 @@ def _entry(parent, variable, width=74):
     box = ctk.CTkEntry(parent, width=width, textvariable=variable)
     box.pack(side="left", padx=(3, 9))
     return box
+
+
+def _pair_count(text):
+    """Pairs for a choice such as "10k" or "2M" (plain integers too)."""
+    text = text.strip()
+    scale = {"k": 1_000, "M": 1_000_000}.get(text[-1:], 1)
+    return int(text[:-1] if scale > 1 else text) * scale
 
 
 def _label(parent, text):
@@ -159,7 +168,7 @@ class LDATWorkbench(ctk.CTk):
         self.whole_files = tk.BooleanVar(value=False)
 
         self.system = tk.StringVar(value="IMAS")
-        self.max_pairs = tk.StringVar(value="10000")
+        self.max_pairs = tk.StringVar(value=PAIR_CHOICES[0])
         self.min_channels = tk.StringVar(value="1")
         self.min_channel_energy = tk.StringVar(value="0")
         self.slab_rule = tk.StringVar(value=SLAB_RULE_CHOICES["legacy"])
@@ -304,15 +313,18 @@ class LDATWorkbench(ctk.CTk):
         _label(row, "System")
         ctk.CTkComboBox(row, values=["IMAS", "CORNELL"], variable=self.system,
                         state="readonly", width=120).pack(side="left", padx=8)
-        for text, var in (("Coincidence pairs / file", self.max_pairs),
-                          ("Min energy channels", self.min_channels),
+        r = ctk.CTkFrame(processing, fg_color="transparent")
+        r.pack(fill="x", padx=5)
+        ctk.CTkLabel(r, text="Coincidence pairs / file", width=174, anchor="w").pack(side="left")
+        self.max_pairs_entry = ctk.CTkComboBox(r, values=list(PAIR_CHOICES), variable=self.max_pairs,
+                                               state="readonly", width=74)
+        self.max_pairs_entry.pack(side="left", padx=(3, 9))
+        for text, var in (("Min energy channels", self.min_channels),
                           ("Min channel energy (a.u.)", self.min_channel_energy)):
             r = ctk.CTkFrame(processing, fg_color="transparent")
             r.pack(fill="x", padx=5)
             ctk.CTkLabel(r, text=text, width=174, anchor="w").pack(side="left")
-            box = _entry(r, var, width=74)
-            if var is self.max_pairs:
-                self.max_pairs_entry = box
+            _entry(r, var, width=74)
         r = ctk.CTkFrame(processing, fg_color="transparent")
         r.pack(fill="x", padx=5)
         ctk.CTkLabel(r, text="Slab rule", width=66, anchor="w").pack(side="left")
@@ -839,7 +851,7 @@ class LDATWorkbench(ctk.CTk):
         self._schedule_estimate()
 
     def _whole_files_changed(self):
-        self.max_pairs_entry.configure(state="disabled" if self.whole_files.get() else "normal")
+        self.max_pairs_entry.configure(state="disabled" if self.whole_files.get() else "readonly")
         self._schedule_estimate()
 
     def _slab_rule_key(self):
@@ -856,7 +868,7 @@ class LDATWorkbench(ctk.CTk):
 
     def _pairs_limit(self):
         """Pairs read per file, or None for whole files."""
-        return None if self.whole_files.get() else int(self.max_pairs.get())
+        return None if self.whole_files.get() else _pair_count(self.max_pairs.get())
 
     def _current_settings(self):
         settings = Settings(self.config_path, self.calibration_path, self.system.get(),
@@ -901,8 +913,11 @@ class LDATWorkbench(ctk.CTk):
 
     def _show_estimate(self, estimate):
         warn = estimate.exceeds_available
-        self.estimate_text.configure(text=estimate.text() + (" — exceeds free RAM" if warn else ""),
-                                     text_color="#c0392b" if warn else ("gray10", "gray90"))
+        text = estimate.text() + (" — exceeds free RAM" if warn else "")
+        if estimate.over_cap:
+            text += "\n" + estimate.over_cap_text()
+        self.estimate_text.configure(text=text, text_color="#c0392b" if warn or estimate.over_cap
+                                     else ("gray10", "gray90"))
 
     def _update_file_list(self):
         self.file_list.delete("1.0", "end")
@@ -934,6 +949,11 @@ class LDATWorkbench(ctk.CTk):
         """After the pre-run estimate: ask when it exceeds free RAM, then start."""
         if self._abort.is_set():
             self._processing_stopped("Processing cancelled before it started")
+            return
+        if estimate is not None and estimate.over_cap:
+            # A worker cannot return a result this large (FR-22), so the run would fail.
+            messagebox.showerror("Whole files", estimate.over_cap_text() + ".", parent=self)
+            self._processing_stopped(f"Processing not started: {estimate.over_cap_text()}")
             return
         if estimate is not None and estimate.exceeds_available and not messagebox.askyesno(
                 "Memory", f"{estimate.text()}.\n\nThe estimate exceeds the free physical memory. "

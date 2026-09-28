@@ -1,7 +1,8 @@
 """Memory figures and the pre-processing estimate for LDATInspector (spec 002, FR-2).
 
 The estimate is advisory: the operator sees it before processing and is warned
-when it exceeds the free physical memory. There is no fixed cap.
+when it exceeds the free physical memory. There is no fixed memory cap; whole
+files over the per-file pair cap (FR-22) are listed so they can be refused.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from pathlib import Path
 import sys
 
 import numpy as np
+
+from src.ldat_inspector import MAX_PAIRS_PER_FILE
 
 # Main-process bytes per detector side at the merge/calibration peak: 54 B of
 # stored columns, the merged copy of the column being filled, the int64 row map
@@ -99,6 +102,7 @@ class MemoryEstimate:
     acceptance_sampled: bool
     workers: int = 0
     worker_bytes: int = 0  # concurrent workers' private memory while reading
+    over_cap: tuple = ()   # whole files only: (path, estimated pairs) above MAX_PAIRS_PER_FILE
 
     @property
     def total(self) -> int:
@@ -115,6 +119,11 @@ class MemoryEstimate:
                    if self.workers else "")
         return (f"Estimated memory: {self.bytes / 1e9:.1f} GB{workers} for ~{self.pairs / 1e6:.2f} M pairs, "
                 f"~{self.sides / 1e6:.2f} M sides{basis}{free}")
+
+    def over_cap_text(self) -> str:
+        files = ", ".join(f"{Path(path).name} ~{pairs / 1e6:.0f} M" for path, pairs in self.over_cap)
+        return (f"Whole files unavailable above {MAX_PAIRS_PER_FILE / 1e6:.0f} M pairs per file ({files}): "
+                f"read a prefix or split the acquisition into several files")
 
 
 def _sample(path, settings):
@@ -144,7 +153,7 @@ def estimate_memory(paths, settings=None, max_pairs: int | None = None,
     worker figure assumes the largest files are read at the same time.
     """
     pairs = sides = 0
-    per_file = []
+    per_file, over_cap = [], []
     sampled = settings is not None
     for path in paths:
         size = Path(path).stat().st_size
@@ -154,6 +163,8 @@ def estimate_memory(paths, settings=None, max_pairs: int | None = None,
         if per_pair is None:
             continue
         in_file = size / per_pair
+        if max_pairs is None and in_file > MAX_PAIRS_PER_FILE:
+            over_cap.append((str(path), int(in_file)))
         read = in_file if max_pairs is None else min(in_file, max_pairs)
         pairs += read
         sides += 2 * read * accepted
@@ -165,4 +176,5 @@ def estimate_memory(paths, settings=None, max_pairs: int | None = None,
     baseline = working_set() or 0
     return MemoryEstimate(len(paths), int(pairs), int(sides),
                           int(baseline + sides * PEAK_BYTES_PER_SIDE), int(baseline),
-                          available_bytes(), sampled, workers, int(concurrent * WORKER_BYTES_PER_SIDE))
+                          available_bytes(), sampled, workers, int(concurrent * WORKER_BYTES_PER_SIDE),
+                          tuple(over_cap))
