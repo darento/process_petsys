@@ -1,6 +1,6 @@
 # Spec 002 — LDATInspector scale, channel status and minimodule views
 
-Status: `approved`
+Status: `shipped`
 
 Builds on shipped spec 001. Offline PETsys coincidence inspection only; the constitution is `AGENTS.md`. Reference UI: `process_cmb/exe_programs/RAWInspector.py` ("ADC Status", "System Overview", "Module Explorer"), adapted to what LDAT coincidence records support.
 
@@ -60,6 +60,17 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
 
 - **FR-20** — WHEN a Cornell energy calibration has a `_status.txt` sidecar (written by `scripts_cornell/cornell_slab_en_cal.py`), the inspector SHALL read each slab's factor origin (fitted, fitted-with-check, borrowed from slab 1/14, estimated from neighbours, estimated from minimodule median). It SHALL count the detector sides using each kind per SuperModule and in total, and show those counts in the energy view, Channel Status and report provenance. Unpopulated minimodules SHALL be shown as unpopulated, not as unavailable keV. Borrowed and estimated slabs SHALL be excludable from photopeak and uniformity measurements. Without a sidecar the origin SHALL be "unknown", never assumed fitted.
 
+### Cornell system orientation (owner request, approved 2026-09-28)
+
+- **FR-21** — WHEN viewing System Overview on a Cornell system, SuperModules and minimodule tiles SHALL be laid out as the unrolled cylinder of the config geometry used by `scripts_cornell/cornell_lor_display.py` and `cornell_skew_cal_bigdata.py` (`sm_map_gen`, `local_to_global`):
+  - rows follow axial Z from the config's `ring_z`, with +Z at the top;
+  - columns follow the cassette angle θ = atan2(Y, X) of `ring_yx`, increasing to the right;
+  - inside each SM, local X (axial, Z = sm_z − (x − 48)) runs downward and local Y (tangential, towards increasing θ) runs to the right;
+  - the axis labels give Z and θ, and the flood-map mode thumbnails use the same orientation;
+  - the flood-map mode thumbnails of every system share one absolute colour scale (0 to the system's peak bin) with one colour bar, so relative intensity across SMs shows the source position (owner, 2026-09-28). The metric modes already use one system-wide scale.
+
+  The SuperModule tab and PDF flood maps stay in local X/Y. The IMAS layout is unchanged. The placement is only as real as the config geometry (`cornell_full_system.yaml` marks `ring_r`/`ring_z`/`ring_yx` as a TODO until the cassette survey).
+
 ### Common
 
 - **FR-14** — WHEN any new view or report measurement is shown, it SHALL state its population (ingest vs display-cut), units, calibration and prefix/whole-file scope; the PDF reports SHALL include the new channel findings and minimodule summary.
@@ -85,3 +96,8 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
 - **Slab convention** — the scalar (`src/utils.py`) and vectorized (`src/utils_fixed.py`) `get_slab_cornell` disagree for two-adjacent-time-channel events. The owner chose a separate bug fix, with its own regression check, before T1; FR-17's slab X follows the convention the owner confirms there.
 - **Alternative slab algorithms** — the owner selected non-adjacent recovery (FR-19); weighted random and the classifier study are not in scope.
 - **FR-20 added** — estimated/borrowed calibration factors must stay distinguishable from fitted ones in the inspector (owner: "is there anything we can do with the keV unavailable?").
+
+## Change 2 (owner review, approved 2026-09-28)
+
+- **FR-21 added** — owner, reviewing T9: "I would like to have the same orientation as in the real system". Checked against `cornell_lor_display.py` / `cornell_skew_cal_bigdata.py`: the T9 overview put Z vertically between SMs but local X (axial) horizontally inside them. The owner chose Z vertical / θ horizontal and kept the SuperModule-tab flood in local X/Y.
+- **Real IMAS waived** (owner, 2026-09-28: no IMAS data available). IMAS stays covered by synthetic fixtures on the real IMAS maps only.

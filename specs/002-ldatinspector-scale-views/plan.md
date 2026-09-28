@@ -187,10 +187,20 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 ### Reports (FR-14)
 
-- Provenance says "whole file" or "prefix N pairs/file".
-- New system page: channel-findings table with thresholds.
-- Each SM page gets a per-minimodule table (ingest, selected, centroid, resolution, status).
-- All from the same engine functions as the GUI.
+- Provenance says "whole files (no pair limit)" or "prefix, max N coincidence pairs / file", and lists the channel-findings thresholds.
+- New system page(s), after the SuperModule summary: channel-findings table with thresholds, one row per SM in the report scope (34 rows per page), with the Channel Status tab's columns.
+- Each SM detail page is followed by a minimodule page: per-minimodule table (ingest, selected, fit sides, centroid, resolution, status; unpopulated minimodules marked from the config), then that SM's flagged channel IDs by state. Each page states its scope, energy units/calibration and populations.
+- `write_report(…, thresholds=)`; the GUI passes the Channel Status thresholds. Invalid thresholds are refused before writing.
+- All from the same engine functions as the GUI (`system_channel_findings`, `minimodule_metrics`, `minimodule_layout`).
+- Page count: 1 + ⌈SMs/32⌉ + ⌈SMs/34⌉ + 2 × SMs (Cornell system report: 63 pages; SM report: 5).
+
+### Cornell system orientation (FR-21)
+
+- `supermodule_layout` (Cornell): row = rank of the SM's `ring_z` value, largest first; column = rank of its cassette's angle atan2(Y, X) from `ring_yx`, in [0°, 360°) ascending. SM = z index + 3 × cassette, as in `sm_map_gen`.
+- `minimodule_layout` (Cornell): rows are the distinct minimodule-centre local X values ascending (Z decreasing downward); columns are local Y ascending (θ increasing). IMAS keeps rows = local Y descending, columns = local X.
+- `supermodule_axis_labels(dataset)` gives the row/column tick labels and axis titles: Cornell "Z +102 mm" / "θ 36°", "Axial Z (config ring_z)" / "Cassette angle θ (config ring_yx)"; IMAS "Ring" / "Azimuthal SuperModule" as before.
+- GUI: the System Overview ticks come from `supermodule_axis_labels`. Cornell flood thumbnails draw local Y horizontally and local X downward (transposed mesh, inverted y axis). Tile clicks follow `overview_grid`'s cells unchanged. The SuperModule tab and the PDF keep local X/Y.
+- Check: an independent recomputation of each minimodule centre's global Z and tangential offset from the scripts' `local_to_global` formula must order the composite's pixel rows (Z descending) and columns (θ, then tangential offset, ascending).
 
 ## Decisions and alternatives
 
@@ -216,6 +226,7 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 | 16–18 | `load_limits`, derived slab/decompressed columns, flood and DOI selectors, provenance |
 | 19 | `Settings.slab_rule`, `cornell_slab` oracle wrapper, kernel branch, `recovered_slab` flag, `slab_rule_text` |
 | 20 | `load_calibration_status`, origin codes, `fitted_factors_only`, view/report counts |
+| 21 | Cornell `supermodule_layout` / `minimodule_layout` orientation, `supermodule_axis_labels`, System Overview ticks and flood thumbnails |
 | 15 | `scripts/ldat_scale_check.py`, `scripts/ldat_views_check.py`, existing four checks, owner review |
 
 ## Checks

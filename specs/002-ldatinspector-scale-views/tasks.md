@@ -410,10 +410,11 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
     - on the real canvas the selector text was cut and the slab-flood note ran into the colorbar, so the label became "Slab rule" and the notes were shortened;
     - "Merged …" stopped being the status line, so the rule is now logged first.
   - **Other checks:** hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, unpopulated 6/6, slab convention 16/16, engine/report 59/59.
-  - **Owner review pending:**
-    - whether recovered sides need their own calibration: neighbour-recovered sides peak about 10 keV higher and wider on the legacy-built encal;
-    - whether the coin flip for ties / no neighbour is wanted;
-    - the recovery flag being shown as a warning rather than refusing a legacy calibration.
+  - **Owner review 2026-09-28:** the owner checked the real-file screenshots (`t16/`). The whole-SM energy resolution barely changes under the recover rule, because recovered sides are about 4 % of the total. The rule recovers extra sides (+8.7 % accepted pairs on `00000003`), which the owner expects to raise sensitivity; sensitivity itself was not measured.
+    - Not separately decided, so the current behaviour is kept:
+      - recovered sides use the legacy-built calibration;
+      - ties and sides without a fired neighbour are coin-flipped;
+      - a legacy calibration gets a warning rather than a refusal.
 
 - [x] **T17 — Estimated calibration factors in the inspector** (FR-20; with T12). *Done when:*
   - `ldat_views_check.py` loads a synthetic `.encal` with a `_status.txt` sidecar and counts sides using fitted, borrowed and estimated factors per SM exactly;
@@ -473,5 +474,132 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
 
 ## Reports and validation
 
-- [ ] **T12 — Reports and provenance** (FR-14). *Done when:* `pypdf` extraction of synthetic IMAS/Cornell PDFs finds whole-file/prefix scope, channel-findings thresholds and table, and per-minimodule tables matching the engine values, with raw-mode fits marked unavailable.
-- [ ] **T13 — Integrated validation and owner review** (FR-1–FR-20; after T14–T17). *Done when:* all new and existing checks pass, compile exits 0 and the T5 real run is recorded. Owner GUI review is recorded on the Cornell set, and real IMAS is either performed or explicitly waived by the owner. Only then set the spec to `shipped`.
+- [x] **T12 — Reports and provenance** (FR-14). *Done when:* `pypdf` extraction of synthetic IMAS/Cornell PDFs finds whole-file/prefix scope, channel-findings thresholds and table, and per-minimodule tables matching the engine values, with raw-mode fits marked unavailable.
+
+  **Verified 2026-09-28:** `python scripts/ldat_views_check.py` → **PASS 166/166** (14 new for T12); `--real` → **PASS 169/169**; GUI compile exit 0.
+  - **Code** (`src/ldat_report.py`):
+    - after the SuperModule summary, a channel-findings table (34 SMs per page);
+    - after each SM detail page, a minimodule page: the per-minimodule table, then the SM's flagged channel IDs by state;
+    - the provenance gives the scope ("whole files (no pair limit)" / "prefix, max N coincidence pairs / file") and the findings thresholds;
+    - `write_report(…, thresholds=)` refuses invalid thresholds, and the GUI passes the Channel Status thresholds.
+
+    The values come from `system_channel_findings`, `minimodule_metrics` and `minimodule_layout`, as in the GUI.
+  - **Findings pages** (T6 fixtures, raw, report thresholds low 0.04):
+    - every row equals the engine for all 30 Cornell and 120 IMAS SMs, and low 0.04 turns the LOW SM OK;
+    - findings pages: 1 for Cornell, 4 for IMAS; total pages equal 1 + ⌈n/32⌉ + ⌈n/34⌉ + 2n (63 and 249);
+    - the pages state the population ("… ingest population, before display cuts"), the scope, "not a dead/hot hardware verdict" and the thresholds, which also appear in the provenance;
+    - the mixed SM's page lists its not-observed and high channel IDs; with low 0.04 it lists no low channels. Its fits read unavailable (raw a.u.);
+    - the half-populated Cornell SM 2 has 8 "unpopulated (config)" rows and its unexpected hits.
+  - **Minimodule pages** (T8 fixtures, calibrated, prefix 5,000 pairs/file):
+    - in the SM 1 and system reports, every row (ingest, selected, fit sides, centroid, resolution, status) equals `minimodule_metrics`;
+    - SM 1 mM 3 reads insufficient events; "Fitted minimodules: k/16 populated"; SM 2 has 8 unpopulated rows;
+    - each page states the prefix scope, "keV with synthetic.encal", the selected population (both energies 400..650 keV, DOI, ROI) and "energy window off";
+    - raw SM 0: the counts are kept and all 16 fits read "unavailable: raw a.u. (no keV calibration)".
+  - **Mutation checks** (scratch `t12_mutate.py`), each caught:
+    - findings ignoring the report thresholds: 4 fail;
+    - selected column showing ingest: 3;
+    - scope always whole files: 2;
+    - unpopulated minimodules shown as populated: 2;
+    - fits dropped: 5.
+
+    Unmodified, none fail.
+  - **Found while checking** (real PDF read back):
+    - the calibration file name ran off the minimodule page, so header lines wrap at 140 characters;
+    - the T17 "keV factor sides" line on the SM detail page ran into the energy plot, so that panel wraps at 80 characters;
+    - an SM report under the legacy rule labelled the all-file unresolved-slab count "(SM n)". It now reads "(all files; pairs, not per SM)", pinned by a new check.
+  - **Real Cornell** (`00000003` whole file, 3,853,684 sides, resolved encal, 400–650 keV, DOI 0–15; recorded, not a pass criterion):
+    - the system PDF has 63 pages and takes 19.9 s (background thread in the GUI); the SM 12 PDF has 5 pages and takes 1.4 s;
+    - SM 12: 16/16 minimodules fitted (506.5–521.3 keV); findings NOT OBSERVED with time 262457/262624/262648, energy 262422 and low 262413, matching the Channel Status tab;
+    - files are in the session scratchpad `t12/`.
+  - **Changed spec 001 checks** (page counts only): SM reports have 5 pages instead of 3 (`ldat_inspector_check.py`, `ldat_gui_check.py`, `ldat_real_check.py`). The Cornell full report has 3 + 2 × 30 pages instead of 2 + 30.
+  - **Other checks:**
+    - engine/report 59/59, hidden GUI 29/29, revision 14/14, issue 8/8 (`--real` 8/8), processing 17/17;
+    - scale 65/65 (`--real` 15/15, `--whole` 9/9), unpopulated 6/6 (`--real` 8/8), slab convention 16/16, slab calibration 15/15;
+    - `ldat_real_check.py` PASS on the six-file prefix.
+  - **Owner review 2026-09-28:** content OK. On a six-file SM report, the SM detail page's info text ran into the DOI histogram (owner screenshot).
+  - **Follow-up fix (owner item 9):**
+    - **Red:** a new check in `ldat_views_check.py` renders the SM report of a ten-file fixture with long paths (the real six-file set overflows the same way). It fails with the info text over "Selected DOI" and text off the provenance and minimodule pages. The real six-file PDF also showed that provenance lines for files [3]–[5] were cut off the bottom of page 1 (a spec 001 layout limit).
+    - **Fix:**
+      - the per-file timestamp spans moved to the SM's minimodule page, one line per file, so the detail page's info panel has a fixed length;
+      - text pages (provenance, minimodule) shrink to at least 6 pt and then continue on "(continued)" pages. A page break never splits a wrapped entry: a mutation that allows it fails the check.
+    - **Green:** views 170/170 (`--real` 173/173). The real six-file SM 0 PDF has 6 pages (provenance continues onto page 2) and lists all six files. `ldat_real_check.py` now requires every input file in the SM PDF and accepts continuation pages (6 pages on the six-file prefix).
+- [x] **T18 — Cornell System Overview in the real-system orientation** (FR-21; Change 2). *Done when:*
+  - `ldat_views_check.py` recomputes every Cornell minimodule centre's global Z and tangential offset with the formula of `cornell_lor_display.py:local_to_global` / `sm_map_gen` from the config. Across the composite, a lower pixel row always means a smaller Z, and a pixel column further right means a larger (θ, tangential offset). SM 2 is at the top-left, SM 0 at the bottom-left and SM 29 at the top-right;
+  - IMAS placement and minimodule orientation are unchanged, equal to T8/T9;
+  - the hidden GUI shows Z / θ ticks and titles, a canvas click still resolves each tile to its (SM, mM), and Cornell flood thumbnails draw local Y horizontally with local X increasing downward;
+  - the T8/T9 checks that pinned the old Cornell orientation are updated and noted.
+
+  **Red baseline:** after the engine change, exactly the 4 checks pinning the old Cornell orientation failed (163/167): the T8 flood-map orientation and spec 001 placement, the T9 "SM 4 mM 0 at (5, 8)" and the canvas click.
+
+  **Verified 2026-09-28:** `python scripts/ldat_views_check.py` → **PASS 170/170**; `--real` → **PASS 173/173**; GUI compile exit 0.
+  - **Engine:**
+    - `supermodule_layout`: Cornell rows by `ring_z`, largest first; columns by the cassette angle atan2(Y, X) of `ring_yx`;
+    - `minimodule_layout`: Cornell rows follow local X, columns local Y;
+    - new `supermodule_axis_labels`.
+
+    **GUI:** the overview ticks and titles, and the flood thumbnails (transposed mesh, local X downward).
+  - **Geometry check:** each of the 480 Cornell tiles gets (Z, θ, tangential offset) recomputed with `local_to_global`'s formula (Z = sm_z + 48 − x, offset = y − 48, θ from `ring_yx`):
+    - every lower pixel row has a smaller Z, and every column further right a larger (θ, offset);
+    - rows share Z and columns share θ and offset within 0.5 mm;
+    - SM 2 is at the top-left (0, 0), SM 0 at (10, 0), SM 29 at (0, 45) and SM 27 at (10, 45). SM 0's grid, top to bottom: `[15 11 7 3] [14 10 6 2] [13 9 5 1] [12 8 4 0]`;
+    - labels: "Z +102 mm / Z +0 mm / Z -102 mm" and "θ 0°" … "θ 324°".
+  - **IMAS unchanged:** the flood-map orientation and spec 001 placement checks still pass.
+  - **Hidden GUI:**
+    - ticks and titles read Z and θ, and the x label gives "→ local Y (θ), ↓ local X (−Z)";
+    - clicks at (8, 8) → SM 4 mM 0 and (12, 2) → SM 0 mM 5;
+    - SM 0's flood thumbnail mesh equals `flood_counts(…)` transposed (not symmetric), with y limits (102, 0).
+  - **Changed checks:** the T8/T9 Cornell expectations above now use the new pixels. SM 4 mM 0 is (8, 8) (was (5, 8)), SM 0's origin is (10, 0) (was (0, 0)), and the second click is (12, 2) (was (1, 2)).
+  - **Mutation checks** (scratch `t18_mutate.py`), each caught with 3 failing checks:
+    - Cornell minimodules in the IMAS orientation;
+    - Z ascending;
+    - θ = atan2(X, Y).
+
+    Unmodified, none fail.
+  - **Found while checking:** on the real canvas the "Z +102 mm" ticks were clipped, so the Cornell left margin is 0.07.
+  - **Real Cornell** (`00000003` whole file, resolved encal; screenshots in the session scratchpad `t18/`: `overview_centroid.png`, `overview_ingest.png`, `overview_flood.png`): the half-populated SMs (Z = +102) show their unpopulated half at the outer axial end (top) in both the tiles and the flood thumbnails.
+  - **Other checks:** engine/report 59/59, hidden GUI 29/29, revision 14/14, issue 8/8 (`--real` 8/8), processing 17/17, scale 65/65 (`--real` 15/15, `--whole` 9/9), unpopulated 6/6 (`--real` 8/8), slab convention 16/16, slab calibration 15/15, `ldat_real_check.py` PASS.
+  - **Owner review 2026-09-28:** the orientation and the report look fine.
+  - **Follow-up: absolute flood-mode colour scale** (owner: "I would like to see it absolute so the colormap gives an idea on the source position"):
+    - the metric modes were already one system-wide scale; flood mode autoscaled each SM thumbnail separately and had no colour bar;
+    - **red:** a new hidden-GUI check found three different scales ((0.1, 18), (0.1, 24), (0.1, 31)) and no colour bar;
+    - **fix:** every thumbnail uses vmin 0, vmax = the system's peak bin, with one colour bar "sides per bin (one scale, all SMs)" and "one colour scale for all SMs" in the title. This applies to COG/RTP and slab views on both systems;
+    - **green:** views 171/171 (`--real` 174/174). All other checks unchanged. Real screenshot: `t18/overview_flood.png`.
+  - **Caveat:** the placement follows `cornell_full_system.yaml`, whose `ring_r`/`ring_z`/`ring_yx` are marked TODO until the cassette survey.
+
+- [x] **T13 — Integrated validation and owner review** (FR-1–FR-21; after T14–T17). *Done when:* all new and existing checks pass, compile exits 0 and the T5 real run is recorded. Owner GUI review is recorded on the Cornell set, and real IMAS is either performed or explicitly waived by the owner. Only then set the spec to `shipped`.
+
+  **Automated part, 2026-09-28** (after T12, the item 9 fix, T18 and the absolute flood scale): every check passes and compile exits 0.
+  - views 171/171 (`--real` 174/174), scale 65/65 (`--real` 15/15), engine/report 59/59, hidden GUI 29/29, revision 14/14, issue 8/8 (`--real` 8/8), processing 17/17, unpopulated 6/6 (`--real` 8/8), slab convention 16/16, slab calibration 15/15, `ldat_real_check.py` PASS;
+  - T5 re-run: `ldat_scale_check.py --whole` **9/9** on the six whole Cornell files.
+
+  **Owner review 2026-09-28** (Cornell set, GUI):
+  - **Real IMAS:** waived (no IMAS data available; spec Change 2).
+  - **Channel Status (T7):** OK. The time/energy channel map on a clicked SM is very clear, and "Open in SuperModule" works.
+  - **System Overview (T9):** readable and working. The owner asked for the real-system orientation, which became FR-21 / T18.
+  - **SuperModule tab (T10):** stepping smooth; the summary and table are well placed and readable.
+  - **Coincidences (T11):** OK.
+  - **Slab flood and mm DOI (T15):** OK. The four T15 design choices (display-only COG file, ROI on COG/RTP, exclusions among sides passing the cuts, one column per slab) are accepted.
+  - **T17:** the defaults (fitted only off in the views and on in uniformity, "fitted (check)" counted as fitted) and a malformed sidecar rejecting the calibration are accepted.
+  - **PDF (T12):** content OK; text overlapped the DOI histogram on a six-file SM report. Fixed (T12 follow-up).
+
+  **FR walk** (✓ = automated check passes; *owner* = GUI review still open):
+
+  | FR | Evidence | State |
+  | --- | --- | --- |
+  | 1 | T2: 41× single core, fast = reference; T5: six whole files in 11.6 s | ✓ |
+  | 2 | T3 62 B/side; T4 whole-file mode, estimate and warning; T5 main −3.7 %, workers −0.8 % | ✓ |
+  | 3, 4 | T4: 4 workers; Cancel 0.03 s with the previous dataset kept; close 0.36 s | ✓ |
+  | 5–7 | T6 exact states, boundaries and insufficient; T7 tab | ✓, owner OK |
+  | 8, 9 | T8 derived grids; T9 tiles, click, Open SM, non-blocking | ✓, owner OK |
+  | 10, 13 | T10 stepping, summary, minimodule table; T8 fits = `fit_peak` | ✓, owner OK |
+  | 11, 12 | T11 partner SM/mM, exact matrix, Δt | ✓, owner OK |
+  | 14 | view labels (T7–T17); T12 PDF scope, findings, minimodule tables, no overflow | ✓, owner OK |
+  | 15 | synthetic IMAS/Cornell fixtures in every task; real Cornell whole files (T5) | ✓; real IMAS waived |
+  | 16–18 | T14 limits engine; T15 selectors and PDF | ✓, owner OK |
+  | 19 | T16 | ✓, owner OK |
+  | 20 | T17 | ✓, owner OK |
+  | 21 | T18 geometry check against the scripts' `local_to_global`; one absolute flood scale | ✓, owner OK (orientation); owner OK (orientation and absolute flood scale) |
+
+  **Owner sign-off 2026-09-28:** "everything now looks good, ready to ship" (orientation, report and absolute flood scale).
+
+  **Verdict: PASS.** Every FR has a passing check and owner review; real IMAS is waived. Spec status set to `shipped`.
