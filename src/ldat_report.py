@@ -12,7 +12,7 @@ import numpy as np
 
 from src.ldat_inspector import (SLAB_EXTENT_MM, TIMESTAMP_SECONDS, Selection, channel_status, factor_origins,
                                 fit_on_display_bins, flood_counts, slab_origins, slab_totals, slab_view,
-                                slab_x_edges, uniformity, unresolved_slab_pairs)
+                                slab_rule_text, slab_x_edges, uniformity, unresolved_slab_pairs)
 
 
 def report_rows(dataset, selection: Selection, target=511.0, tolerance_pct=10.0):
@@ -114,6 +114,8 @@ def _provenance(dataset, selection, limits=None, slab_flood=False, only_sm=None)
         f"per-channel >= {settings.min_channel_energy:g} a.u.; "
         + ("whole files (no pair limit)" if settings.max_pairs is None
            else f"max {settings.max_pairs:,} coincidence pairs / file"),
+        *([slab_rule_text(dataset, None if only_sm is None else {only_sm})
+           + ("" if only_sm is None else f" (SM {only_sm})")] if settings.system == "CORNELL" else []),
         f"Display: BOTH detector energies {selection.energy_low:g}..{selection.energy_high:g} "
         f"{'keV' if settings.calibrated else 'a.u.'}; "
         f"DOI {'mm' if dataset.doi_mm else 'ratio'} {selection.doi_low:g}..{selection.doi_high:g}",
@@ -126,7 +128,9 @@ def _provenance(dataset, selection, limits=None, slab_flood=False, only_sm=None)
         *_origin_lines(dataset, selection, only_sm),
         ("No singles data in this LDAT input; decompressed DOI is a linear light-sharing mapping, not a validated depth."
          if dataset.doi_mm else "No singles data in this LDAT input; DOI is a light-sharing ratio, not depth in mm."),
-        *(["Cornell one-time-channel slabs retain the legacy random neighbour assignment before keV calibration."]
+        *(["Cornell one-time-channel slabs retain the legacy random neighbour assignment before keV calibration"
+           + ("; so do FR-19 recovered sides with a neighbour tie or no fired neighbour."
+              if settings.slab_rule != "legacy" else ".")]
           if settings.system == "CORNELL" and settings.calibrated else []),
         "Timestamps are PETsys picoseconds; within-file spans only, never merged live time.",
         *paths,

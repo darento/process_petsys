@@ -146,9 +146,21 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 
 ### Non-adjacent slab recovery (FR-19)
 
-- `Settings.slab_rule`: `"legacy"` (default) or `"recover_non_adjacent"`. It is an ingest setting, because accepted pairs change; switching rules re-reads the files.
-- Reference oracle: a wrapper around the fixed `get_slab_cornell` applies the FR-19 branches before falling back to it. The fast kernel mirrors the same branches, and the oracle comparison covers both rules.
-- A `recovered_slab` flag column (bool, 1 B/side) feeds the counts and flags calibration mismatch.
+- `Settings.slab_rule`: `"legacy"` (default) or `"recover_non_adjacent"` (`SLAB_RULES`). It is an ingest setting, because accepted pairs change; switching rules re-reads the files. IMAS ignores it, and the GUI always sends `"legacy"` for IMAS.
+- Reference oracle: `cornell_slab(selected, channel_types, coordinates, rule)` returns the fixed `get_slab_cornell` result unchanged, except that under the recover rule it resolves the unresolved case (slab None) with the FR-19 branches:
+  - the neighbours are the time hits at positions p−1 and p+1 in the selected minimodule (after the per-channel cut);
+  - a tie or no neighbour uses the legacy coin flip (flag 1, so `random_slab` is set);
+  - edges never reach it, because `get_slab_cornell` applies its edge rule first.
+- The fast kernel mirrors the same branches, and the oracle comparison covers both rules. For a coin-flipped side only the slab pair must match, as for one time channel.
+- A formerly unresolved pair can still fail a later check on its other side (13 `ValueError` pairs on the 80,000-pair prefix). So recovery changes the accepted count by the unresolved count minus those.
+- A `recovered_slab` flag column (bool, 1 B/side; 63 B/side with keV) gives `recovered_slab_sides(dataset, sms)`. `slab_rule_text(dataset, sms)` gives the rule, its count (unresolved pairs for legacy, recovered sides and share for recover) and, under recover, the warning that keV calibrations and limits files built under the legacy rule may be inconsistent for recovered sides. The inspector cannot know how an `.encal` was built, and every existing Cornell calibration and limits script rejects these sides.
+- **GUI:**
+  - a "Slab rule" selector in the Processing card: Legacy (reject) / Recover non-adjacent, Cornell only, with a tooltip;
+  - changing it with data loaded logs that it applies on the next Process;
+  - the log gives `slab_rule_text` after processing;
+  - the SM summary has a "Slab rule" line and, under recover, the SM's recovered sides with a "legacy-built keV/limits" note;
+  - the slab-flood note and the overview title give "legacy rule: N unresolved pairs rejected" or "recover rule: N recovered sides". The COG overview title adds it only under recover.
+- **Reports:** the provenance adds `slab_rule_text` in the report's scope after the ingest cuts. The calibrated one-time-channel note adds the FR-19 coin flips under recover.
 
 ### Calibration factor provenance (FR-20)
 
@@ -202,7 +214,7 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 | 11, 12 | Partner column, `pair_matrix`, `pair_dt`, Coincidences tab |
 | 14 | View labels, `ldat_report` pages |
 | 16–18 | `load_limits`, derived slab/decompressed columns, flood and DOI selectors, provenance |
-| 19 | `Settings.slab_rule`, oracle wrapper, kernel branch, `recovered_slab` flag |
+| 19 | `Settings.slab_rule`, `cornell_slab` oracle wrapper, kernel branch, `recovered_slab` flag, `slab_rule_text` |
 | 20 | `load_calibration_status`, origin codes, `fitted_factors_only`, view/report counts |
 | 15 | `scripts/ldat_scale_check.py`, `scripts/ldat_views_check.py`, existing four checks, owner review |
 

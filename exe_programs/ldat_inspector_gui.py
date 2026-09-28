@@ -28,7 +28,8 @@ import numpy as np
 from src.ldat_fastread import init_worker
 from src.ldat_inspector import (
     FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
-    SLAB_EXTENT_MM, FileResult, FindingThresholds, Selection, Settings, apply_calibration, apply_doi_view,
+    SLAB_EXTENT_MM, SLAB_RULES, FileResult, FindingThresholds, Selection, Settings, apply_calibration,
+    apply_doi_view, recovered_slab_sides, slab_rule_text,
     channel_findings, channel_geometry, decompressed_doi, factor_origins, load_limits, slab_origins, slab_view,
     slab_x_edges,
     unresolved_slab_pairs,
@@ -86,6 +87,19 @@ ORIGIN_SHORT = {"fitted": "fitted", "fitted (check)": "check", "borrowed": "borr
 
 def _origins_text(counts, sep=" • "):
     return sep.join(f"{ORIGIN_SHORT[name]} {counts[name]:,}" for name in ORIGIN_SHORT if counts.get(name))
+
+
+# Cornell slab rule choices (FR-19): Settings.slab_rule -> Processing card label.
+SLAB_RULE_CHOICES = {"legacy": "Legacy (reject)", "recover_non_adjacent": "Recover non-adjacent"}
+
+
+def _slab_rule_note(dataset, sms=None):
+    """One-line slab rule label for plots (FR-19); empty for IMAS."""
+    if dataset.settings.system != "CORNELL":
+        return ""
+    if dataset.settings.slab_rule == "legacy":
+        return f"legacy rule: {unresolved_slab_pairs(dataset):,} unresolved pairs rejected"
+    return f"recover rule: {recovered_slab_sides(dataset, sms):,} recovered sides"
 
 
 class _Tooltip:
@@ -147,6 +161,7 @@ class LDATWorkbench(ctk.CTk):
         self.max_pairs = tk.StringVar(value="10000")
         self.min_channels = tk.StringVar(value="1")
         self.min_channel_energy = tk.StringVar(value="0")
+        self.slab_rule = tk.StringVar(value=SLAB_RULE_CHOICES["legacy"])
         self.module_var = tk.StringVar()
         self.energy_low = tk.StringVar(value="400")
         self.energy_high = tk.StringVar(value="650")
@@ -220,8 +235,9 @@ class LDATWorkbench(ctk.CTk):
         self._build_tabs()
         self._drawers = {SM_TAB: self._refresh_selected, "System Overview": self._draw_overview,
                          COINC_TAB: self._draw_coincidences, "Timestamps": self._draw_timestamps}
-        self.system.trace_add("write", lambda *_: self._update_limits_controls())
+        self.system.trace_add("write", lambda *_: (self._update_limits_controls(), self._update_slab_rule_control()))
         self._update_limits_controls()
+        self._update_slab_rule_control()
         self._log("Select an IMAS or Cornell config and LDAT files; calibration can be applied later.")
         self.bind("<Control-o>", lambda _: self._select_files())
         self.bind("<Control-p>", lambda _: self._start_processing())
@@ -296,6 +312,17 @@ class LDATWorkbench(ctk.CTk):
             box = _entry(r, var, width=74)
             if var is self.max_pairs:
                 self.max_pairs_entry = box
+        r = ctk.CTkFrame(processing, fg_color="transparent")
+        r.pack(fill="x", padx=5)
+        ctk.CTkLabel(r, text="Slab rule", width=66, anchor="w").pack(side="left")
+        self.slab_rule_combo = ctk.CTkComboBox(r, values=list(SLAB_RULE_CHOICES.values()), variable=self.slab_rule,
+                                               state="readonly", width=182, command=self._slab_rule_changed)
+        self.slab_rule_combo.pack(side="left")
+        _Tooltip(self.slab_rule_combo, "Cornell slab rule, an ingest setting (FR-19) applied by Process files. "
+                 "Legacy rejects a Cornell "
+                 "side whose two strongest time channels are not adjacent. Recover assigns it from the strongest "
+                 "channel's fired neighbours (tie or none: random, as for one time channel). Calibrations and "
+                 "limits files built under the legacy rule may not fit recovered sides.")
         self.whole_switch = ctk.CTkSwitch(processing, text="Whole files (no pair limit)",
                                           variable=self.whole_files, command=self._whole_files_changed)
         self.whole_switch.pack(anchor="w", padx=10, pady=(2, 0))
@@ -314,7 +341,7 @@ class LDATWorkbench(ctk.CTk):
                                           anchor="w", justify="left", wraplength=240,
                                           font=("Arial", 11))
         self.estimate_text.pack(fill="x", padx=10, pady=(0, 5))
-        for var in (self.max_pairs, self.min_channels, self.min_channel_energy):
+        for var in (self.max_pairs, self.min_channels, self.min_channel_energy, self.slab_rule):
             var.trace_add("write", lambda *_: self._schedule_estimate())
 
         actions = self._card(top, "Analysis and reports", width=170)
@@ -814,6 +841,18 @@ class LDATWorkbench(ctk.CTk):
         self.max_pairs_entry.configure(state="disabled" if self.whole_files.get() else "normal")
         self._schedule_estimate()
 
+    def _slab_rule_key(self):
+        return next(key for key, label in SLAB_RULE_CHOICES.items() if label == self.slab_rule.get())
+
+    def _update_slab_rule_control(self):
+        """The slab rule applies to Cornell only."""
+        self.slab_rule_combo.configure(state="readonly" if self.system.get() == "CORNELL" else "disabled")
+
+    def _slab_rule_changed(self, _choice=None):
+        if self.dataset and self._slab_rule_key() != self.dataset.settings.slab_rule:
+            self._log(f"Slab rule {self.slab_rule.get()} applies when the files are processed again; the loaded "
+                      f"data uses {SLAB_RULES[self.dataset.settings.slab_rule]}")
+
     def _pairs_limit(self):
         """Pairs read per file, or None for whole files."""
         return None if self.whole_files.get() else int(self.max_pairs.get())
@@ -821,7 +860,8 @@ class LDATWorkbench(ctk.CTk):
     def _current_settings(self):
         settings = Settings(self.config_path, self.calibration_path, self.system.get(),
                             self._pairs_limit(), int(self.min_channels.get()),
-                            float(self.min_channel_energy.get()), self.calibrated.get())
+                            float(self.min_channel_energy.get()), self.calibrated.get(),
+                            self._slab_rule_key() if self.system.get() == "CORNELL" else "legacy")
         settings.validate()
         return settings
 
@@ -1073,6 +1113,8 @@ class LDATWorkbench(ctk.CTk):
         self._update_origin_controls()
         self._reset_energy_range()
         successful = [f for f in dataset.files if f.success]
+        if dataset.settings.system == "CORNELL":
+            self._log(slab_rule_text(dataset))
         self._log(f"Merged {sum(f.pairs_accepted for f in successful):,} coincidence pairs, "
                   f"{sum(map(len, dataset.modules.values())):,} detector sides, "
                   f"{len(successful)}/{len(dataset.files)} successful files")
@@ -1333,7 +1375,7 @@ class LDATWorkbench(ctk.CTk):
                               title=f"Slab flood • SM {sm}")
             self.flood_ax.text(0.01, 0.01, f"{int(shown.sum()):,} of {int(chosen.sum()):,} sides; 1 column/slab\n"
                                f"excluded: {_reasons(view['excluded'])} • clipped to row {view['clipped']:,}\n"
-                               f"{unresolved_slab_pairs(self.dataset):,} unresolved-slab pairs rejected at ingest\n"
+                               f"{_slab_rule_note(self.dataset, {sm})}\n"
                                "ROI cut and region selection: COG/RTP coordinates",
                                transform=self.flood_ax.transAxes, fontsize=7, bbox=_NOTE_BOX)
         else:
@@ -2246,10 +2288,11 @@ class LDATWorkbench(ctk.CTk):
         if slab:
             title = (f"Slab flood maps (decompressed Y, {Path(self.limits['cog'].path).name}) • "
                      f"{shown_total:,} sides passing the cuts • excluded: {_reasons(excluded)} • "
-                     f"clipped to row {clipped:,} • {unresolved_slab_pairs(self.dataset):,} unresolved-slab pairs "
-                     "rejected at ingest")
+                     f"clipped to row {clipped:,} • {_slab_rule_note(self.dataset)}")
         else:
             title = f"COG/RTP flood maps (spec 001 centroid) • {shown_total:,} sides passing the cuts"
+            if self.dataset.settings.slab_rule != "legacy":
+                title += f" • {_slab_rule_note(self.dataset)}"
         self.overview_fig.suptitle(title, fontsize=9)
         self.overview_fig.subplots_adjust(left=0.01, right=0.99, top=0.95,
                                            bottom=0.02, wspace=0.08, hspace=0.07)
@@ -2334,6 +2377,7 @@ class LDATWorkbench(ctk.CTk):
                  f"  Selected sides  {selected:>11,}  (energy + DOI + ROI, {units})",
                  f"  Minimodules seen {len(seen & expected)}/{len(expected)} expected"
                  + (f"; {len(seen - expected)} unpopulated with sides" if seen - expected else ""),
+                 *self._slab_rule_summary(sm, ingest),
                  *self._origin_summary(origins, selection),
                  "", "CHANNEL FINDINGS",
                  f"  {FINDINGS_POPULATION}, before display cuts"]
@@ -2362,6 +2406,18 @@ class LDATWorkbench(ctk.CTk):
         self.sm_summary.delete("1.0", "end")
         self.sm_summary.insert("end", "\n".join(lines))
         self._draw_mm_table(sm, selection)
+
+    def _slab_rule_summary(self, sm, ingest):
+        """Summary lines: the Cornell slab rule and this SM's recovered sides (FR-19)."""
+        settings = self.dataset.settings
+        if settings.system != "CORNELL":
+            return []
+        if settings.slab_rule == "legacy":
+            return ["  Slab rule       legacy (non-adjacent rejected)"]
+        recovered = recovered_slab_sides(self.dataset, {sm})
+        share = f"{100 * recovered / ingest:.1f} % of SM; " if ingest else ""
+        return ["  Slab rule       recover non-adjacent",
+                f"  Recovered sides {recovered:>11,}  ({share}legacy-built keV/limits)"]
 
     def _origin_summary(self, origins, selection):
         """Summary lines: keV factor origins of the energy plot's sides (FR-20)."""

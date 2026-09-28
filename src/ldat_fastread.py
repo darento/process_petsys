@@ -17,8 +17,9 @@ order:
 Known differences: exact ties between minimodule energies are broken by hit
 order instead of Python set order (counted in ``max_energy_ties``), and the
 Cornell one-time-channel coin flip uses a per-file seeded generator, so only
-the slab pair of those sides matches the reference. Maps without
-sum-rows/cols readout fall back to the reference reader.
+the slab pair of those sides matches the reference. The same holds for the
+FR-19 tie / no-neighbour coin flip under ``slab_rule="recover_non_adjacent"``.
+Maps without sum-rows/cols readout fall back to the reference reader.
 """
 
 from __future__ import annotations
@@ -160,11 +161,11 @@ def _min_channels(idx, n, in_types, is_energy, channel, min_ch):
 
 
 @numba.njit(cache=True)
-def _side(idx, n, timestamp, energy, channel, lut, min_ch, cornell, sel, out_f, out_i, ties):
+def _side(idx, n, timestamp, energy, channel, lut, min_ch, cornell, recover, sel, out_f, out_i, ties):
     """One detector side. Fills ``sel`` with the selected hit indices.
 
     ``out_f`` receives (raw energy, x, y, doi) and ``out_i`` (key, timestamp,
-    sm, mm, random flag, selected count). Returns an outcome code.
+    sm, mm, random flag, recovered flag, selected count). Returns an outcome code.
     """
     (in_types, is_time, is_energy, first_energy, in_modules, sm_of, mm_of,
      in_coords, cx, cy, cpos) = lut
@@ -241,6 +242,7 @@ def _side(idx, n, timestamp, energy, channel, lut, min_ch, cornell, sel, out_f, 
     t_ch = channel[t_hit]
     slab = 0
     random_side = 0
+    recovered = 0
     if cornell:
         # get_max_num_ch(TIME, 2): stable descending sort, so ties keep hit order
         second = -1
@@ -267,9 +269,35 @@ def _side(idx, n, timestamp, energy, channel, lut, min_ch, cornell, sel, out_f, 
             if not in_coords[channel[second]]:
                 return KEY_ERROR
             diff = pos - cpos[channel[second]]
-            if abs(diff) > 1:
+            if abs(diff) <= 1:
+                slab = 2 * pos if diff == 1 else 2 * pos + 1
+            elif not recover:
                 return UNRESOLVED_SLAB
-            slab = 2 * pos if diff == 1 else 2 * pos + 1
+            else:
+                # FR-19 (src.ldat_inspector.cornell_slab): the strongest fired
+                # adjacent time channel picks the side; a tie or none flips a coin.
+                lower = -np.inf
+                upper = -np.inf
+                for k in range(count):
+                    h = sel[k]
+                    ch = channel[h]
+                    if not is_time[ch]:
+                        continue
+                    if not in_coords[ch]:
+                        return KEY_ERROR
+                    e = np.float64(energy[h])
+                    if cpos[ch] == pos - 1 and e > lower:
+                        lower = e
+                    elif cpos[ch] == pos + 1 and e > upper:
+                        upper = e
+                if lower > upper:
+                    slab = 2 * pos
+                elif upper > lower:
+                    slab = 2 * pos + 1
+                else:
+                    slab = 2 * pos + np.random.randint(0, 2)
+                    random_side = 1
+                recovered = 1
     # calculate_centroid(..., 1, 2, chtype_map)
     sx = 0.0
     sy = 0.0
@@ -312,17 +340,17 @@ def _side(idx, n, timestamp, energy, channel, lut, min_ch, cornell, sel, out_f, 
         return VALUE_ERROR
     out_f[0], out_f[1], out_f[2], out_f[3] = raw, x, y, doi
     out_i[0], out_i[1] = (np.int64(t_ch) << 5) | slab, timestamp[t_hit]
-    out_i[2], out_i[3], out_i[4], out_i[5] = sm_of[t_ch], mm_of[t_ch], random_side, count
+    out_i[2], out_i[3], out_i[4], out_i[5], out_i[6] = sm_of[t_ch], mm_of[t_ch], random_side, recovered, count
     return OK
 
 
 @numba.njit(cache=True)
-def _pairs(first, n1, n2, timestamp, energy, channel, lut, cut, min_ch, cornell,
+def _pairs(first, n1, n2, timestamp, energy, channel, lut, cut, min_ch, cornell, recover,
            side_f, side_i, codes, t_counts, e_counts, ties):
     """Process a chunk of pairs; returns the number of accepted pairs.
 
     Accepted sides go to ``side_f`` (raw, x, y, doi) and ``side_i`` (key, ts,
-    sm, mm, random) as 2 rows per accepted pair. ``codes[p]`` is each outcome.
+    sm, mm, random, recovered) as 2 rows per accepted pair. ``codes[p]`` is each outcome.
     """
     in_types, is_time, is_energy = lut[0], lut[1], lut[2]
     idx1 = np.empty(256, np.int64)
@@ -331,8 +359,8 @@ def _pairs(first, n1, n2, timestamp, energy, channel, lut, cut, min_ch, cornell,
     sel2 = np.empty(256, np.int64)
     f1 = np.empty(4, np.float64)
     f2 = np.empty(4, np.float64)
-    i1 = np.empty(6, np.int64)
-    i2 = np.empty(6, np.int64)
+    i1 = np.empty(7, np.int64)
+    i2 = np.empty(7, np.int64)
     accepted = 0
     for p in range(first.size):
         k1 = 0
@@ -351,9 +379,9 @@ def _pairs(first, n1, n2, timestamp, energy, channel, lut, cut, min_ch, cornell,
         if c != 0:
             codes[p] = KEY_ERROR if c == 2 else MIN_CHANNELS
             continue
-        code = _side(idx1, k1, timestamp, energy, channel, lut, min_ch, cornell, sel1, f1, i1, ties)
+        code = _side(idx1, k1, timestamp, energy, channel, lut, min_ch, cornell, recover, sel1, f1, i1, ties)
         if code == OK:
-            code = _side(idx2, k2, timestamp, energy, channel, lut, min_ch, cornell, sel2, f2, i2, ties)
+            code = _side(idx2, k2, timestamp, energy, channel, lut, min_ch, cornell, recover, sel2, f2, i2, ties)
         codes[p] = code
         if code != OK:
             continue
@@ -364,9 +392,9 @@ def _pairs(first, n1, n2, timestamp, energy, channel, lut, cut, min_ch, cornell,
             row = 2 * accepted + s
             for j in range(4):
                 side_f[row, j] = of[j]
-            for j in range(5):
+            for j in range(6):
                 side_i[row, j] = oi[j]
-            for k in range(oi[5]):
+            for k in range(oi[6]):
                 ch = channel[sel[k]]
                 if is_time[ch]:
                     t_counts[ch] += 1
@@ -413,6 +441,7 @@ def process_file_fast(path: str, settings: Settings, index: int = 0, *, seed: in
         limit = settings.max_pairs if settings.max_pairs is not None else np.iinfo(np.int64).max
         _seed(np.int64(seed if seed is not None else 2_000_003 + index))
         cornell = settings.system == "CORNELL"
+        recover = cornell and settings.slab_rule == "recover_non_adjacent"
         t_counts = np.zeros(lut.in_types.size, np.int64)
         e_counts = np.zeros(lut.in_types.size, np.int64)
         ties = np.zeros(1, np.int64)
@@ -427,10 +456,10 @@ def process_file_fast(path: str, settings: Settings, index: int = 0, *, seed: in
             if count:
                 timestamp, energy, channel, first = _hits(buf, offsets, n1, n2, count)
                 side_f = np.empty((2 * count, 4), np.float64)
-                side_i = np.empty((2 * count, 5), np.int64)
+                side_i = np.empty((2 * count, 6), np.int64)
                 codes = np.empty(count, np.int64)
                 accepted = _pairs(first, n1[:count], n2[:count], timestamp, energy, channel, lut.arrays(),
-                                  float(settings.min_channel_energy), settings.min_channels, cornell,
+                                  float(settings.min_channel_energy), settings.min_channels, cornell, recover,
                                   side_f, side_i, codes, t_counts, e_counts, ties)
                 read += count
                 for code, number in zip(*np.unique(codes, return_counts=True)):
@@ -450,7 +479,7 @@ def process_file_fast(path: str, settings: Settings, index: int = 0, *, seed: in
             raise ValueError("Truncated LDAT pair header" if truncation == _TRUNCATED_HEADER
                              else "Truncated LDAT hit record")
         side_f = np.concatenate(parts_f) if parts_f else np.empty((0, 4))
-        side_i = np.concatenate(parts_i) if parts_i else np.empty((0, 5), np.int64)
+        side_i = np.concatenate(parts_i) if parts_i else np.empty((0, 6), np.int64)
         del parts_f, parts_i
         result.pairs_accepted = side_f.shape[0] // 2
         result.prefix_limited = result.pairs_read == settings.max_pairs
@@ -469,7 +498,7 @@ def _table(side_f, side_i, index):
     return SideTable.from_pairs(
         index, raw_energy=side_f[:, 0], x=side_f[:, 1], y=side_f[:, 2], doi=side_f[:, 3],
         calibration_key=side_i[:, 0], timestamp=side_i[:, 1], sm=side_i[:, 2], mm=side_i[:, 3],
-        random_slab=side_i[:, 4].astype(bool))
+        random_slab=side_i[:, 4].astype(bool), recovered_slab=side_i[:, 5].astype(bool))
 
 
 def _counters(counts, lut):

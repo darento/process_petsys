@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 import copy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+import random
 import re
 import struct
 
@@ -23,10 +24,14 @@ from scipy.special import ndtr
 from src.detector_features import calculate_DOI, calculate_centroid
 from src.filters import filter_min_ch
 from src.mapping_generator import ChannelType, map_factory
-from src.utils import KevConverter, get_maxEnergy_sm_mM, get_max_en_channel, get_slab_cornell
+from src.utils import (KevConverter, get_maxEnergy_sm_mM, get_max_en_channel, get_max_num_ch,
+                       get_slab_cornell)
 
 
 MAX_PAIRS_PER_FILE = 1_000_000
+# Cornell slab assignment when the two strongest time channels are not adjacent (FR-19).
+SLAB_RULES = {"legacy": "legacy (non-adjacent rejected)",
+              "recover_non_adjacent": "recover non-adjacent (FR-19)"}
 TIMESTAMP_SECONDS = 1e-12
 _HIT = struct.Struct("qfi")
 _HEADER = struct.Struct("2B")
@@ -59,10 +64,13 @@ class Settings:
     min_channels: int = 1
     min_channel_energy: float = 0.0
     calibrated: bool = True
+    slab_rule: str = "legacy"  # an ingest setting: accepted Cornell pairs depend on it
 
     def validate(self):
         if self.system not in ("IMAS", "CORNELL"):
             raise ValueError("System must be IMAS or CORNELL")
+        if self.slab_rule not in SLAB_RULES:
+            raise ValueError(f"Slab rule must be one of {', '.join(SLAB_RULES)}")
         if self.max_pairs is not None and not 1 <= self.max_pairs <= MAX_PAIRS_PER_FILE:
             raise ValueError(f"Coincidence pairs per file must be 1–{MAX_PAIRS_PER_FILE:,} (or whole files)")
         if self.min_channels < 1 or not np.isfinite(self.min_channel_energy):
@@ -142,10 +150,11 @@ def iter_pairs(path: str, limit: int | None):
 _TABLE_DTYPES = {
     "raw_energy": "f8", "x": "f8", "y": "f8", "doi": "f8", "timestamp": "i8",
     "calibration_key": "i4", "partner": "i4", "sm": "i2", "file_index": "i2",
-    "mm": "i1", "random_slab": "?",
+    "mm": "i1", "random_slab": "?", "recovered_slab": "?",
 }
 # Per-side values a reader produces, in pair order (rows 2k and 2k + 1 are one pair).
-_SIDE_FIELDS = ("raw_energy", "calibration_key", "x", "y", "doi", "timestamp", "sm", "mm", "random_slab")
+_SIDE_FIELDS = ("raw_energy", "calibration_key", "x", "y", "doi", "timestamp", "sm", "mm", "random_slab",
+                "recovered_slab")
 
 
 def _narrowest(values, dtype):
@@ -177,8 +186,9 @@ class SideTable:
 
     @classmethod
     def from_pairs(cls, file_index: int, **sides):
-        """Build from pair-ordered side arrays (see ``_SIDE_FIELDS``)."""
+        """Build from pair-ordered side arrays (see ``_SIDE_FIELDS``; ``recovered_slab`` defaults to False)."""
         n = len(sides["raw_energy"])
+        sides.setdefault("recovered_slab", np.zeros(n, bool))
         columns = {name: np.asarray(sides[name]) for name in _SIDE_FIELDS}
         columns["file_index"] = np.full(n, file_index)
         columns["partner"] = np.arange(n) ^ 1
@@ -280,7 +290,7 @@ class ModuleEvents:
     """
 
     _OWN = ("energy", "raw_energy", "calibration_key", "x", "y", "doi", "timestamp", "mm",
-            "file_index", "random_slab")
+            "file_index", "random_slab", "recovered_slab")
 
     def __init__(self, table: SideTable, start: int, stop: int):
         self._table, self._start, self._stop = table, start, stop
@@ -338,6 +348,38 @@ class _UnresolvedCornellSlab(ValueError):
     """The two leading time hits are not adjacent; no slab can be calibrated."""
 
 
+def cornell_slab(selected, channel_types, coordinates, rule="legacy"):
+    """``get_slab_cornell`` with the FR-19 option: (slab, flag, x, recovered).
+
+    The legacy rule returns ``get_slab_cornell`` unchanged (slab None when the
+    two strongest time channels are not adjacent). With ``recover_non_adjacent``
+    such a side is resolved from the strongest channel p and its fired adjacent
+    time channels in the selected minimodule: only p-1 -> slab 2p, only p+1 ->
+    slab 2p+1, both -> the stronger one's side; an exact tie or neither -> the
+    legacy one-channel coin flip (flag 1). Edges (p = 0 or 7) never reach this:
+    ``get_slab_cornell`` applies its edge rule first.
+    """
+    slab, flag, x = get_slab_cornell(selected, channel_types, coordinates)
+    if slab is not None or rule != "recover_non_adjacent":
+        return slab, flag, x, False
+    top = get_max_num_ch(selected, channel_types, 1, ChannelType.TIME)[0][2]
+    x_p, p = coordinates[top][0], coordinates[top][2]
+    neighbour = {}
+    for hit in selected:
+        ch = hit[2]
+        if ChannelType.TIME in channel_types[ch] and coordinates[ch][2] in (p - 1, p + 1):
+            position = coordinates[ch][2]
+            neighbour[position] = max(neighbour.get(position, hit[1]), hit[1])
+    lower, upper = neighbour.get(p - 1), neighbour.get(p + 1)
+    if lower is not None and (upper is None or lower > upper):
+        side, flag = 0, 3
+    elif upper is not None and (lower is None or upper > lower):
+        side, flag = 1, 3
+    else:
+        side, flag = random.randint(0, 1), 1
+    return 2 * p + side, flag, x_p + (HALF_SLAB_MM if side else -HALF_SLAB_MM), True
+
+
 def process_file_reference(path: str, settings: Settings, index: int = 0) -> FileResult:
     """Decode raw coincidence sides once; a corrupt file contributes no prefix.
 
@@ -348,7 +390,7 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
     try:
         settings.validate()
         setup = load_setup(replace(settings, calibrated=False))
-        buffers = {name: array(kind) for name, kind in zip(_SIDE_FIELDS, "dqdddqqqb")}
+        buffers = {name: array(kind) for name, kind in zip(_SIDE_FIELDS, "dqdddqqqbb")}
         t_counts = defaultdict(Counter)
         e_counts = defaultdict(Counter)
         for det1, det2 in iter_pairs(path, settings.max_pairs):
@@ -374,13 +416,13 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
                         raise ValueError("selected minimodule lacks time channel")
                     t_ch = t_hit[2]
                     sm, mm = setup.channel_modules[t_ch]
-                    slab, random_slab = 0, False
+                    slab, random_slab, recovered = 0, False, False
                     if settings.system == "CORNELL":
-                        slab, slab_flag, _ = get_slab_cornell(selected, setup.channel_types,
-                                                              setup.coordinates)
+                        slab, slab_flag, _, recovered = cornell_slab(selected, setup.channel_types,
+                                                                     setup.coordinates, settings.slab_rule)
                         if slab is None:
                             raise _UnresolvedCornellSlab
-                        random_slab = slab_flag == 1  # one time channel: coin flip
+                        random_slab = slab_flag == 1  # one time channel (or FR-19 tie): coin flip
                     calibration_key = (int(t_ch) << 5) | int(slab)
                     energy = float(raw_energy)
                     x, y = calculate_centroid(selected, setup.coordinates, 1, 2,
@@ -394,7 +436,8 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
                     energies = (ch[2] for ch in selected
                                 if ChannelType.ENERGY in setup.channel_types[ch[2]])
                     sides.append(((energy, calibration_key, float(x), float(y), float(doi),
-                                   int(t_hit[0]), sm, mm, random_slab), tuple(times), tuple(energies)))
+                                   int(t_hit[0]), sm, mm, random_slab, recovered), tuple(times),
+                                  tuple(energies)))
             except (KeyError, ValueError, TypeError, IndexError, ZeroDivisionError) as exc:
                 result.errors["unresolved Cornell slab" if isinstance(exc, _UnresolvedCornellSlab)
                               else type(exc).__name__] += 1
@@ -1382,6 +1425,27 @@ def slab_totals(dataset: Dataset, cog: Limits, selection: Selection | None = Non
 def unresolved_slab_pairs(dataset: Dataset) -> int:
     """Pairs rejected at ingest because a side's slab was unresolved (never in the table)."""
     return sum(r.errors.get("unresolved Cornell slab", 0) for r in dataset.files if r.success)
+
+
+def recovered_slab_sides(dataset: Dataset, sms=None) -> int:
+    """Sides whose Cornell slab the FR-19 rule recovered (always 0 under the legacy rule)."""
+    return sum(int(np.count_nonzero(data.recovered_slab)) for sm, data in dataset.modules.items()
+               if sms is None or sm in sms)
+
+
+def slab_rule_text(dataset: Dataset, sms=None) -> str:
+    """The active Cornell slab rule with its counts (FR-19); empty for IMAS."""
+    settings = dataset.settings
+    if settings.system != "CORNELL":
+        return ""
+    text = f"Slab rule: {SLAB_RULES[settings.slab_rule]}"
+    if settings.slab_rule == "legacy":
+        return f"{text}; {unresolved_slab_pairs(dataset):,} unresolved-slab pairs rejected at ingest"
+    recovered = recovered_slab_sides(dataset, sms)
+    sides = sum(len(data) for sm, data in dataset.modules.items() if sms is None or sm in sms)
+    share = f" ({100 * recovered / sides:.1f} % of sides)" if sides else ""
+    return (f"{text}; {recovered:,} recovered sides{share}. keV calibration and limits files built under the "
+            "legacy rule may be inconsistent for recovered sides")
 
 
 # keV factor origins of a Cornell slab calibration (FR-20), from the status sidecar that

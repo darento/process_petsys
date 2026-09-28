@@ -370,11 +370,50 @@ Dependency order. Each task cites its FRs and states its `Done when:` check befo
   - **Other checks:** hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, unpopulated 6/6, slab convention 16/16, scale 44/44 (selftest 44/44), engine/report 59/59.
   - **Owner review pending:** the slab flood and mm DOI on the real Cornell set (screenshots `t15/sm13_slab_mm.png`, `t15/sm13_figure.png`, `t15/overview_slab.png`). Also pending: the design choices of a display-only COG file, the ROI kept on COG/RTP coordinates, exclusions counted among sides passing the cuts, and one column per slab.
 
-- [ ] **T16 — Non-adjacent slab recovery option** (FR-19; after B1, with T2). *Done when:*
+- [x] **T16 — Non-adjacent slab recovery option** (FR-19; after B1, with T2). *Done when:*
   - `ldat_scale_check.py` fixtures pin every recovery branch (only p−1 fired, only p+1 fired, both with a stronger side, a tie, neither fired, and edges) in both the reference and the fast reader;
   - legacy mode stays the default and its counts are unchanged;
   - on a real Cornell prefix, the recovered-side count is recorded against the 3.9 % non-adjacent baseline;
   - provenance and the GUI label show the active rule.
+
+  **Verified 2026-09-25:** `python scripts/ldat_scale_check.py --selftest` → **PASS 65/65** (21 new for T16); `--real` → **PASS 15/15**; `--whole` → **PASS 9/9**; `python scripts/ldat_views_check.py` → **PASS 152/152** (9 new); GUI compile exit 0. Engine `Settings.slab_rule`, `SLAB_RULES`, `cornell_slab`, the `recovered_slab` column, `recovered_slab_sides` and `slab_rule_text`; fast-kernel branch; GUI selector and labels; report provenance (see plan).
+  - **Fixtures** (Cornell, a separate 88-pair file; det1 on SM 0, the strongest time channel p = 3 unless stated, a non-adjacent second at 6):
+    - only p−1 fired → slab 6; only p+1 → 7; both with p−1 stronger → 6; both with p+1 stronger → 7;
+    - exact tie and no neighbour (24 pairs each) → both 6 and 7 appear, `random_slab` set;
+    - a neighbour tying the non-adjacent second: listed after it → recovered 6; listed before it → legacy-adjacent 6 under both rules (the stable sort order);
+    - p = 1 with neighbour 0 → 2; p = 6 with neighbour 7 → 13;
+    - edges p = 0 / 7 with a non-adjacent second → edge rule 1 / 14 under both rules, not recovered.
+
+    Legacy keeps exactly the 12 pairs with a legacy slab and rejects 76 as unresolved. Recover accepts all 88, with `recovered_slab` on exactly the 76, and det2 unchanged. The fast reader equals the reference under both rules, and on the mixed file under recover. There, the 6 non-adjacent pairs are accepted and every other outcome is unchanged. IMAS ingest is identical under either rule.
+  - **Legacy unchanged:** the mixed-fixture outcomes, spec 001 T9's 80,000-pair tables for all six files (both readers) and the six whole-file counts match the owner's GUI run. The default is "legacy".
+  - **Mutation checks** (scratch `t16_mutate.py`), each caught:
+    - kernel: tie → 2p; sides swapped; no recovered flag; recover ignored; neighbour window ±2; random flag lost;
+    - reference: tie → 2p; stronger side reversed; legacy recovering.
+
+    Unmodified, none fail.
+  - **Real Cornell `00000003`, 80,000-pair prefix** (both readers equal under recover):
+    - 5,457 unresolved pairs → 5,444 accepted (62,460 → 67,904) and 13 `ValueError` on the other side;
+    - 5,590 recovered sides = 4.12 % of 135,808 sides, against the 3.9 % non-adjacent baseline: 4,398 (78.7 %) from a fired neighbour, 1,192 coin flips.
+  - **Real whole file `00000003`** (recorded, not a pass criterion):
+    - legacy 1,926,842 pairs (unchanged); recover 2,094,087 pairs (+8.7 %) and 4,188,174 sides, with 171,758 recovered (4.1 %): 133,848 from a neighbour (77.9 %), 37,910 coin flips. `ValueError` rises 11,366 → 11,689, and no unresolved pairs remain;
+    - read in 4.0 s (legacy 3.8 s); GUI processing with keV 7.6 s; the six-file table is 64.0 B/side;
+    - on the legacy-built resolved encal, the whole-file photopeak is μ 509.3 keV / 15.6 % for other sides, 519.5 keV / 17.2 % for neighbour-recovered sides and 509.4 keV / 18.9 % for coin-flipped ones;
+    - screenshots are in the session scratchpad `t16/`.
+  - **Hidden GUI and PDF:**
+    - the selector defaults to Legacy (reject), is disabled for IMAS, and the Process settings carry the chosen rule (IMAS always legacy);
+    - the SM summary reads "Slab rule recover non-adjacent / Recovered sides 76 (86.4 % of SM; legacy-built keV/limits)";
+    - the log gives the totals and the legacy-calibration warning, and the status keeps "Merged …";
+    - the plot labels read "recover rule: 76 recovered sides" / "legacy rule: 76 unresolved pairs rejected" (also in the T15 slab-flood checks);
+    - a change after loading says it applies on the next Process;
+    - the SM 0 PDF provenance reads "Slab rule: recover non-adjacent (FR-19); 76 recovered sides (86.4 % of sides) … (SM 0)"; the whole-system lines hold for both rules, and IMAS has none.
+  - **Found while checking:**
+    - on the real canvas the selector text was cut and the slab-flood note ran into the colorbar, so the label became "Slab rule" and the notes were shortened;
+    - "Merged …" stopped being the status line, so the rule is now logged first.
+  - **Other checks:** hidden GUI 29/29, revision 14/14, processing 17/17, issue 8/8, unpopulated 6/6, slab convention 16/16, engine/report 59/59.
+  - **Owner review pending:**
+    - whether recovered sides need their own calibration: neighbour-recovered sides peak about 10 keV higher and wider on the legacy-built encal;
+    - whether the coin flip for ties / no neighbour is wanted;
+    - the recovery flag being shown as a warning rather than refusing a legacy calibration.
 
 - [x] **T17 — Estimated calibration factors in the inspector** (FR-20; with T12). *Done when:*
   - `ldat_views_check.py` loads a synthetic `.encal` with a `_status.txt` sidecar and counts sides using fitted, borrowed and estimated factors per SM exactly;
