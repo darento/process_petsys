@@ -1,6 +1,6 @@
 # Spec 002 — LDATInspector scale, channel status and minimodule views
 
-Status: `in progress`
+Status: `shipped`
 
 Builds on shipped spec 001. Offline PETsys coincidence inspection only; the constitution is `AGENTS.md`. Reference UI: `process_cmb/exe_programs/RAWInspector.py` ("ADC Status", "System Overview", "Module Explorer"), adapted to what LDAT coincidence records support.
 
