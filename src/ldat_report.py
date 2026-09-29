@@ -209,19 +209,31 @@ def _overview(pdf, dataset, selection, rows, *, target, tolerance_pct, only_sm, 
     _text_pages(pdf, groups, fontsize=8.0, linespacing=1.55, continued=heading[0])
 
 
-def _tables(pdf, rows, calibrated=True):
+def _port_columns(ports):
+    """DAQ port, MASTER/SLAVE and FEB/D port columns (FR-23); '--' without a map entry."""
+    if ports is None:
+        return f"{'--':>4}  {'--':<6} {'--':>5}"
+    port, slave, febd = ports
+    role = {0: "MASTER", 1: "SLAVE"}.get(slave, f"ID {slave}")
+    return f"{port:>4}  {role:<6} {febd:>5}"
+
+
+def _tables(pdf, rows, calibrated=True, sm_ports=None):
+    sm_ports = sm_ports or {}
     for start in range(0, len(rows), 32):
         fig = Figure(figsize=(11.7, 8.3), dpi=100)
         axis = fig.add_subplot(111)
-        lines = ["SUPERMODULE SUMMARY - fit uses ROI/DOI sides before display energy cut",
-                  "SM   Ingested   Selected  T seen/exp  E seen/exp    Peak keV  Res %    Status",
+        lines = ["SUPERMODULE SUMMARY - fit uses ROI/DOI sides before display energy cut; "
+                 "ports from the map's mod_feb_map",
+                  "SM   DAQ  M/S    FEB/D  Ingested   Selected  T seen/exp  E seen/exp    Peak keV  Res %    Status",
                   *([] if calibrated else ["Peak/resolution unavailable: raw a.u.; no keV calibration"]),
-                 "-" * 91]
+                 "-" * 111]
         for row in rows[start:start + 32]:
             fit, status = row["fit"], row["channels"]
             mu = f"{fit['mu']:.1f}" if fit["mu"] is not None else "--"
             res = f"{fit['resolution']:.1f}" if fit["resolution"] is not None else "--"
-            lines.append(f"{row['sm']:>3} {status['events']:>10,} {row['selected']:>10,} "
+            lines.append(f"{row['sm']:>3} {_port_columns(sm_ports.get(row['sm']))}"
+                         f" {status['events']:>10,} {row['selected']:>10,} "
                          f"{len(status['active_time']):>3}/{len(status['expected_time']):<3}     "
                          f"{len(status['active_energy']):>3}/{len(status['expected_energy']):<3}      "
                          f"{mu:>7}   {res:>5}    {row['result']}")
@@ -458,7 +470,7 @@ def write_report(path, dataset, selection: Selection, *, sm=None, target=511.0,
                       tolerance_pct=tolerance_pct, only_sm=sm, limits=limits, slab_flood=slab_flood,
                       thresholds=thresholds)
             selected_rows = rows if sm is None else [row for row in rows if row["sm"] == sm]
-            _tables(pdf, selected_rows, dataset.settings.calibrated)
+            _tables(pdf, selected_rows, dataset.settings.calibrated, dataset.sm_ports)
             _findings_pages(pdf, dataset, findings, thresholds)
             for row in selected_rows:
                 _module_page(pdf, dataset, selection, row, cog_limits if slab_flood else None)

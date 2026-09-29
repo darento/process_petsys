@@ -230,6 +230,7 @@ That is ≈ 62 B/side → ≈ 1.9 GB for 30 M sides. Keeping f8 means no display
 | 20 | `load_calibration_status`, origin codes, `fitted_factors_only`, view/report counts |
 | 21 | Cornell `supermodule_layout` / `minimodule_layout` orientation, `supermodule_axis_labels`, System Overview ticks and flood thumbnails |
 | 22 | `MAX_PAIRS_PER_FILE`, `Settings.validate`, GUI `PAIR_CHOICES` combo box, `_pair_count`, `MemoryEstimate.over_cap`, `_confirm_and_launch` refusal |
+| 23 | `read_sm_ports` / `sm_port_text`, `Dataset.sm_ports` (filled in `merge_results` from the map's `mod_feb_map`), GUI `_overview_tile_text`, report `_tables` columns |
 | 15 | `scripts/ldat_scale_check.py`, `scripts/ldat_views_check.py`, existing four checks, owner review |
 
 ## Checks

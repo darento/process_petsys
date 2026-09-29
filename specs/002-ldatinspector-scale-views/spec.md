@@ -1,6 +1,6 @@
 # Spec 002 — LDATInspector scale, channel status and minimodule views
 
-Status: `shipped`
+Status: `in progress`
 
 Builds on shipped spec 001. Offline PETsys coincidence inspection only; the constitution is `AGENTS.md`. Reference UI: `process_cmb/exe_programs/RAWInspector.py` ("ADC Status", "System Overview", "Module Explorer"), adapted to what LDAT coincidence records support.
 
@@ -72,6 +72,10 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
 
   The SuperModule tab and PDF flood maps stay in local X/Y. The IMAS layout is unchanged. The placement uses only the order of the `ring_z` values and the cassette angles of `ring_yx` in `cornell_full_system.yaml`, which the owner confirmed as the real Cornell geometry on 2026-09-28. `ring_r` is not used: it is the distance used for the skew-calibration phantom (the diameter of the activity there), not a cassette radius.
 
+### SuperModule hardware address (owner request, approved 2026-09-29)
+
+- **FR-23** — WHEN a minimodule tile is clicked in System Overview, and in the Full System/SuperModule report's SuperModule summary table, the inspector SHALL show that SuperModule's hardware address from the selected map's `mod_feb_map` entry `[PortID, SlaveID, FEB/D port]`: the FEB/D DAQ port ID, MASTER for slave ID 0 or SLAVE for slave ID 1 (any other value as "slave ID n"), and the FEB/D port. A SuperModule without a valid entry SHALL show the address as unavailable, never a default.
+
 ### Common
 
 - **FR-14** — WHEN any new view or report measurement is shown, it SHALL state its population (ingest vs display-cut), units, calibration and prefix/whole-file scope; the PDF reports SHALL include the new channel findings and minimodule summary.
@@ -106,3 +110,7 @@ Builds on shipped spec 001. Offline PETsys coincidence inspection only; the cons
 ## Change 3 (owner request, approved 2026-09-28)
 
 - **FR-22 added** — reading the 25 GB Cornell `Source_200microCi_60s_coincCompact.ldat` whole failed with `[WinError 87] El parámetro no es correcto`. Measured: the file reads in one process (99.3 M pairs, 60.1 M accepted, 22.2 GB peak private memory), but its 6.61 GB result cannot be returned from a worker; a spawn-pool transfer fails above 4 GiB (3.9 GiB OK, 4.1 GiB fails). The owner declined workers writing results to disk (extra complexity; large acquisitions should be several files) and asked for prefix choices up to that limit instead of a free number with a 1 M cap. After checking the dropdown in the GUI (OK), the owner asked to refuse whole files above 30M pairs as well.
+
+## Change 4 (owner request, approved 2026-09-29)
+
+- **FR-23 added** — owner: "in the Whole system setup, can we somewhere note the portID information per Supermodule? the information in the map yaml file [FEBD_DAQ_PORTID, MASTER/SLAVE, FEBD_PORTID]". The owner chose the System Overview tile info line and the report summary table (not the grid labels or the SuperModule tab), and the labels MASTER for 0 and SLAVE for 1.

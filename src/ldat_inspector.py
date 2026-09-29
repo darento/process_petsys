@@ -109,6 +109,36 @@ def unpopulated_minimodules(config: dict) -> dict[int, frozenset[int]]:
         raise ValueError(f"Invalid unpopulated_minimodules entry: {exc}") from exc
 
 
+def read_sm_ports(map_path) -> dict[int, tuple[int, int, int]]:
+    """SuperModule -> (PortID, SlaveID, FEB/D port) from the map's `mod_feb_map` (FR-23).
+
+    SMs whose entry is missing or not three integers are left out, so they show
+    as unavailable rather than as a default address.
+    """
+    try:
+        with open(map_path, encoding="utf-8") as handle:
+            table = (yaml.safe_load(handle) or {}).get("mod_feb_map") or {}
+    except (OSError, yaml.YAMLError, AttributeError):
+        return {}
+    ports = {}
+    for sm, value in table.items() if isinstance(table, dict) else ():
+        try:
+            if len(value) == 3 and all(isinstance(v, int) and not isinstance(v, bool) for v in value):
+                ports[int(sm)] = tuple(value)
+        except (TypeError, ValueError):
+            continue
+    return ports
+
+
+def sm_port_text(ports) -> str:
+    """'DAQ port 4 · SLAVE · FEB/D port 1', or 'ports unavailable' without an entry."""
+    if ports is None:
+        return "ports unavailable"
+    port, slave, febd = ports
+    role = {0: "MASTER", 1: "SLAVE"}.get(slave, f"slave ID {slave}")
+    return f"DAQ port {port} · {role} · FEB/D port {febd}"
+
+
 def load_setup(settings: Settings) -> Setup:
     settings.validate()
     with open(settings.config_path, encoding="utf-8") as handle:
@@ -497,6 +527,8 @@ class Dataset:
     doi_excluded: Counter = field(default_factory=Counter)
     # keV factor origins of the applied Cornell calibration (FR-20; see load_calibration_status).
     calibration_status: "CalibrationStatus | None" = None
+    # SM -> (PortID, SlaveID, FEB/D port) from the map's mod_feb_map (FR-23; see read_sm_ports).
+    sm_ports: dict = field(default_factory=dict)
 
     @property
     def doi_mm(self) -> bool:
@@ -535,11 +567,12 @@ def merge_results(settings: Settings, files: list[FileResult], setup: Setup | No
     table = SideTable.concatenate([r.table for r in files if r.success], consume=consume)
     # Keep per-file counts and provenance, not a second copy of every side.
     files = [replace(r, table=None) for r in files]
+    map_path = str(_path_from_config(settings.config_path, setup.config["map_file"]))
     dataset = Dataset(replace(settings, calibrated=False), files, table.by_sm(),
                       dict(expected_t), dict(expected_e), dict(t_counts), dict(e_counts),
-                      str(_path_from_config(settings.config_path, setup.config["map_file"])),
-                      setup.config.copy(), spans, dict(expected_mm), table,
-                      setup.coordinates, setup.channel_modules, setup.channel_types)
+                      map_path, setup.config.copy(), spans, dict(expected_mm), table,
+                      setup.coordinates, setup.channel_modules, setup.channel_types,
+                      sm_ports=read_sm_ports(map_path))
     return apply_calibration(dataset, settings.calibration_path, True,
                              converter=setup.converter) if settings.calibrated else dataset
 

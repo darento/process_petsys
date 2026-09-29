@@ -35,8 +35,8 @@ from src.ldat_inspector import (
     unresolved_slab_pairs,
     fit_peak, fit_on_display_bins, fit_peak_background, flood_counts, load_setup, merge_results,
     minimodule_layout, minimodule_metrics, overview_grid, pair_dt, pair_mask, pair_matrix, process_file,
-    rate_series, pair_offset_series, supermodule_axis_labels, supermodule_layout, system_channel_findings,
-    uniformity,
+    rate_series, pair_offset_series, sm_port_text, supermodule_axis_labels, supermodule_layout,
+    system_channel_findings, uniformity,
 )
 from src.ldat_memory import estimate_memory
 
@@ -2086,10 +2086,11 @@ class LDATWorkbench(ctk.CTk):
         grid = self._overview_grid
         pixel = next(p for p, cell in grid["cells"].items() if cell == (sm, mm))
         kind = grid["kind"][pixel]
+        ports = sm_port_text(self.dataset.sm_ports.get(sm))  # FR-23
         if kind == TILE_UNPOPULATED:
-            return f"SM {sm} · mM {mm} · unpopulated in the config (no sensors)"
+            return f"SM {sm} · {ports} · mM {mm} · unpopulated in the config (no sensors)"
         row = grid["metrics"].get((sm, mm)) or {}
-        parts = [f"SM {sm} · mM {mm}", f"ingest {row.get('ingest', 0):,} sides",
+        parts = [f"SM {sm} · {ports} · mM {mm}", f"ingest {row.get('ingest', 0):,} sides",
                  f"selected {row.get('selected', 0):,}"]
         fit = row.get("fit")
         if fit is not None:
