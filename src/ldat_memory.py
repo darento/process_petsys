@@ -28,6 +28,8 @@ PEAK_BYTES_PER_SIDE = 80
 # is reclaimable page cache and is not counted.
 WORKER_BYTES_PER_SIDE = 180
 SAMPLE_PAIRS = 20_000
+_MEMINFO = Path("/proc/meminfo")
+_PROC_STATUS = Path("/proc/self/status")
 
 
 class _MemoryStatus(ctypes.Structure):
@@ -54,6 +56,14 @@ def available_bytes() -> int | None:
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return int(status.ullAvailPhys)
         return None
+    # Linux: MemAvailable counts reclaimable page cache (e.g. a memory-mapped
+    # LDAT just read); SC_AVPHYS_PAGES is MemFree and excludes it.
+    try:
+        for line in _MEMINFO.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     except (ValueError, OSError, AttributeError):
@@ -77,6 +87,15 @@ def _process_counters():
 
 def working_set(peak: bool = False) -> int | None:
     """This process's current (or peak) working set in bytes, or None when unknown."""
+    if sys.platform.startswith("linux"):
+        key = "VmHWM:" if peak else "VmRSS:"
+        try:
+            for line in _PROC_STATUS.read_text().splitlines():
+                if line.startswith(key):
+                    return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
     counters = _process_counters()
     if counters is None:
         return None
