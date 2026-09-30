@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO))  # makes `from src ... import` work from scripts/
 
 import numpy as np
 
-from src.ldat_inspector import (Selection, Settings, fit_peak, merge_results, process_file,
+from src.ldat_inspector.engine import (Selection, Settings, fit_peak, merge_results, process_file,
                                 system_channel_findings)
 
 

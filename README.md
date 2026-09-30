@@ -69,6 +69,8 @@ The photopeak fit uses the shaded 350–700 keV window, and curves show counts p
 
 `scripts/` is not tracked, apart from `scripts/template.py`: copy it to a new name there to write your own analysis on top of the `src` modules (reading, merging, channel findings, photopeak fits).
 
+Inspector implementation lives in `src/ldat_inspector/`: `engine.py` (analysis), `fastread.py` (parallel reader), `memory.py` (estimates) and `report.py` (PDFs). Import from these modules directly, e.g. `from src.ldat_inspector.engine import Settings`; the package itself exports nothing, and the old `src.ldat_fastread`, `src.ldat_memory` and `src.ldat_report` paths no longer exist. Shared readers, mapping and calibration helpers stay in `src/`; the GUI and launcher stay in `exe_programs/`. The move and validation are recorded in [spec004](specs/004-ldat-inspector-package/spec.md).
+
 Feature work throughout this repo follows [spec-driven development](docs/prompts.md); project constraints are in [AGENTS.md](AGENTS.md).
 
 You can run the main script with the following command:

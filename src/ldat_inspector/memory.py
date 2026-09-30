@@ -15,7 +15,7 @@ import sys
 
 import numpy as np
 
-from src.ldat_inspector import MAX_PAIRS_PER_FILE
+from .engine import MAX_PAIRS_PER_FILE
 
 # Main-process bytes per detector side at the merge/calibration peak: 54 B of
 # stored columns, the merged copy of the column being filled, the int64 row map
@@ -147,7 +147,7 @@ class MemoryEstimate:
 
 def _sample(path, settings):
     """(bytes per pair, accepted fraction) from the file's first records."""
-    from src.ldat_fastread import _scan_headers, process_file_fast
+    from .fastread import _scan_headers, process_file_fast
 
     buf = np.memmap(path, dtype=np.uint8, mode="r")
     _, _, _, count, end, _ = _scan_headers(buf, 0, SAMPLE_PAIRS)

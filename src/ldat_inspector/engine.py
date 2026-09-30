@@ -51,7 +51,7 @@ def _path_from_config(config_path: str, value: str) -> Path:
     path = Path(value)
     if path.is_absolute():
         return path
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     for candidate in (Path(config_path).resolve().parent / path, root / path):
         if candidate.exists():
             return candidate
@@ -500,7 +500,7 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
 
 def process_file(path: str, settings: Settings, index: int = 0) -> FileResult:
     """Read one LDAT file with the fast reader (same results as the reference)."""
-    from src.ldat_fastread import process_file_fast
+    from .fastread import process_file_fast
     return process_file_fast(path, settings, index)
 
 

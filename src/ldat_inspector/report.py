@@ -10,7 +10,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 import numpy as np
 
-from src.ldat_inspector import (FINDINGS_POPULATION, SLAB_EXTENT_MM, TIMESTAMP_SECONDS, FindingThresholds,
+from .engine import (FINDINGS_POPULATION, SLAB_EXTENT_MM, TIMESTAMP_SECONDS, FindingThresholds,
                                 Selection, channel_status, factor_origins, fit_on_display_bins, flood_counts,
                                 minimodule_layout, minimodule_metrics, slab_origins, slab_totals, slab_view,
                                 slab_rule_text, slab_x_edges, system_channel_findings, uniformity,

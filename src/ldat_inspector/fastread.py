@@ -1,7 +1,7 @@
 """Fast LDAT coincidence reader for LDATInspector (spec 002, FR-1).
 
 ``process_file_fast`` returns the same ``FileResult`` as
-``src.ldat_inspector.process_file_reference``: identical accepted-pair and
+``src.ldat_inspector.engine.process_file_reference``: identical accepted-pair and
 rejection counts, channel counters and retained columns, compared by
 ``scripts/ldat_scale_check.py``. It follows the reference's steps and their
 order:
@@ -35,7 +35,7 @@ import llvmlite.binding
 import numba
 import numpy as np
 
-from src.ldat_inspector import FileResult, Settings, SideTable, load_setup
+from .engine import FileResult, Settings, SideTable, load_setup
 from src.mapping_generator import ChannelType
 
 CHUNK_PAIRS = 250_000
@@ -274,7 +274,7 @@ def _side(idx, n, timestamp, energy, channel, lut, min_ch, cornell, recover, sel
             elif not recover:
                 return UNRESOLVED_SLAB
             else:
-                # FR-19 (src.ldat_inspector.cornell_slab): the strongest fired
+                # FR-19 (src.ldat_inspector.engine.cornell_slab): the strongest fired
                 # adjacent time channel picks the side; a tie or none flips a coin.
                 lower = -np.inf
                 upper = -np.inf
@@ -425,7 +425,7 @@ def _hits(buf, offsets, n1, n2, count):
 
 def process_file_fast(path: str, settings: Settings, index: int = 0, *, seed: int | None = None) -> FileResult:
     """Fast equivalent of ``process_file_reference`` (see module docstring)."""
-    from src.ldat_inspector import process_file_reference
+    from .engine import process_file_reference
 
     result = FileResult(index=index, path=str(path))
     result.max_energy_ties = 0

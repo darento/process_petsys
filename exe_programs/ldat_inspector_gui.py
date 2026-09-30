@@ -25,8 +25,8 @@ from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
 import numpy as np
 
-from src.ldat_fastread import init_worker
-from src.ldat_inspector import (
+from src.ldat_inspector.fastread import init_worker
+from src.ldat_inspector.engine import (
     FINDING_COLOURS, FINDINGS_POPULATION, OVERVIEW_METRICS, TILE_UNAVAILABLE, TILE_UNPOPULATED, TILE_VALUE,
     SLAB_EXTENT_MM, SLAB_RULES, FileResult, FindingThresholds, Selection, Settings, apply_calibration,
     apply_doi_view, recovered_slab_sides, slab_rule_text,
@@ -38,7 +38,7 @@ from src.ldat_inspector import (
     rate_series, pair_offset_series, sm_port_text, supermodule_axis_labels, supermodule_layout,
     system_channel_findings, uniformity,
 )
-from src.ldat_memory import estimate_memory
+from src.ldat_inspector.memory import estimate_memory
 
 
 __version__ = "0.1.0"
@@ -2656,7 +2656,7 @@ class LDATWorkbench(ctk.CTk):
 
         def run():
             try:
-                from src.ldat_report import write_report
+                from src.ldat_inspector.report import write_report
                 write_report(path, dataset, selection, sm=sm, target=target, tolerance_pct=tolerance,
                              cog_limits=limits["cog"], doi_limits=limits["doi"], slab_flood=slab,
                              thresholds=thresholds)
