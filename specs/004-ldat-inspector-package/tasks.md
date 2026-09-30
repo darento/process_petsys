@@ -2,6 +2,8 @@
 
 Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). User approved 2026-09-30; spec003 paused after T5. Local checks live in ignored `scripts/`; never stage automatically.
 
+Fixture-location maintenance (owner request, 2026-09-30): new Windows fixtures use `%LOCALAPPDATA%/Temp/process_petsys`, including `ldat_package_check.py`; no new writes to the OpenCode temporary directory. Previous baseline paths in completed checks remain historical evidence. All five updated local check scripts compile; migration fixture checks pass under the new root (106 passed / 107 selected with one Linux-only skip; formats 38/38). This maintenance does not change application source or rerun earlier Inspector acceptance.
+
 - [x] **T1 — Before-move fixture/source baseline** (FR-4). Snapshot source ASTs/hashes and deterministic IMAS/Cornell fixture results before moving files.
 
   **Done when:** `python scripts/ldat_package_check.py --baseline` records original four modules, shared/GUI fingerprints and exact fixture count/counter/array digests, without changing input/config/maps.
