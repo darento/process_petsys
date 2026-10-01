@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T13 are complete; T14 DAQD/acquisition/STOP/close UI is next. Live hardware and GUI action wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T14 are complete; T15 conversion controls and exact file selection UI is next. Live hardware, conversion/processing GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -512,13 +512,85 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Processing/pipeline/QC actions, LM metadata fields and results paths (T16).
   - Linux run (T17) and operator review (T19).
 
-- [ ] **T14 — DAQD/acquisition/STOP/close UI** (FR-5–FR-8, FR-16). Connect GUI controls to owned backend states, initialization and monitored acquisition; block conflicting actions and implement asynchronous close. Also FR-19/FR-20: show RAW-started, growth-passed ("file growing") and live size/rate messages with a stall warning; show a persistent "SiPM bias state unknown" warning; expose the safety limits, the frame-loss limit included, as editable settings; on close, let the acquisition's bias-off finish before stopping DAQD.
+- [x] **T14 — DAQD/acquisition/STOP/close UI** (FR-5–FR-8, FR-16). Connect GUI controls to owned backend states, initialization and monitored acquisition; block conflicting actions and implement asynchronous close. Also FR-19/FR-20: show RAW-started, growth-passed ("file growing") and live size/rate messages with a stall warning; show a persistent "SiPM bias state unknown" warning; expose the safety limits, the frame-loss limit included, as editable settings; on close, let the acquisition's bias-off finish before stopping DAQD.
 
   **Depends on:** T6–T7, T12–T13.
 
   **Done when:** `python scripts/petsys_manager_gui_check.py --acquisition` proves failed init/dead daemon never unlock acquisition, readiness is backend-driven, retry wait remains responsive, stale events cannot restore active buttons and STOP during acquisition/retry prevents new attempts. Fake subprocess close/cancel leaves no owned children; no cleanup of global socket/shm is invoked. GUI event polling remains live while shutdown completes/failure is shown.
 
-  **Verified:** pending.
+  **Verified 2026-10-01:**
+  - **`src/petsys_manager/session.py`** (extended), toolkit-free:
+    - `start_daqd`/`stop_daqd`/`initialize`/`start_workflow`/`stop_workflow`/`shutdown`.
+    - Each runs preflight plus the T6 `DaqdService` or T12 `prepare` + `WorkflowCoordinator` in its own worker thread.
+    - Results go back as queue events: DAQD statuses (with the service revision), initialization outcomes, refusals, workflow `RunEvent`s and a token-carrying `WorkflowResult`.
+    - Services are created on first use, so startup still launches nothing.
+    - Acquisition is gated by `DaqdService.acquisition_ready` on the frozen snapshot.
+    - STOP is sticky, including before the coordinator has started.
+    - `shutdown(timeout)`:
+      - sends STOP and waits for the workflow, its bias-off included;
+      - only then joins the DAQD/initialization requests (initialization is cancelled by the same flag) and calls `DaqdService.close`.
+      - If the workflow is still finishing at the timeout, DAQD is left running and a failed `ShutdownResult` asks the operator to close again.
+  - **`exe_programs/petsys_manager_gui.py`:**
+    - DAQD checkbox, Initialize System, Acquire Data and STOP are connected.
+    - Control state is recomputed after every event batch, from:
+      - the newest DAQD status (an older revision is dropped);
+      - the prerequisite generation in view;
+      - the window's own workflow token (an older `workflow_done` is logged as stale and ignored; workflow events from other run IDs are ignored);
+      - pending requests and the bias warning.
+    - The checkbox always shows the backend state, never the click. A DAQD status line shows state, pid, initialization and the service message.
+    - **Live status (FR-20):** attempt n/m, "RAW file started writing", "File growing: growth check passed", size and MB/s per poll, a red "RAW file stopped growing" warning after the check passed, abort/retry/bias-off messages and the final status with the run directory.
+    - **Unknown bias (FR-19):** a persistent red banner. Acquisition stays blocked until the operator presses "I checked the bias", and the confirmation is logged.
+    - **Safety limits (FR-20):** editable "Acquisition Safety Limits" fields (startup, growth window/minimum in MB, poll, max frame loss %, attempts, retry delay, stop grace) are saved in the profile and validated through `AcquisitionSafety`. Invalid values mark every action with the profile reason. Runs record the values used in the T12 settings snapshot.
+    - **Close:** immediate when idle; otherwise asynchronous through `session.shutdown`, with controls disabled and polling live. A failure is shown in the status line and log, and the window stays open.
+  - **`src/petsys_manager/workflow.py`:** forwarded `acquisition_*` events are no longer logged a second time (`_emit(..., log=False)`); events and manifests are unchanged.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_gui_check.py --acquisition` → **PASS 6/6**; `--shell --acquisition` → 13/13 in three consecutive runs.
+  - **Setup:** withdrawn real windows run the real `DaqdService`, `WorkflowCoordinator`, `AcquisitionService` and `CommandRunner` against fake children:
+    - a DAQD daemon recording TERM;
+    - an in-memory socket/shm table with no delete operation and a gated protocol reply;
+    - `init_system` with a chosen exit code;
+    - `acquire_sipm_data` behaviours ok/nodata/fail/block/grow;
+    - a gated or failing `set_bias`.
+
+    The Tk interpreter is proxied, so every widget call records its thread.
+  - **Backend-driven readiness:**
+    - Before DAQD only its checkbox is enabled.
+    - While the socket exists but DAQD does not answer, the state stays STARTING for 0.5 s with Initialize/Acquire disabled.
+    - READY enables only Initialize.
+    - A failed `init_system` (exit 1) logs "acquisition stays locked" and keeps Acquire disabled; a successful one enables it.
+    - Daemon death gives FAILED with Initialize/Acquire disabled. Re-injecting the earlier READY+initialized status and initialization outcome changes nothing, and no acquisition was launched.
+  - **Progress/STOP/bias-off:** with a growing then stalling RAW file:
+    - the status shows attempt 1/3, RAW started, "File growing", MB/s and the stopped-growing warning;
+    - during the run only STOP is enabled;
+    - STOP gives "Acquisition cancelled", the last tools launched are `acquire_sipm_data` then `set_bias`, there is no second attempt and every owned non-daemon child has exited;
+    - controls return to Acquire enabled;
+    - the manifest is `cancelled` and records the edited limits: the frame-loss limit set to 2.5 in the UI, after "abc" and "101" were rejected with specific reasons.
+  - **Retry wait:**
+    - A no-data attempt with a 30 s retry delay shows "Retrying" while the UI still drains log lines.
+    - STOP ends the run in under 10 s, with "Stopped during the retry delay; no further attempts" and one launch.
+    - STOP of a running attempt gives TERM and bias-off, and no further attempt.
+  - **Stale events:** during a running acquisition, an injected older `workflow_done`, an older DAQD revision and another run's `workflow_finished` are ignored, with STOP the only enabled control.
+  - **Unknown bias:** a failing bias-off after STOP shows the banner and keeps Acquire disabled until confirmed.
+  - **Failure is not success:** a nonzero acquisition exit reports "Acquisition failed" and is not retried.
+  - **Existing resources:** a pre-existing socket/shm blocks DAQD start with "Existing DAQD resources block start", launches nothing and leaves the table unchanged.
+  - **Close during acquisition with a slow bias-off:**
+    - With a 0.6 s timeout, controls are disabled, polling stays live (marker lines shown during and after) and "Close incomplete" is shown; the window stays open and DAQD is not stopped.
+    - After the bias-off finishes, a second close completes: `set_bias` precedes `daqd TERM`, every owned child (daemon included) has exited and the manager threads have ended.
+    - No `os.unlink`/`remove`/`rmdir`/`rmtree` call names the socket or shared memory, and the fake leftovers are reported, not removed.
+  - **Main thread:** no off-thread Tk call in any test.
+
+  **Regressions:**
+  - `--shell` 7/7, now with only the DAQD checkbox enabled at startup;
+  - manager modes plus `--cli --workflows` 175;
+  - numeric 80/80;
+  - T1 reference `--synthetic` 17/17;
+  - Inspector `--selftest` 59/59, slab 16/16, unpopulated 6/6, Inspector hidden GUI 29/29;
+  - compile PASS.
+
+  **Still pending:**
+  - Pipeline/QC controls (T16) and conversion (T15).
+  - Linux process-group runs of the real backend from the GUI (T17).
+  - Installed-tool behaviour, real bias-off and operator review of the live UI (T19).
 
 - [ ] **T15 — Conversion controls and exact file selection UI** (FR-10–FR-11, FR-16). Add explicit fixed/compact coincidence selection and fixed-group conversion, independent duration/split/hit controls and ordered LDAT selection/validation feedback.
 

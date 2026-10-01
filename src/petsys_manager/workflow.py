@@ -334,11 +334,11 @@ class WorkflowCoordinator:
             except Exception:
                 pass  # Logging cannot change a stage verdict.
 
-    def _emit(self, identity, kind, message="", payload=None):
+    def _emit(self, identity, kind, message="", payload=None, *, log=True):
         with self._lock:
             event = RunEvent(identity, self._sequence, kind, message, payload or {})
             self._sequence += 1
-            if message:
+            if message and log:
                 self._log(f"[{identity.stage_id}] {kind}: {message}")
             if self._update_sink is not None:
                 try:
@@ -457,8 +457,9 @@ class WorkflowCoordinator:
 
     def _acquisition(self, handle, plan, store, context, prerequisite):
         settings = plan.settings
+        # The acquisition service already logged these lines; forward the events only.
         forward = lambda event: self._emit(event.identity, f"acquisition_{event.kind}", event.message,
-                                           dict(event.payload))
+                                           dict(event.payload), log=False)
         if self._acquisition_factory is not None:
             service = self._acquisition_factory(update_sink=forward, log_sink=self._log)
         else:
