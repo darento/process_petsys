@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T10 are complete; T11 headless processing CLI is next. Live hardware and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T11 are complete; T12 manual actions and fail-closed pipelines is next. Live hardware and GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -301,13 +301,59 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Processing is sequential and per-pair Python, like each reference worker; file-level pooling and CLI/RunStore publication are T11/T12. `reportlab` is still undeclared in `process_petsys.yml` (T11).
   - The Cornell config must declare the half-populated minimodules to reproduce the legacy expectation; until then they are reported as not observed.
 
-- [ ] **T11 — Headless processing CLI and declared dependencies** (FR-2, FR-4, FR-9, FR-12, FR-14, FR-16). Add tracked internal CLI dispatch for calibration/LM/QC, request/result manifests and structured progress; declare only needed missing Python dependencies.
+- [x] **T11 — Headless processing CLI and declared dependencies** (FR-2, FR-4, FR-9, FR-12, FR-14, FR-16). Add tracked internal CLI dispatch for calibration/LM/QC, request/result manifests and structured progress; declare only needed missing Python dependencies.
 
   **Depends on:** T2–T5, T8–T10.
 
   **Done when:** `python scripts/petsys_manager_check.py --cli` launches each action through `sys.executable` with a fixture request and validates actual output/result paths. Invalid requests, corrupted inputs and numerical failure exit nonzero without success results; output paths with spaces/metacharacters remain literal. Source audit proves runtime imports/calls do not reference ignored scripts/sibling GUI; processing modules import headlessly. Dependencies cover actual imports, including QC's `reportlab`.
 
-  **Verified:** pending.
+  **Verified 2026-10-01:** new tracked `src/cornell/cli.py`; `python -u -m src.cornell.cli {calibrate,listmode,qc} --request R --result S` is exactly the existing `commands.build_internal` argv.
+  - **Request (schema 1):** bounded JSON (4 MiB, unique keys, finite numbers) with exact keys per action, all required and none defaulted:
+    - common: `processing_root`, `processing_config`, ordered typed `inputs`, `files`, `options`, `outputs`;
+    - calibrate: `cog_limits`; `num_regions`, `side_limit` (or null), `batch_records`; `encal`, `sidecar`, `plot` (or null);
+    - listmode: calibration (+ optional sidecar/boundaries), COG/DOI limits, pair/region maps, the complete `LMMetadata`, `batch_records`, `debug`, `resume`; job `directory`;
+    - qc: `plots`, `slabs` (needs plots), `source_mode` (`with`/`without`/null), `acquisition_time_s` (or null), `pair_limit`; results `directory`.
+
+    Paths must be absolute and are used literally. Outputs must not exist (a resumed LM job directory excepted), need an existing parent, and may not repeat each other, the request or the result. Inputs go through T5 `select_inputs`/full validation inside the T8–T10 modules.
+  - **Result:** published once by exclusive temp + hard link, never replaced, after output verification:
+    - status `succeeded`/`failed`/`cancelled`, exit code, request path/SHA-256, timestamps, interpreter, errors and `error_kind`;
+    - outputs (kind, absolute path, size, SHA-256) and counts summary only on success.
+
+    Verification per action:
+    - the `.encal` + sidecar must re-load through `load_calibration`;
+    - the LM size must equal header + records × 24;
+    - every QC file must match its `qc_summary.json` digest.
+
+    `read_result` accepts a success only if every output is unchanged. Exit codes: 0 succeeded, 1 input/processing/numerical/verification failure, 2 invalid request or result path, 3 cancelled (SIGTERM/SIGINT set a flag the modules poll; a cancel arriving after processing still publishes no success). Failed/cancelled results list no outputs; files already written stay as unlisted evidence.
+  - **Progress:** `@petsys-event {json}` stdout lines (sequence, kind `started`/`progress`/`output`/`finished`, file index, records read/written), each < 4096 characters; intermediate progress is throttled to 0.5 s per file. `parse_event` reads them back, also from the runner's `[stdout] ` log lines. Additive hooks: optional `progress` in `calibration.calibrate`/`sample_file` (per batch) and one final per-file `progress` call in `qc.sample_file`; numerics unchanged.
+  - **Dependencies:** `process_petsys.yml` gains only `reportlab==4.4.9` (installed version; imported lazily by `qc_report`). Every other third-party import of the loaded tracked modules is already declared: numpy, scipy, matplotlib, numba, openpyxl, pyyaml, pandas (`src.utils`) and tqdm (`src.read_fixed`). No environment update was run.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_check.py --cli` → **PASS 11/11**. Real child processes are built with `build_internal` and run without `MPLBACKEND`/`DISPLAY`, on synthetic fixtures under a directory named `cli ; & $HOME %PATH% [x] (y) 'q' #é`:
+  - Calibrate (2 fixed files): the `.encal`, sidecar and PNG land at the literal requested paths; `.encal` text, status counts and accepted sides equal in-process `calibrate`.
+  - Listmode (2 files, debug): LM SHA-256, name, record count and rejections equal in-process `generate_listmode`; outputs are the LM, provenance, job record and debug plots.
+  - QC (plots + slabs, 60 s with source): the output file set equals in-process `write_report`. Summary totals, findings, minimodule fits, expectation, cuts, sampling and source metadata are equal. Slab-dependent values are excluded because the unseeded Python `random` single-time-channel draw differs in the child.
+  - Events: contiguous sequence, started…finished, progress with records and an output event.
+  - Invalid requests → exit 2, no outputs and no results directory. Cases: 18 schema/type/key/path cases and an existing results directory (left empty), plus duplicate-key, NaN, non-JSON and oversized bytes as children, plus incomplete LM metadata. An existing result is left byte-identical, a relative or parentless result writes nothing, and an unknown action fails argparse with 2.
+  - Corrupted inputs → exit 1, `input_or_processing`, no success. Cases: truncated compact QC file, unmapped channel, compact file declared fixed, missing input, LM second file truncated (no merged LM; job record kept).
+  - Numerical failures → exit 1. Cases: all keys < 50 samples (no `.encal`/sidecar/plot); forced fit exception (`unexpected`, traceback on stderr, no results directory); plot exception after the report started (directory kept, unlisted, no summary); forced calibration read-back failure.
+  - Cancellation (pre-set, mid-QC, mid-LM, after processing) → exit 3, `cancelled`, no outputs.
+  - Result contract: one flipped or truncated byte in an output rejects the success; forged failed/empty/nonzero/other-schema results are rejected; no `.partial` remains.
+  - Source audit (AST, docstrings excluded) of `src/cornell/*.py` and `src/petsys_manager/*.py`: every file is tracked or the intended new `cli.py`. There are no imports of scripts/sibling GUI/docopt/natsort/colorama/Tk/runpy and no strings naming `scripts_cornell`/`scripts_imas`/`gui_cornell`/`scripts/`. `src/cornell` uses no subprocess/multiprocessing/importlib/`os.system`-type calls; the only `shell=` is the runner's `shell=False`.
+  - Headless runtime: a child process runs QC with plots and slabs. The matplotlib backend is Agg; no Tk, PyQt or pyqtgraph is loaded; every repository module loaded is tracked `src/` (or `cli.py`). colorama is loaded only by the shared reader's tqdm on Windows.
+  - Dependencies: AST imports of every loaded tracked module, lazy ones included, map to declared `process_petsys.yml` entries. The diff from HEAD is exactly the added `reportlab==<installed version>` line.
+
+  **Regressions:**
+  - numeric `--formats --calibration --listmode --qc` 80/80;
+  - manager modes 155;
+  - T1 reference `--synthetic` 17/17 with fingerprints unchanged;
+  - Inspector 59/59, slab 16/16, unpopulated 6/6;
+  - compile PASS.
+
+  **Still pending:**
+  - Linux SIGTERM delivery to a real CLI child: Windows has no SIGTERM, and WSL lacks the numerical stack. This goes to T17 Linux, then T19.
+  - Request generation from settings snapshots, runner/result wiring and stage graphs (T12).
+  - File-level worker pooling.
+  - Real-data runs (T19).
 
 ## Workflow and separate GUI
 

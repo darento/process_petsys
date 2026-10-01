@@ -1,7 +1,7 @@
 """Pure argv builders. No launches, shell/conda activation or output discovery.
 
 Callers supply reserved output paths (T4); preflight and live readiness remain
-separate. The internal CLI argv contract is consumed by the future T11 CLI.
+separate. The internal CLI argv contract is consumed by src.cornell.cli (T11).
 """
 
 from __future__ import annotations

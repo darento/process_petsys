@@ -288,6 +288,8 @@ def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, validated_
         if len(energies) >= flush_sides:
             flush()
     flush()
+    if progress is not None:
+        progress(path, read)
     return FileSample(str(path), validated_records, read, processed, occupancy_pairs, occupancy_hits, accepted,
                       stopped, rejected, dict(zip(SLAB_FLAGS, flags)))
 

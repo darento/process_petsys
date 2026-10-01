@@ -296,7 +296,7 @@ class CalibrationResult:
 
 def sample_file(descriptor, maps, left, right, min_ch, boundaries, accumulator, *,
                 side_limit=DEFAULT_SIDE_LIMIT, batch_records=DEFAULT_BATCH_RECORDS, cancelled=None,
-                validated_records=0):
+                validated_records=0, progress=None):
     """Reference ``extract_data_dict_position``: limit tested before each record batch and side batch."""
     coincidence = descriptor.population == Population.COINCIDENCE
     accepted = considered = records = 0
@@ -309,6 +309,8 @@ def sample_file(descriptor, maps, left, right, min_ch, boundaries, accumulator, 
             stopped = True
             break
         records += len(chunk)
+        if progress is not None:
+            progress(descriptor.path, records)
         if coincidence:
             batches = [{"header": chunk["header"][:, 0], "hits": chunk["side1"]},
                        {"header": chunk["header"][:, 1], "hits": chunk["side2"]}]
@@ -366,7 +368,7 @@ def fit_entries(accumulator):
 
 
 def calibrate(descriptors, config, limits, *, num_regions=DEFAULT_REGIONS, side_limit=DEFAULT_SIDE_LIMIT,
-              batch_records=DEFAULT_BATCH_RECORDS, cancelled=None):
+              batch_records=DEFAULT_BATCH_RECORDS, cancelled=None, progress=None):
     """Validate every input (T5), sample in input order, then fit. No files are written."""
     descriptors = tuple(descriptors)
     if not isinstance(config, ProcessingConfig):
@@ -392,7 +394,7 @@ def calibrate(descriptors, config, limits, *, num_regions=DEFAULT_REGIONS, side_
         summary = validate_ldat(descriptor, mapping.modules, batch_records=batch_records, cancelled=cancelled)
         sample = sample_file(descriptor, maps, left, right, min_ch, boundaries, accumulator,
                              side_limit=side_limit, batch_records=batch_records, cancelled=cancelled,
-                             validated_records=summary.records)
+                             validated_records=summary.records, progress=progress)
         info = os.stat(descriptor.path)
         if (info.st_size, info.st_mtime_ns) != (summary.file_size, summary.mtime_ns):
             raise InputError(f"Input changed after validation: {descriptor.path}")
