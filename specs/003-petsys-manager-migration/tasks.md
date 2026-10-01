@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T12 are complete; T13 manager shell is next. Live hardware and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T13 are complete; T14 DAQD/acquisition/STOP/close UI is next. Live hardware and GUI action wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -428,13 +428,89 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Empty-LDAT removal: `remove_empty_ldat` exists but is not enabled by default.
   - File-level worker pooling.
 
-- [ ] **T13 — Manager shell, profiles and input UI** (FR-1, FR-3, FR-7, FR-16). Add separate launcher/GUI shell, five tabs, main-thread event poller, settings/profile controls and optional safe asset loading. Do not instantiate another Inspector root or change its code.
+- [x] **T13 — Manager shell, profiles and input UI** (FR-1, FR-3, FR-7, FR-16). Add separate launcher/GUI shell, five tabs, main-thread event poller, settings/profile controls and optional safe asset loading. Do not instantiate another Inspector root or change its code.
 
   **Depends on:** T2, T5, T12.
 
   **Done when:** `python -m compileall -q exe_programs/PETsysManager.py exe_programs/petsys_manager_gui.py src/petsys_manager src/cornell` succeeds. `python scripts/petsys_manager_gui_check.py --shell` with withdrawn window/fake backend checks tab names/log/profile reload, relocated module-relative assets, separate INI/YAML controls and prerequisite reasons without private paths. Instrumented widget access occurs only on the main thread; no hardware/processes launch at startup. Inspector imports/entry point remain independent.
 
-  **Verified:** pending.
+  **Verified 2026-10-01:** new tracked files:
+  - `exe_programs/PETsysManager.py`: thin launcher (repository import path, `freeze_support`, `--profile PATH`), mirroring `LDATInspector.py`.
+  - `exe_programs/petsys_manager_gui.py`: `PETsysManager(root, session)` on a caller-owned root.
+    - The five reference tabs: System Setup & Acquisition, RAWF to LDAT Conversion, LDAT Processing, LM File Generation, System Quality Control.
+    - A bounded "Output Log:" (profile `log_tail_lines`, appended in one widget update per poll).
+    - The reference control layout. DAQD, Initialize, Acquire, pipeline/STOP, conversion, calibration, LM and QC buttons stay disabled until T14–T16 connect them.
+    - A "Prerequisites" panel per tab: a specific reason per action from read-only `settings.preflight`, or "prerequisites met (control not connected yet)".
+  - `exe_programs/assets/onco_logo.jpeg`: optional logo, a byte-identical copy of the sibling's `imgs/onco_logo.jpeg`.
+  - `src/petsys_manager/session.py`: toolkit-free `ManagerSession`.
+    - Profile open/load/save via T2 `load_profile`/`save_profile`.
+    - A coalescing `petsys-preflight` worker thread whose results carry a generation; the GUI shows only the generation it is awaiting.
+    - A `SimpleQueue` that the window drains with `after` (100 ms, ≤ 200 events per tick).
+
+  Profile controls:
+  - Profile path, Browse, Reload, Save.
+  - Separate fields: PETsys tools folder, PETsys INI (DAQ/conversion), processing YAML (cal/LM/QC), optional processing root, DAQ type/cards/socket, every destination, COG/DOI limits, calibration file and LM pair/region maps. Shared fields (COG limits, report destination) use one variable across tabs.
+  - Run inputs: acquisition time, hardware trigger, RAW file, split count, QC source preset and plots/slabs; slabs need plots.
+  - Edits never autosave and keep fields the window does not show: safety, limits, capabilities, LM metadata, shared memory.
+  - A missing profile leaves defaults and writes nothing. A broken profile is reported and left byte-identical. Save replaces only a valid manager profile.
+  - The relative map root defaults to the module's checkout, so a moved checkout needs no `process_petsys` folder selection.
+  - The logo resolves relative to the module; a failure is logged and never blocks startup.
+
+  Environment interpreter `-X utf8 -m compileall -q exe_programs/PETsysManager.py exe_programs/petsys_manager_gui.py src/petsys_manager src/cornell` → **PASS**. `-X utf8 scripts/petsys_manager_gui_check.py --shell` → **PASS 7/7**. Withdrawn real windows with a fixture probe (Linux platform, marker tools/cards/files):
+  - **Tabs/log/startup:**
+    - tab names equal the reference;
+    - startup logs the version/checkout and the loaded profile;
+    - all action buttons are disabled; a complete fixture shows DAQD/init/acquire/pipeline/QC met, conversion needs the RAW file and calibrate/LM/offline QC need the exact inputs;
+    - 1,500 queued lines leave exactly the last 1,000;
+    - closing joins the preflight thread.
+  - **No launches at startup:** while the window is built, `subprocess.Popen`, `os.system`, `posix_spawn`, `multiprocessing.Process.start`, `CommandRunner`, `DaqdService`, `AcquisitionService` and `WorkflowCoordinator` are patched to fail, and none is called. The window creates no second Tk root, and the only new thread is `petsys-preflight`.
+  - **Profile reload/save:**
+    - entries show the saved profile;
+    - edits mark "unsaved edits" without touching the file;
+    - Reload restores the file values;
+    - Save writes the edited data folder/processing root and preserves hidden fields;
+    - a broken file is reported and kept byte-identical, with the window values kept;
+    - Save refuses to replace the processing YAML, which stays byte-identical;
+    - a new path is created exclusively;
+    - a missing explicit profile writes nothing;
+    - a broken startup profile shows "not loaded (see log)".
+  - **Separate INI/YAML:** distinct variables and entries. A missing INI is named only for init, acquire, pipeline, both conversions and QC; a missing YAML only for pipeline, calibrate, LM, QC and offline QC. Neither reason mentions the other. An explicit processing root moves the YAML's relative map lookup.
+  - **Reasons without private paths:**
+    - the default profile with the real probe on this workstation gives every action specific bulleted reasons (platform, tools folder with the tools it needs, destinations, LM metadata missing from the profile);
+    - neither the window text nor the GUI/session source contains `/home/sie` or `nvmDisk`;
+    - an invalid acquisition time affects only acquire/pipeline, a nonpositive duration or split count gives the option error, and a missing RAW file is named;
+    - an invalid card path marks every action with the profile error until fixed.
+  - **Main thread only:** the root's Tcl interpreter is proxied, so every widget call records its thread.
+    - More than 100 calls, none off the main thread.
+    - A blocked check keeps the poller draining log lines.
+    - A stale older check (INI reason) is received and discarded; only the newer one (data folder reason) is shown.
+    - Probe calls happen only on `petsys-preflight`.
+    - Negative control: a `rogue` worker calling `log` is caught.
+  - **Relocated assets:** `exe_programs/` (with assets) and `src/petsys_manager` are copied to `re lo ; [x]` and started from an unrelated working directory.
+    - The module, logo and checkout all resolve inside the copy, and every manager module loaded is from it.
+    - The YAML's relative `maps/...` resolves in the copy, and the original checkout appears nowhere.
+    - Without `assets/`, startup logs "Optional logo not shown" and keeps all tabs.
+    - The relocated launcher's `--help` exits 0.
+  - **Inspector independence:**
+    - importing the manager loads no `ldat_inspector`/matplotlib modules; the session imports no Tk;
+    - importing the Inspector GUI loads no manager module;
+    - no manager file imports Inspector code;
+    - Inspector files are unchanged against HEAD and have no untracked additions;
+    - the compile check passes.
+
+  **Regressions:**
+  - manager modes plus `--cli --workflows` 175;
+  - numeric 80/80;
+  - T1 reference `--synthetic` 17/17;
+  - Inspector `--selftest` 59/59, slab 16/16, unpopulated 6/6, Inspector hidden GUI `ldat_gui_check.py` 29/29.
+
+  Screenshots of all five tabs on a fixture profile were reviewed for layout only; the operator review of the real UI is still due on representative acquisitions.
+
+  **Still pending:**
+  - DAQD/initialize/acquisition/STOP/asynchronous close and safety-limit editing (T14).
+  - Conversion format controls and exact file selection (T15).
+  - Processing/pipeline/QC actions, LM metadata fields and results paths (T16).
+  - Linux run (T17) and operator review (T19).
 
 - [ ] **T14 — DAQD/acquisition/STOP/close UI** (FR-5–FR-8, FR-16). Connect GUI controls to owned backend states, initialization and monitored acquisition; block conflicting actions and implement asynchronous close. Also FR-19/FR-20: show RAW-started, growth-passed ("file growing") and live size/rate messages with a stall warning; show a persistent "SiPM bias state unknown" warning; expose the safety limits, the frame-loss limit included, as editable settings; on close, let the acquisition's bias-off finish before stopping DAQD.
 
