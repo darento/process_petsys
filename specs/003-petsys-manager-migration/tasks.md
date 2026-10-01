@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T7 are complete; T8 position calibration extraction is next. Live hardware, numerical algorithm migration and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T8 are complete; T9 streamed listmode is next. Live hardware, listmode/QC numerical migration and GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -163,13 +163,53 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
 ## Tracked Cornell numerical workflows
 
-- [ ] **T8 — Position calibration extraction and bounded summaries** (FR-2, FR-9, FR-12, FR-15, FR-16). Extract confirmed fixed-position calibration into tracked functions; replace per-event Python energy lists with histogram/moment summaries, retain reference limits/sample semantics and `.encal` contract, and expose fit/fallback status/provenance.
+- [x] **T8 — Position calibration extraction and bounded summaries** (FR-2, FR-9, FR-12, FR-15, FR-16). Extract confirmed fixed-position calibration into tracked functions; replace per-event Python energy lists with histogram/moment summaries, retain reference limits/sample semantics and `.encal` contract, and expose fit/fallback status/provenance.
 
   **Depends on:** T1 installed-reference confirmation, T4–T5.
 
   **Done when:** `python scripts/petsys_manager_numeric_check.py --calibration` pins region-edge cases, out-of-range rejection, sample denominator/cap overshoot, >=50 criterion, missing keys and failed-fit estimate labeling. Histogram counts match reference exactly and written fitted/fallback values agree at 0.001 a.u. precision; repeated data length changes do not expand accumulator storage beyond mapped keys/bins. Existing `KevConverter(..., 'cornell_position')` reads generated output; sidecar records boundaries/cuts/status without changing keys or overwriting files. Group/coincidence sample routes are independently exercised.
 
-  **Verified:** pending; T1 processing-script confirmation and T4–T5 checks complete; calibration algorithm migration remains.
+  **Verified 2026-10-01:** new tracked `src/cornell/calibration.py` ports the owner-confirmed reference `scripts_cornell/cornell_slab_en_cal_fixed_position.py`, fingerprint `8e5bb5cf…` unchanged.
+  - **Reused unchanged:** the shared `src` helpers (`read_fixed`, `filters_fixed`, `utils_fixed`, `detector_features_fixed`, `fits`, `mapping_generator`).
+  - **Kept from the reference:**
+    - selection: min-channel filter, max-energy minimodule and its energy-channel rule, slab, and Y-COG with power 2;
+    - the float32 COG-limit arrays (slab < 16);
+    - region boundaries (5 regions, edge 1.8); out-of-[0, 1] excluded, exactly 1 → last region;
+    - a per-file accepted-side limit (default 4 M) tested before each record batch and each side batch, batch 5000;
+    - `np.histogram` 100 bins over 0–200 a.u. into `fit_gaussian(cb=6, pk_finder='peak')`, at least 50 samples;
+    - mean/std fallback on `RuntimeError`;
+    - `.encal` header/key/order/3-decimal format.
+  - **Changed:**
+    - Per-key Python energy lists → a fixed int64 histogram plus count and float64 mean/M2 (103×8 bytes per key), merged in input order.
+    - Each entry gets a status: `fitted`, `fallback_mean_std` (written, labelled), `insufficient_samples` (not written, as in the reference), `fit_error` (the reference would abort), or `invalid_result` (non-finite or non-positive μ; not written). A negative fitted σ is written as |σ| and flagged.
+    - Side rejections are counted by reason: min channels, minimodule channels, unresolved slab, missing COG limits, COG out of range.
+    - `calibrate()` first runs a full T5 `validate_ldat` on each input, and rejects an input that changes before sampling ends.
+    - `write_calibration` uses exclusive creation for the `.encal` and the JSON sidecar. The sidecar uses the T5 `schema_version 1` contract: boundaries, `calibration_sha256`, cuts (min_ch; no channel-energy cut, as in the reference), histogram/fit, sampling semantics, source digests, per-file samples/rejections, status counts and non-fitted keys only (bounded).
+    - `plot_summary` is the reference plot, also exclusive, with the fallback count in its title.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_numeric_check.py --calibration` → **PASS 14/14**; `--formats --calibration` → **52/52** (38 + 14), repeated 3×. The reference script is loaded only as a check oracle on seeded synthetic fixed LDAT (fixture map, 2 SuperModules). The checks cover:
+  - Boundaries for 1–11 regions match exactly.
+  - `region_ids` equals `compute_region_id_numba` on 20 000 random float32 points plus exact boundary, 0.9995, NaN, invalid channel/slab and zero-width limits, and gives the manual edge vector.
+  - Histogram binning equals `np.histogram` exactly (float32 edges, 0/200/near-edge values, chunked adds). Fallback moments match exact float64 within 1e-12.
+  - On 6000 pairs, accepted sides, keys, per-key counts and per-key histograms equal the reference exactly. All four rejection reasons occur and `considered = accepted + rejected`.
+  - Fitted μ/σ equal the reference fit bit-for-bit. Fallbacks agree within 0.001 a.u. The ≥ 50 written set equals the reference's. `fitted`, fallback and insufficient keys all occur.
+  - 49 vs 50 samples; forced `RuntimeError`/`ValueError`, negative σ and NaN/negative μ get the right labels.
+  - Limit overshoot equals the reference for (limit, batch) = (1, 2), (3, 2), (7, 5), (50, 7) and unlimited.
+  - The group route matches the reference histograms.
+  - Missing and narrow limits are rejected and counted.
+  - Bytes per key are constant for 500 and 5000 records, and keys stay within the mapped bound.
+  - Output: `KevConverter(…, 'cornell_position')` and T5 `load_calibration(metadata_path=)` read it. The reference `write_position_cal` gives byte-identical text for the same factors. A second write refuses either path and leaves both files unchanged. The plot is exclusive.
+  - Mixed populations, compact input, an empty list, invalid regions, unmapped channels and an input changed after validation are rejected.
+  - The tracked module imports no `scripts`/`docopt`/`multiprocessing`/Tk.
+
+  **Regressions:** Inspector 59/59, slab 16/16, unpopulated 6/6; manager modes 155; compile PASS. Shared helpers are unchanged per `git diff`.
+
+  **Still pending:**
+  - Real Cornell data parity (T19).
+  - Full T5 validation is a per-hit Python scan (slow on multi-GB files; not measured).
+  - The reference relies on channel ID −1 for padding slots and does not use the header count; this is preserved, not re-verified against the installed converter.
+  - Fits are sequential; worker pooling and the CLI/request/RunStore publication are T11/T12.
+  - Calibration has no sample-limit field yet beyond `ProcessingLimits.calibration_side_limit` / `batch_records`; the caller passes them.
 
 - [ ] **T9 — Streamed compatible listmode** (FR-2, FR-9, FR-12, FR-15, FR-16). Extract confirmed LM processing with explicit pair/region maps, destinations and metadata. Preserve record encoding, timestamp/order/selection and bounded debug summaries; guard legacy resume using matching manifests.
 

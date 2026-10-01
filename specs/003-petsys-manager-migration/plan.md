@@ -128,6 +128,8 @@ Exact counts, accepted/rejected selection, calibration keys and record layouts a
 - Replace accumulating scalar energy lists with per-key fixed histograms and sufficient moments/counts for the existing mean/std fallback. Merge summaries in deterministic order; verify written values/fit selection and report fallback estimates in a sidecar without changing `.encal` keys/header compatibility. Sidecar records region boundaries and generation cuts.
 - Do not silently add a channel-energy cut absent from the confirmed reference; report the actual calibration cut separately from LM/QC cuts.
 
+**T8 outcome (2026-10-01):** `src/cornell/calibration.py` reproduces the reference's accepted sides, keys, histograms and fitted values exactly on seeded synthetic data. Fallbacks agree within 0.001 a.u. and are now labelled. Storage is fixed per mapped key. The `.encal` is unchanged and readable by `KevConverter`; the T5-compatible sidecar records boundaries, cuts, sampling, rejections and non-fitted keys. 14/14 checks pass; real-data parity is T19. Evidence in [`tasks.md`](tasks.md).
+
 ### Listmode
 
 - Reuse the existing vectorized filtering, slab/region convention, `cornell_position` calibration keys, pair/region lookup, coordinates, DOI mapping and `CoincidenceV5`/`LMHeader` structures. Validate finite positive calibration factors and complete required metadata before writing.
