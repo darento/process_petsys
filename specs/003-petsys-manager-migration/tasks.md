@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T6 are complete; T7 acquisition attempts/monitoring is next. Live hardware, numerical algorithm migration and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T7 are complete; T8 position calibration extraction is next. Live hardware, numerical algorithm migration and GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -107,13 +107,59 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
   **Still pending:** installed Cornell `daqd`/`init_system` behaviour (command `0x02`, `SO_PEERCRED` from the direct child, startup time with two cards, TERM shutdown time) is unmeasured. Custom-socket support stays refused (T3). An explicit operator stale-resource resolution action is not implemented. GUI wiring is T14; live acceptance is T19.
 
-- [ ] **T7 — Acquisition attempts, monitoring and retries** (FR-5, FR-7, FR-8, FR-9, FR-16). Add monotonic growth/startup/loss monitoring, cancellation-aware bounded retry waits and immutable attempt IDs with new output paths.
+- [x] **T7 — Acquisition attempts, monitoring and retries** (FR-5, FR-7, FR-8, FR-9, FR-16). Add monotonic growth/startup/loss monitoring, cancellation-aware bounded retry waits and immutable attempt IDs with new output paths.
 
   **Depends on:** T3–T4, T6.
 
   **Done when:** `python scripts/petsys_manager_check.py --acquisition` with fake clock/process/files covers startup timeout, adequate/insufficient growth, loss below/equal/above 5%, absent/malformed loss telemetry, nonzero exit, empty/missing output, three-attempt exhaustion, cancel during retry delay and stale completion events. No retry follows STOP; missing telemetry is unknown; short successful acquisition records an unexercised growth check. Prior attempt data persists and no sleep/widget work occurs on the main thread.
 
-  **Verified:** pending.
+  **Tool contract (inspected sibling `sw_daq_tofpet2`; installed Cornell version unmeasured):** `acquire_sipm_data -o PREFIX` writes `PREFIX.rawf/.idxf/.tmpf` (`write_raw`) and `PREFIX.modf`. At the end of each step `write_raw` prints on stderr `writeRaw:: some events were lost for N (x%) frames; all events were lost for M (y%) frames`, formatted `%5.1f`; a step without frames prints `nan`. Like the reference, only the "all events" percentage is compared, and a value above the limit retries (equal passes).
+
+  **Verified 2026-09-30:** `src/petsys_manager/acquisition.py` adds `AcquisitionService`.
+  - **Threads:** `start(settings, store, basename=, prerequisite=)` validates the argv (T3 `build_acquisition`) before reserving anything, then returns an `AcquisitionHandle`. Attempts, the monitor and retry waits run in worker threads. Updates are `RunEvent`s with one ordered sequence; `AttemptFilter` drops older sequences and superseded attempts for the GUI queue. STOP (`handle.stop()`) is sticky.
+  - **Attempts:** each attempt is a new T4 run-store attempt `acquisition/attempt-N/` with prefix `attempt-N/<basename>`, so no retry deletes anything. Failed attempts keep and record their partial files; the manifest stores status/exit code plus `details` (attempt, retry reason, growth, frame loss). `RunStore.finish_attempt` gained that optional `details` field.
+  - **Monitor:** reference defaults from `AcquisitionSafety` (45 s startup, 20 s window, 5 s poll, 20 MB, 5%, 3 attempts, 2 s delay), monotonic clock. Early abort on no `.rawf` data within the startup timeout or on growth below the minimum over the window from first data; TERM/KILL through the T3 runner. The runner gained an `exited` event so the monitor stops judging a finished child. A lost prerequisite (callable, e.g. `DaqdService.acquisition_ready`) aborts without retry.
+  - **Verdicts:** success needs exit 0, nonempty `.rawf` and `.idxf` and loss not above the limit. Retry: startup timeout, insufficient growth, exit 0 without data (`no_data`), frame loss. No retry: nonzero exit (the reference treated it as success), launch error, lost prerequisite, STOP, storage failure. Missing or unparseable loss is `unknown` (`None`, never 0) and does not block success. A run ending before the window records growth `not_exercised`.
+  - **Logs:** tool lines are tagged `[attempt-N]`, and service decisions `[acquisition attempt-N] kind: message`, including retry reasons.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_check.py --acquisition` → **PASS 21/21**, repeated 10× with identical results.
+  - A scaled fake clock (100× real time, real blocking waits) runs the reference defaults. Fake children write small real files into their attempt directory; a fake size probe scripts `.rawf` growth.
+  - Covered: adequate growth; short success (`not_exercised`); startup timeout ×3 → exhausted with TERM on each and all three attempt directories kept; insufficient growth → retry → success, with attempt 1 bytes intact and tagged log lines.
+  - Also: loss parsing below/equal/above 5%, multi-step maximum, absent, `-nan`, >100 and mixed; loss 7.5% → retry, then 5.0% → success; absent/malformed loss → `unknown`, stored as `null`; nonzero exit terminal with 4 partial artifacts recorded; missing/empty `.rawf`/`.idxf` never success.
+  - Also: launch error terminal; unmet prerequisite → no launch or attempt; prerequisite lost mid-attempt → TERM, no retry; invalid argv/basename → nothing reserved; second start refused.
+  - Also: STOP during an attempt → cancelled, TERM, no retry; STOP during a 100 000 s retry delay → returns in under 10 s real time with no second launch; a blocked attempt-1 monitor released during attempt 2 emits nothing and changes nothing; `AttemptFilter` ordering.
+  - Also: all clock waits and update-sink calls happen off the main thread, and `start` returns at once; the runner `exited` event arrives once, before `completed`; the module has no `sleep`/Tk `after`/deletion/kill calls and no Tk/`subprocess` import; reference defaults are pinned.
+  - **Linux:** `wsl ... /usr/bin/python3 -B scripts/petsys_manager_linux_check.py --process-groups --daqd --acquisition` → **PASS 16/16**, repeated 3×. It adds 4 real-clock checks with a dummy acquisition that writes a real growing `.rawf` under `~/.cache/process_petsys/pm-acquisition-*`:
+    - growth passes and 4 artifacts are recorded;
+    - a stall times out, then the retry succeeds;
+    - slow growth, then 12.5% loss, exhausts 2 attempts;
+    - STOP terminates the dummy without a retry.
+    Every dummy pid is gone afterwards.
+
+  **Regressions/compile/protection:** `-m py_compile` on the manager modules and the three check scripts → PASS. `--settings --commands --runner --artifacts --daqd --acquisition` → **149 selected pass**. `--formats` → 38/38. `ldat_inspector_check.py --selftest` → 59/59, `cornell_slab_convention_check.py` → 16/16, `ldat_unpopulated_check.py` → 6/6. WSL artifacts → 37/37. Tracked changes are limited to `acquisition.py`, `artifacts.py` (optional `details`) and `runner.py` (one `exited` event), plus these spec notes. The pre-existing config/map edits were not touched. `git check-ignore` confirms the new and changed check scripts stay ignored.
+
+  **Still pending:**
+  - Installed `acquire_sipm_data`/`write_raw` output names, loss-line format and stall behaviour with Cornell hardware (T19).
+  - Superseded by the amendment below: bias after TERM.
+
+  **Amendment (owner, 2026-09-30; FR-19, FR-20):** after an abnormal attempt end, request SiPM bias off (`set_bias --power off`); if that fails, warn prominently and stop retrying. Publish RAW growth progress for the operator. Keep the loss limit an editable profile setting (default 5%).
+
+  **Amendment verified 2026-09-30:**
+  - **Bias-off:** `commands.build_bias_off` gives the literal argv `set_bias --power off` (default DAQD connection only), and preflight now requires `tool:set_bias` for acquire/QC/pipeline. When a launched attempt did not exit 0 by itself (abort, STOP, nonzero exit, runner failure), `AcquisitionService` runs it before any retry, bounded by its own 30 s timeout rather than by STOP. The result goes in `AttemptSummary.bias` and in manifest `details.bias`. A `bias_unknown` event, `outcome.bias_unknown` and an `UNKNOWN` message report a failure, and no further attempt starts.
+  - **Progress:** `rawf_progress` events (size, bytes/s, `growing`) are published at every poll after the first data. The growth-pass message reads "RAW file growing as expected". A stall after the pass is a logged warning, not an abort.
+  - **Loss limit:** stays `safety.max_loss_percent` in the profile (default 5), is recorded in the run manifest settings, and T14 exposes it.
+  - **Checks:** `--acquisition` → **PASS 27/27**, repeated 10×. New checks:
+    - bias-off after a startup-timeout abort, placed before the retry;
+    - bias-off still runs after STOP, and after a nonzero exit;
+    - no bias-off after a normal end, `no_data`, frame loss or launch error;
+    - bias-off failure, a 0.3 s timeout or a missing tool → `unknown` with no retry;
+    - the bias-off argv, the custom-socket refusal and the preflight requirement;
+    - growing progress, and a stall warning without an abort;
+    - a 10% limit accepting 7.5% loss, with the limit recorded, and the profile YAML field.
+  - **Linux:** WSL `--process-groups --daqd --acquisition` → **PASS 16/16** ×3. The STOP check confirms a real dummy bias-off process ran; a normal run launches none.
+  - **Regressions:** all manager modes → **155**; `--formats` 38/38; Inspector 59/59, 16/16, 6/6; WSL artifacts 37/37; compile PASS.
+  - **Pending:** the installed `set_bias` flags and their effect on Cornell hardware (T19); GUI display (T14).
+  - Coordinator and pipeline use (T12) and GUI wiring (T14).
 
 ## Tracked Cornell numerical workflows
 
@@ -167,7 +213,7 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
   **Verified:** pending.
 
-- [ ] **T14 — DAQD/acquisition/STOP/close UI** (FR-5–FR-8, FR-16). Connect GUI controls to owned backend states, initialization and monitored acquisition; block conflicting actions and implement asynchronous close.
+- [ ] **T14 — DAQD/acquisition/STOP/close UI** (FR-5–FR-8, FR-16). Connect GUI controls to owned backend states, initialization and monitored acquisition; block conflicting actions and implement asynchronous close. Also FR-19/FR-20: show RAW-started, growth-passed ("file growing") and live size/rate messages with a stall warning; show a persistent "SiPM bias state unknown" warning; expose the safety limits, the frame-loss limit included, as editable settings; on close, let the acquisition's bias-off finish before stopping DAQD.
 
   **Depends on:** T6–T7, T12–T13.
 
@@ -213,7 +259,7 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
   **Depends on:** T1 installed-version/metadata/real-data confirmation, T17–T18.
 
-  **Done when:** `python scripts/petsys_manager_reference_check.py --real --manifest <operator-baseline.json>` records input/settings/version fingerprints and parity for fixed calibration/LM and compact QC at predefined tolerances. Operator records live initialization, monitored acquisition, both coincidence conversions, group conversion/manual group calibration where used, LM compatibility with its consumer, 60/180 s QC with plot/slab options, complete pipeline, failure/STOP/retry and close. Existing data survives; no owned children remain; actual result locations and scope match reports. Representative Cornell/IMAS Inspector regression results and the FR-by-FR pass/fail table are recorded. Only all completion criteria passing permits `Status: shipped`; sibling retirement remains a separate owner decision.
+  **Done when:** `python scripts/petsys_manager_reference_check.py --real --manifest <operator-baseline.json>` records input/settings/version fingerprints and parity for fixed calibration/LM and compact QC at predefined tolerances. Operator records live initialization, monitored acquisition (including that `set_bias --power off` exists and switches bias off after a STOP/abort), both coincidence conversions, group conversion/manual group calibration where used, LM compatibility with its consumer, 60/180 s QC with plot/slab options, complete pipeline, failure/STOP/retry and close. Existing data survives; no owned children remain; actual result locations and scope match reports. Representative Cornell/IMAS Inspector regression results and the FR-by-FR pass/fail table are recorded. Only all completion criteria passing permits `Status: shipped`; sibling retirement remains a separate owner decision.
 
   **Verified:** pending; requires Cornell Linux hardware/operator and representative data, not available as a demonstrated check on this workstation.
 

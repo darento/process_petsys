@@ -474,7 +474,7 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
         tool_names.add("init_system")
         need_file("ini_file")
     if action in (Action.ACQUIRE, Action.QC, Action.PIPELINE):
-        tool_names.add("acquire_sipm_data")
+        tool_names.update(("acquire_sipm_data", "set_bias"))  # set_bias: FR-19 bias-off after an abort
     if conversion:
         tool_names.add("convert_raw_to_group" if action == Action.CONVERT and
                        options.population == Population.GROUP else "convert_raw_to_coincidence")

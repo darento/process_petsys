@@ -21,6 +21,8 @@ Spec: [`spec.md`](spec.md), owner-approved 2026-09-30. Constitution: [`AGENTS.md
 
 **T6 outcome (2026-09-30):** `acquisition.py` now owns DAQD lifetime and initialization validity. READY requires the owned child to answer daqd's shared-memory-name query (command `0x02`, the `daqd.Connection()` handshake), not just a socket file. An existing socket or shared memory blocks launch, because the inspected daqd `shm_unlink`s an existing name after its own `O_EXCL` create fails. Initialization is bound to the daemon generation, argv and INI digest. **21/21** fake and **7/7** WSL dummy-socket checks pass. Installed-tool behavior stays pending until T19; evidence in [`tasks.md`](tasks.md).
 
+**T7 outcome (2026-09-30):** `AcquisitionService` runs monitored attempts in worker threads, each in a new run-store attempt directory, with the reference startup/growth/loss defaults. It retries only stall, no-data and frame-loss symptoms, never a nonzero exit or STOP. Missing loss telemetry stays `unknown`, and an unreached growth window is recorded as `not_exercised`. **21/21** fake-clock and **4/4** WSL real-process acquisition checks pass. Installed-tool output and loss formats stay pending until T19; evidence in [`tasks.md`](tasks.md).
+
 | Planned location | Responsibility |
 | --- | --- |
 | `exe_programs/PETsysManager.py` | Thin entry point, repository import path, `freeze_support`, manager startup |
@@ -76,6 +78,10 @@ Coordinator states: `idle → validating → running → succeeded | failed | ca
 Preserve reference defaults as editable safety settings: startup timeout 45 s, growth window 20 s, poll interval 5 s, minimum growth 20 MB, maximum reported frame loss 5%, maximum attempts 3, retry delay 2 s. These are acquisition safety policy, not detector QC thresholds. Use monotonic timing and cancellation-aware waits, never main-thread sleeps.
 
 Monitor output growth for the active attempt. Completion requires successful exit plus nonempty expected RAW artifacts; reported frame loss over threshold can retry. Missing loss reporting remains `unknown` and is logged. Each attempt uses a distinct basename/directory, retaining failed attempts. Short acquisitions may complete before a growth window; record that the growth check was not exercised rather than falsely claiming it passed.
+
+Operator feedback (FR-20): the monitor publishes `growth_started`, `growth_passed` and, at every poll after the first data, `rawf_progress` (size, bytes/s since the previous poll, `growing`). A stall after the check passed is a visible warning, not an abort: the reference has no such rule. Safety limits live in the profile (`safety:`), are editable in the setup UI (T14) and are recorded with the run settings.
+
+SiPM bias (FR-19): `acquire_sipm_data` switches bias off only at the end of a normal run, and TERM ends the Python tool without that step. After an attempt whose child was launched but did not exit 0 by itself, the service runs the inspected `set_bias --power off` (same default DAQD connection; bounded by a timeout, not cancelled by STOP) and records `bias_off`. Failure gives `bias.state = unknown`, a `bias_unknown` warning event and no further attempt. Window close must let this finish before stopping DAQD (T14). `set_bias` becomes a required tool for acquiring actions.
 
 ## Artifact and configuration policy
 
@@ -165,6 +171,8 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 | FR-16 | Local deterministic checks and Inspector regression | T1–T18 |
 | FR-17 | Baseline comparison, Linux operator review | T1, T19 |
 | FR-18 | Deployment docs, checkout audit, retirement boundary | T18–T19 |
+| FR-19 | Bias-off after abnormal acquisition end, unknown-bias warning | T7, T14, T19 |
+| FR-20 | Growth/progress feedback, editable safety limits | T7, T14, T19 |
 
 ## Alternatives rejected
 

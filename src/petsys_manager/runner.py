@@ -262,6 +262,7 @@ class CommandRunner:
                 code = child.poll()
                 if code is not None and exited_at is None:
                     exited_at = now
+                    emit("exited", payload={"exit_code": code})  # Monitors stop judging a finished child.
                 if code is not None and stopping_at is None and child.group_alive():
                     fail("Child exited while owned descendants remained; terminating the group")
                 if (stopping_at is None and not cancel.is_set() and exited_at is not None and

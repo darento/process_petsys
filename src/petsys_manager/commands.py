@@ -77,6 +77,12 @@ def build_acquisition(settings: RunSettings, identity: Identity, output_prefix, 
     return _external(settings, identity, "acquire_sipm_data", tuple(arguments), environment)
 
 
+def build_bias_off(settings: RunSettings, identity: Identity, *, environment=None):
+    # Inspected set_bias: --power off switches bias power off on every active FEB.
+    _default_connection(settings)
+    return _external(settings, identity, "set_bias", ("--power", "off"), environment)
+
+
 def build_conversion(settings: RunSettings, identity: Identity, output_prefix, *, raw_input=None,
                      environment=None):
     options = settings.options

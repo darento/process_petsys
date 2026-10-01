@@ -319,11 +319,15 @@ class RunStore:
                 raise ArtifactError("Artifact inventory exceeds its bound")
             self._commit(data)
 
-    def finish_attempt(self, attempt, result):
+    def finish_attempt(self, attempt, result, *, details=None):
+        """``details``: observed stage telemetry (e.g. acquisition growth/loss), stored verbatim."""
         with self._lock:
             self._active()
             if not isinstance(result, CommandResult) or result.identity != attempt.identity:
                 raise ArtifactError("Result identity does not match its attempt")
+            details = None if details is None else to_plain(freeze(details))
+            if details is not None and not isinstance(details, dict):
+                raise ArtifactError("Attempt details must be a mapping")
             data = self._copy()
             record = self._record(attempt, data)
             if record["status"] != "partial":
@@ -349,6 +353,8 @@ class RunStore:
                           artifacts=sorted(by_path.values(), key=lambda a: _natural(Path(a["path"]))),
                           outputs=[item["path"] for item in sorted(additions,
                                    key=lambda a: _natural(Path(a["path"])))])
+            if details is not None:
+                record["details"] = details
             if sum(len(a["artifacts"]) for a in data["attempts"]) > self.artifact_limit:
                 raise ArtifactError("Artifact inventory exceeds its bound")
             self._commit(data)
