@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T9 are complete; T10 legacy QC is next. Live hardware, QC numerical migration and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T10 are complete; T11 headless processing CLI is next. Live hardware and GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -255,13 +255,51 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Removing segments after a verified merge would halve disk use but needs an owner decision under FR-9; segments are kept.
   - Processing is sequential, and validation is the slow per-hit T5 scan (not measured). Worker pooling and CLI/RunStore publication are T11/T12; the pipeline must pass the acquisition duration as `acquisition_time_s`.
 
-- [ ] **T10 — Legacy QC extraction and truthful reports** (FR-2, FR-9, FR-14, FR-15, FR-16). Extract compact QC and existing report types; retain numerical histogram/fitting behavior with bounded sampled columns/summaries and selected-map expectations. Add accurate provenance/population/unavailable states, not a new QC model.
+- [x] **T10 — Legacy QC extraction and truthful reports** (FR-2, FR-9, FR-14, FR-15, FR-16). Extract compact QC and existing report types; retain numerical histogram/fitting behavior with bounded sampled columns/summaries and selected-map expectations. Add accurate provenance/population/unavailable states, not a new QC model.
 
   **Depends on:** T1 installed-reference confirmation, T4–T5.
 
   **Done when:** `python scripts/petsys_manager_numeric_check.py --qc` gives manually expected pair/side/hit counts including occupancy from an unresolved slab pair excluded from energy counts. It pins per-file stopping before/at/after the legacy limit and reports actual sampled/read counts. All four option combinations (slabs alone rejected) are checked, no-source/source metadata stays distinct, sparse/failed fits are unavailable and raw peak units are a.u. Reference histogram edges/counts/fits and PDF/Excel/plot output content match documented tolerances; changed inactive-module expectation is explicitly explained. Bounded-storage/merge tests do not keep every selected file's full Python lists concurrently.
 
-  **Verified:** pending; T1 processing-script confirmation and T4–T5 checks complete; QC algorithm migration remains.
+  **Verified 2026-10-01:** new tracked `src/cornell/qc.py` (extraction/counting/fits) and `src/cornell/qc_report.py` (output types) port the owner-confirmed reference `scripts_cornell/cornell_system_validation.py`, fingerprint `3c1b9c57…` unchanged.
+  - **Reused unchanged:** `filter_min_ch`, `get_maxEnergy_sm_mM`, `get_slab_cornell` (its `random` draws keep the reference call order), `get_max_num_ch`, `calculate_centroid`, `fit_gaussian`, `get_electronics_nums`.
+  - **Kept from the reference:**
+    - per-pair selection: `en_min_ch` applied to every hit at reading, `min_ch` before and after picking the max-energy minimodule;
+    - occupancy counted before the unresolved-slab rejection; energy, flood and slab samples use both sides of resolved pairs;
+    - per-file stop once accepted pairs reach 1,000,001 (reference `> 1,000,000`), with the extra iterator read;
+    - photopeak histogram 150 bins over 0–250 a.u.; `fit_gaussian(cb=12 minimodule / 10 slab, min_peak=20, pk_finder='peak')`; resolution `2.35·σ/μ·100`;
+    - flood: Y-COG power 2 over 8 energy + 2 time channels, 40–200 a.u. window, 500 × 500 bins over 0–105 mm;
+    - output names and types: `missing_channels_report.pdf` always; with plots `photopeak_values.xlsx`, `photopeak_SM_*`, `channels_present_per_cassette`, `slab_distribution_SM*`, `floodmap_SM_*`, `floodmap_all_SM`; with slabs also `photopeak_<sm>_<mm>` and `photopeak_distribution`.
+  - **Changed:**
+    - Storage: per-key fixed histograms + count + float64 mean/M2, and per-SuperModule fixed flood histograms. Files merge as they finish, with a bounded flush buffer; no per-side lists. The unused reference x-COG profile is not computed.
+    - Populations are reported separately: records read, pairs processed, occupancy pairs/hits (unresolved-slab pairs included), accepted pairs and sides. Rejections are counted by reason; slab-assignment flags are counted (random single-time-channel choices included). A multi-minimodule side with no positive energy (the reference raises `TypeError`) is a counted rejection.
+    - Fits: `fitted`, or unavailable as `sparse` (< 20 counts in the highest bin), `fit_failed`, `fit_error` or `invalid_result`. Unavailable fits have no μ/σ/resolution and no plot line. The reference wrote the population mean/std as `Mu`; it is now a labelled sample moment. A negative fitted σ is reported as its absolute value and flagged. Values stay in a.u.; QC applies no calibration.
+    - Expected channels: selected map minus the config's declared `unpopulated_minimodules`. The legacy hardcoded rule (SuperModule `(sm+1) % 3 == 0` populated only in minimodules 0, 1, 4, 5, 8, 9, 12, 13) is not applied. The summary and PDF list the minimodules it would skip that are now expected (and vice versa). Declaring those minimodules reproduces the legacy expectation exactly. Hits on declared-unpopulated minimodules are reported.
+    - Layouts follow the selected map's SuperModules: slab distribution per map SuperModule (not SM 0–29), channel frequency per cassette `sm // 3` (not cassettes 0–1), and the combined flood places the 0.21 mm per-SuperModule histograms side by side, highest SM on the left (not three SuperModules re-binned at 0.315 mm). Photopeak grids grow beyond 16 slots.
+    - Reports: the PDF keeps every reference line in order and adds a sample/provenance section (source mode, cuts, units, sample bound and populations, per-file read/accepted/stopped, map/config digests, expectation rule) and an "observed in the sample, not a dead-channel verdict" note. The Excel keeps the five reference columns (fitted rows sorted by Mu), then adds unavailable rows, status, samples, labelled sample moments and a provenance sheet.
+    - Output directory: created exclusively (`default_directory` keeps the reference `YYYYmmdd-HHMMSS` name); every file is created exclusively; `qc_summary.json` (process completion separate from findings, source mode/duration or "not recorded", options, cuts, populations, per-file counts, fit statuses, expectation differences, output SHA-256) is written last.
+    - Inputs: full T5 validation of explicit compact coincidence descriptors in the given order; an input changed after validation is refused. Slabs without plots are rejected. The tracked modules import reportlab/openpyxl/matplotlib lazily and never import `scripts`, docopt, multiprocessing, Tk, natsort, colorama or tqdm.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_numeric_check.py --qc` → **PASS 14/14**; `--formats --calibration --listmode --qc` → **80/80** (38 + 14 + 14 + 14). The reference is loaded only as a check oracle (pools replaced by an in-process map) on seeded synthetic compact LDAT (fixture map, SuperModules 1 and 2; 7 and 41 for the layout check). The checks cover:
+  - Manual 5-pair file: 5 read, 3 occupancy pairs / 42 hits (the unresolved pair included), 2 accepted pairs / 4 sides, one rejection per reason, slab flags 5 adjacent / 1 non-adjacent. A 0.1 a.u. hit is cut at `en_min_ch` 0.2 (43 hits and mean 100.05 a.u. with cut 0). Equal to the reference.
+  - The reader equals `read_compact.read_binary_file`.
+  - Two files × 1500 pairs, plots + slabs: occupancy, slab counts, accepted pairs, every minimodule/slab histogram and flood histogram are exactly equal to the reference. Every fitted μ/σ is exactly equal. Every reference fallback key is unavailable here, with its sample mean/std within 1e-9 relative. Sparse fits occur.
+  - Stopping at limits 5/6/7/100 on a 6-valid-pair file gives read/accepted/stopped 6/5/yes, 7/6/yes, 8/6/no, 8/6/no. The reference counter seeded at 999,998/999,999/1,000,000 matches limits 3/2/1 in accepted pairs and iterator reads. The default equals settings `qc_pair_limit` 1,000,001.
+  - Options: none / plots / plots + slabs give the same file set as the reference (apart from the documented slab-distribution SuperModules). Slabs alone are rejected by `run_qc` and `RunOptions`. An existing results directory is refused.
+  - Source mode with (60 s), without (180 s) and not recorded give distinct summary/PDF metadata and identical totals/findings.
+  - Unavailable fits: blank Mu/Sigma/resolution in the Excel, status and samples, a.u. units in the Excel/summary/PDF. Forced fit failure, error and non-positive μ are unavailable; a negative σ becomes its absolute value and is flagged.
+  - Content: with the legacy halves declared, expected channels and missing-channel summaries are equal to the reference. Every reference PDF line appears in order in ours. The Excel fitted rows (5 columns) are equal to the reference rows.
+  - Without declarations the 8 legacy-skipped minimodules are reported as not observed and listed in the summary/PDF; a declared-but-hit minimodule is reported.
+  - Bounded storage: 4 files vs 1 → identical accumulator bytes, traced peak growth < 256 KiB, exactly 4× histogram/flood/slab totals (the reference keeps every side's list).
+  - Rejections: fixed/empty/duplicate/untyped inputs, bad options/limit/duration/source mode, unmapped channel, truncated file, missing `en_min_ch`, missing results parent. Cancellation raises `QCCancelled`.
+  - Tracked-module import audit.
+
+  **Regressions:** manager modes 155; Inspector 59/59, slab 16/16, unpopulated 6/6; compile PASS. Shared helpers are unchanged (`git diff -- src` empty; only the two new files). The four T1 primary fingerprints are unchanged.
+
+  **Still pending:**
+  - Real Cornell source/no-source acquisitions and an operator review of the PDF/plots (T19).
+  - Processing is sequential and per-pair Python, like each reference worker; file-level pooling and CLI/RunStore publication are T11/T12. `reportlab` is still undeclared in `process_petsys.yml` (T11).
+  - The Cornell config must declare the half-populated minimodules to reproduce the legacy expectation; until then they are reported as not observed.
 
 - [ ] **T11 — Headless processing CLI and declared dependencies** (FR-2, FR-4, FR-9, FR-12, FR-14, FR-16). Add tracked internal CLI dispatch for calibration/LM/QC, request/result manifests and structured progress; declare only needed missing Python dependencies.
 
