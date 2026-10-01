@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T8 are complete; T9 streamed listmode is next. Live hardware, listmode/QC numerical migration and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T9 are complete; T10 legacy QC is next. Live hardware, QC numerical migration and GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -211,13 +211,49 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Fits are sequential; worker pooling and the CLI/request/RunStore publication are T11/T12.
   - Calibration has no sample-limit field yet beyond `ProcessingLimits.calibration_side_limit` / `batch_records`; the caller passes them.
 
-- [ ] **T9 — Streamed compatible listmode** (FR-2, FR-9, FR-12, FR-15, FR-16). Extract confirmed LM processing with explicit pair/region maps, destinations and metadata. Preserve record encoding, timestamp/order/selection and bounded debug summaries; guard legacy resume using matching manifests.
+- [x] **T9 — Streamed compatible listmode** (FR-2, FR-9, FR-12, FR-15, FR-16). Extract confirmed LM processing with explicit pair/region maps, destinations and metadata. Preserve record encoding, timestamp/order/selection and bounded debug summaries; guard legacy resume using matching manifests.
 
   **Depends on:** T1 installed-reference/LM schema confirmation, T4–T5, T8 calibration contract.
 
   **Done when:** `python scripts/petsys_manager_numeric_check.py --listmode` decodes output independently, matches controlled reference record bytes and verifies documented `LMHeader` fields/offsets plus supplied duration/profile values. Counts/energy cuts/positions/DOI/pair IDs and file merge order match; calibration/limits/pair/region failures are counted or block output as specified. Header metadata missing/overflow is rejected; no guessed 10 s/module count. Debug storage remains bounded on repeated inputs. Resume refuses mismatched settings/input manifests and never trusts unrelated LM files.
 
-  **Verified:** pending; T1 processing-script confirmation and T4–T5 checks complete; reconstruction profile/timestamp contract and T8 remain.
+  **Verified 2026-10-01:** new tracked `src/cornell/listmode.py` ports the owner-confirmed reference `scripts_cornell/cornell_listmode_cog_fixed_position.py`, fingerprint `f7adbaf8…` unchanged.
+  - **Reused unchanged:** the shared `src` helpers (`read_fixed`, `filters_fixed`, `utils_fixed`, `detector_features_fixed`, `listmode` structures, `fits`) and T8 `CalibrationMaps`/`create_region_boundaries`.
+  - **Kept from the reference:**
+    - every selection/numerical expression per 1000-record reader batch, in the same call order, so its `np.random` slab draws are preserved;
+    - Y-COG power 2; LM region clipping to [0, 0.999] (calibration still excludes);
+    - `511 / mu * E` and the keV window; Y decompression 25.6 mm; DOI linear 20 mm mapping; region offsets; pair lookup with swap; timestamp of the max-energy time hit; every `CoincidenceV5` field cast;
+    - `en_min_ch` read but not applied (recorded as such);
+    - natural basename merge order; reference per-file and `_all.lm` naming.
+  - **Changed:**
+    - The header comes from supplied `LMMetadata`: acquisition/measurement time, isotope, detector size, modules, rings, ring distance and the pixel grid `linspace(0, size, pixels + 1)`. `identifier` "Cornell", `startTime` 0 and version (9, 5) are kept; the reference zero fields stay zero and are listed. Missing metadata, header overflow (float32 pixel size included) and an energy window above the uint16 field are rejected before any output.
+    - Each rejected pair is counted once, at its first failing stage: min channels, minimodule channels, unresolved slab, no position region, missing calibration, energy window, missing DOI limits, Y/DOI out of range, unmapped region, no pair, missing timestamp. `records_read = written + rejected` is enforced per file.
+    - Reference failure cases become counted rejections: partial decompression masks (the reference raises `IndexError`), a minimodule beyond its region array (raises), and region −1 reading pair row 99 (the reference writes a fabricated pair). A wrapped int16 `dt` and pixels outside the grid are written as before, and counted.
+    - Strict pair/region map loaders: exact columns, regions 0–99, uint16 pair IDs, no duplicates, region keys must be minimodules of the selected map.
+    - Debug keeps a fixed 1500-bin energy histogram, per-SuperModule hit counts and 100 × 64 × 64 flood histograms instead of event lists; plots are exclusive. The SuperModule plot is a bar chart over the selected map's SuperModules, not the hardcoded 3 × 10 grid.
+    - Inputs: full T5 validation first, explicit fixed coincidence descriptors, distinct basenames, and the list must already be in natural order (no silent reordering). An input changed after validation is refused.
+    - Storage: an exclusive job directory with `lm-job.json` (settings, source digests, metadata, input size and mtime); one segment `*.part` per input plus a completion record written last; header + segments merged with per-segment SHA-256 re-verification and published by a no-replace link; a JSON sidecar (cuts, timestamp contract, region/position/DOI policy, sources, per-file counts, resume) written last. Segments are retained; nothing is deleted.
+    - Resume replaces the legacy `-c`: it requires an identical job record and reuses only segments whose record, input identity, size and SHA-256 match. Orphan partials of this job are ignored and reported. Any other file, a completed job or a directory without a job record refuses the resume.
+  - **Timestamp contract (reference behavior kept):** `time` is the raw LDAT timestamp (minimum of the two sides) as float32, with no offset or scaling. `timestamp_unit` is the operator's declared consumer unit and is only recorded. Consumer interpretation/precision stays with T19.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_numeric_check.py --listmode` → **PASS 14/14**; `--formats --calibration --listmode` → **66/66** (38 + 14 + 14). The reference is loaded only as a check oracle on seeded synthetic fixed LDAT (fixture map, SuperModules 7 and 21). The checks cover:
+  - `LMHeader` 176 / `CoincidenceV5` 24 bytes and every field offset against an independent table. Legacy-equivalent metadata gives header bytes identical to the reference `write_header`; other supplied values decode independently, and only the supplied fields differ from the legacy header.
+  - Each of the 11 metadata fields missing, overflowing isotope/pixels/module, NaN/negative values, float32 overflow and a 70 000 keV window are rejected without creating the job directory.
+  - Two files × 2500 pairs, one-time-channel (random-slab) sides included: merged records are byte-identical to the reference loop run in natural order with the same seed, and per-file counts are equal. Every rejection reason except missing timestamp occurs, and the int16 `dt` wrap occurs. An independent `struct` decode checks every record (amount, pair IDs, keV window, DOI range, pixel range).
+  - A controlled forward/reversed pair gives the same pair ID, ordered energies/positions, Δt −123 both ways and time 5000.0.
+  - Pair/region loaders equal the reference pandas parsers; calibration and COG arrays equal the reference arrays; malformed pair/region rows are rejected.
+  - Pair row 99 (the reference writes fabricated pair 9; ours rejects), region-array overflow and partial decompression limits (the reference raises; ours counts).
+  - Debug energy/SuperModule/flood histograms equal histograms of the reference debug lists; summary size is identical for 300 and 3000 pairs; plots are exclusive.
+  - Sidecar provenance fields; exclusive job directory.
+  - Resume: after cancelling during file 2, resume refuses a changed config, metadata, pair map, input list or input mtime, a stray `.lm`, a same-size tampered segment, a completed job and a non-job directory, leaving files byte-identical after each refusal. It then reuses file 1, ignores one orphan and reproduces the fresh output bytes. A second resume of the complete job is refused.
+  - Input contract rejections: compact, group, reversed order, empty, duplicate basenames, unmapped channels, non-reference calibration boundaries, wrong limits kind. Natural order equals `natsort`. The tracked module imports no `scripts`/`docopt`/`multiprocessing`/Tk/pandas/natsort.
+
+  **Regressions:** manager modes 155; Inspector 59/59, slab 16/16, unpopulated 6/6; compile PASS. Shared helpers are unchanged (`git diff -- src` shows only the new file); the four T1 primary fingerprints are unchanged.
+
+  **Still pending:**
+  - Real Cornell data, LM consumer comparison and timestamp unit/precision acceptance (T19).
+  - Removing segments after a verified merge would halve disk use but needs an owner decision under FR-9; segments are kept.
+  - Processing is sequential, and validation is the slow per-hit T5 scan (not measured). Worker pooling and CLI/RunStore publication are T11/T12; the pipeline must pass the acquisition duration as `acquisition_time_s`.
 
 - [ ] **T10 — Legacy QC extraction and truthful reports** (FR-2, FR-9, FR-14, FR-15, FR-16). Extract compact QC and existing report types; retain numerical histogram/fitting behavior with bounded sampled columns/summaries and selected-map expectations. Add accurate provenance/population/unavailable states, not a new QC model.
 
