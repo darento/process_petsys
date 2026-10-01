@@ -30,7 +30,8 @@ CHECKOUT = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True)
 class ShellEvent:
     # "log", "readiness", "daqd" (DaqdStatus), "init_done" (InitOutcome), "refused" ((key, message)),
-    # "workflow" (RunEvent), "workflow_done" (WorkflowResult), "shutdown" (ShutdownResult)
+    # "workflow" (RunEvent), "workflow_done" (WorkflowResult), "shutdown" (ShutdownResult),
+    # "inputs_probed" (InputProbe)
     kind: str
     payload: object
 
@@ -52,6 +53,14 @@ class WorkflowResult:
 class ShutdownResult:
     ok: bool
     message: str
+
+
+@dataclass(frozen=True)
+class InputProbe:
+    key: str
+    request: int                # only the newest request per key is shown
+    results: tuple              # per file, in order: (path, ProbeSummary | None, error text | None)
+    message: str = ""           # a reason no file was checked (configuration, cancellation)
 
 
 class Refused(RuntimeError):
@@ -83,6 +92,8 @@ class ManagerSession:
         self._stop_requested = False
         self._shutdown = threading.Event()
         self._threads = []
+        self._probes = {}        # selection key -> (request, cancellation Event)
+        self._probe_request = 0
 
     @property
     def generation(self):
@@ -125,8 +136,9 @@ class ManagerSession:
     # Prerequisite checks ------------------------------------------------------------------------
 
     def check(self, profile, requests):
-        """Queue read-only prerequisite checks: requests maps key -> (Action, RunOptions)."""
-        requests = {key: (Action(action), options) for key, (action, options) in requests.items()}
+        """Queue read-only prerequisite checks: key -> (Action, RunOptions[, ordered InputDescriptors])."""
+        requests = {key: (Action(value[0]), value[1], tuple(value[2]) if len(value) > 2 else ())
+                    for key, value in requests.items()}
         with self._wake:
             if self._closed:
                 raise RuntimeError("Session is closed")
@@ -148,13 +160,60 @@ class ManagerSession:
                 generation, profile, requests = self._pending
                 self._pending = None
             issues = {}
-            for key, (action, options) in requests.items():
+            for key, (action, options, inputs) in requests.items():
                 try:
-                    issues[key] = preflight(profile, action, options, repo_root=self.repo_root,
+                    issues[key] = preflight(profile, action, options, inputs, repo_root=self.repo_root,
                                             probe=self.probe).issues
                 except Exception as exc:  # A probe/profile fault is a reason, never readiness.
                     issues[key] = (PrerequisiteIssue("settings", f"{type(exc).__name__}: {exc}"),)
             self.events.put(ShellEvent("readiness", Readiness(generation, issues)))
+
+    def probe_inputs(self, profile, key, descriptors, *, max_records=10000):
+        """Check the first records of each selected file against the selected map, off the UI thread.
+
+        Read-only operator feedback; a newer request for the same key cancels the older
+        one. Processing still runs the full validation.
+        """
+        with self._lock:
+            self._probe_request += 1
+            request, cancel = self._probe_request, threading.Event()
+            previous = self._probes.get(key)
+            self._probes[key] = (request, cancel)
+        if previous is not None:
+            previous[1].set()
+
+        def run():
+            from src.cornell.inputs import InputError, ValidationCancelled, load_processing_config, probe_ldat
+            results, message = [], ""
+            try:
+                report = preflight(profile, Action.CALIBRATE, repo_root=self.repo_root, probe=self.probe)
+                yaml_file = report.paths.get("yaml_file")
+                if yaml_file is None:
+                    raise InputError("Select the processing YAML; its map defines the valid channels")
+                mapping = load_processing_config(yaml_file, processing_root=report.paths["processing_root"],
+                                                 action=Action.CALIBRATE).mapping
+                for descriptor in descriptors:
+                    try:
+                        summary = probe_ldat(descriptor, mapping.modules, max_records=max_records,
+                                             cancelled=cancel.is_set)
+                        results.append((descriptor.path, summary, None))
+                    except ValidationCancelled:
+                        raise
+                    except (InputError, OSError) as exc:
+                        results.append((descriptor.path, None, str(exc)))
+            except ValidationCancelled:
+                message = "Superseded by a newer selection"
+            except Exception as exc:
+                known = isinstance(exc, (InputError, OSError, ValueError))
+                message = f"Not checked: {exc}" if known else f"Not checked: {type(exc).__name__}: {exc}"
+            finally:
+                with self._lock:
+                    if self._probes.get(key, (None,))[0] == request:
+                        del self._probes[key]
+            self.events.put(ShellEvent("inputs_probed", InputProbe(key, request, tuple(results), message)))
+        thread = threading.Thread(target=run, name=f"petsys-inputs-{key}", daemon=True)
+        thread.start()
+        return request
 
     # Backend services (created on first use, never at startup) ----------------------------------
 
@@ -330,6 +389,9 @@ class ManagerSession:
 
     def close(self, timeout=2.0):
         """Stop the preflight worker; call after a successful shutdown or when nothing ran."""
+        with self._lock:
+            for _, cancel in self._probes.values():
+                cancel.set()
         with self._wake:
             self._closed = True
             self._pending = None

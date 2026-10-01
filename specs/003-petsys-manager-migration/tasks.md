@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T14 are complete; T15 conversion controls and exact file selection UI is next. Live hardware, conversion/processing GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T15 are complete; T16 calibration, LM, QC and pipeline UI is next. Live hardware and processing GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -592,13 +592,78 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Linux process-group runs of the real backend from the GUI (T17).
   - Installed-tool behaviour, real bias-off and operator review of the live UI (T19).
 
-- [ ] **T15 — Conversion controls and exact file selection UI** (FR-10–FR-11, FR-16). Add explicit fixed/compact coincidence selection and fixed-group conversion, independent duration/split/hit controls and ordered LDAT selection/validation feedback.
+- [x] **T15 — Conversion controls and exact file selection UI** (FR-10–FR-11, FR-16). Add explicit fixed/compact coincidence selection and fixed-group conversion, independent duration/split/hit controls and ordered LDAT selection/validation feedback.
 
   **Depends on:** T3–T5, T12–T13.
 
   **Done when:** `python scripts/petsys_manager_gui_check.py --conversion` verifies generated request format/population, positive split/duration validation without basename parsing, wrong-route rejection and visible exact inputs/outputs. An unsuffixed or differently named acquisition converts correctly. A selected split without index 1 is supported; unrelated prefix files remain unselected; ambiguous legacy format requires confirmation.
 
-  **Verified:** pending.
+  **Verified 2026-10-01:**
+  - **`exe_programs/petsys_manager_gui.py`, conversion tab:**
+    - "RAW Data File (.rawf)" with the exact converter input prefix and output naming shown before running (`-i <prefix>`, reads `<prefix>.rawf` + `.idxf`; outputs in a new run folder as `<name>_coincFixed|_coincCompact|_group[_<n>].ldat`).
+    - Independent "Number of Split Files", "RAW Acquisition Duration (s)" and "Max Hits per Side" fields; the `--splitTime` (duration / splits + 0.1 s) is shown live. The duration is entered, never parsed from the file name.
+    - Explicit "Coincidence output" choice, fixed (calibration/LM) or compact (QC); "Convert Raw to Group (fixed)" is always fixed group. The fixed-output converter capability is a checkbox saved in the profile.
+    - Convert buttons run the T12 `convert` workflow through the session (one foreground workflow; STOP on this tab and the setup tab).
+    - The result shows status, run directory, the exact RAW input, the recorded validated outputs in order with record counts, and empty split files (kept, not outputs). "Use these outputs as processing inputs" hands exactly those descriptors to the lists that accept them (fixed coincidence → calibration and LM; fixed group → calibration; compact → offline QC). It refers only to the run shown: a new conversion clears it.
+  - **Processing tabs:** each of LDAT Processing, LM and QC (offline analysis) has an exact ordered input list (`InputSelection`):
+    - Add/Remove/Up/Down/Clear; the request sent to preflight follows the shown order exactly.
+    - Picking a file named `<prefix>_<n>.ldat` offers the other splits of exactly that prefix for confirmation (bounded folder scan); other prefixes, unsplit names and non-`.ldat` files are never offered. Chosen files and accepted siblings are appended in natural order.
+    - Content is declared (fixed coincidence / fixed group / compact coincidence) and must be confirmed; adding files or changing the declaration clears the confirmation. Converter outputs arrive declared and confirmed, with their run named.
+    - Readiness now includes these inputs: unconfirmed, missing, duplicate or wrong-route files are reasons.
+    - "Check structure" runs a bounded probe off the Tk thread and shows per-file OK/FAILED; only the newest request is shown.
+  - **`src/petsys_manager/session.py`:** readiness requests may carry exact input descriptors; `probe_inputs` checks the first 10,000 records of each file against the selected map in a worker thread (a newer request or close cancels it) and posts `inputs_probed`.
+  - **`src/cornell/inputs.py`:** `validate_ldat` now shares its scan with a new bounded `probe_ldat` (same checks on the first N records; fixed totals from the file size). A probe never marks a descriptor validated; processing still validates fully. T5 `--formats` 38/38 unchanged.
+  - **`src/petsys_manager/settings.py`:** manual conversion requires the selected RAW to be the `.rawf` and its `.idxf`/`.tmpf` index to exist, as the PETsys `RawReader` opens `<prefix>.rawf` and its index. Fixture-only follow-ups in the local checks: `petsys_manager_check.py` and `petsys_manager_workflow_check.py` RAW fixtures now include an index; expectations unchanged.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_gui_check.py --conversion` → **PASS 5/5**; `--shell --acquisition --conversion --real` → 19/19 in two consecutive runs. Withdrawn real windows run the real `WorkflowCoordinator`/`CommandRunner` against a fake converter that writes hand-encoded LDAT in the requested format, population and hit limit at the exact `-o` prefix, splits starting at 3 plus one empty split.
+  - **Request format/population:**
+    - Fixed coincidence: `convert_raw_to_coincidence --writeBinaryFixed --writeMultipleHits 16 --splitTime 15.1` (30 s / 2 splits); `-i` is the exact prefix of `cornell run.v2.rawf` (no `_<n>s` suffix, dotted name).
+    - The manifest records fixed/coincidence, 2 splits, 30 s, hit limit 16 and the RAW path.
+    - Compact without splitting: `--writeBinaryCompact` and no `--splitTime`.
+    - Group: `convert_raw_to_group --writeBinaryFixed`, fixed group descriptors.
+    - `acq_300s.rawf` with 60 s entered and 4 splits gives `--splitTime 15.1`: the name is not read.
+  - **Exact outputs:**
+    - `_3` and `_4` are shown in order with 40 records each, without a split 1.
+    - `_5` (empty) is listed as kept, not an output.
+    - An old look-alike `cornell run.v2_coincFixed_1.ldat` beside the RAW is unused and unchanged.
+    - Handing over fills calibration and LM (not QC) with those paths, confirmed; group outputs replace only the calibration list.
+  - **Validation without name parsing:** splits 0/−2/1.5, duration 0/−5/abc and hit limit 0/256/x each give a specific reason on both convert checks, disable both buttons and launch nothing. Hit limit 8 reaches the argv. A `.ldat` as RAW, a RAW without index or an absent RAW are refused. Fixed output without the confirmed capability blocks fixed coincidence and group, while compact stays allowed.
+  - **STOP/failure:**
+    - During a running conversion only the two STOP buttons are enabled. STOP gives "Conversion cancelled", no outputs and nothing to hand over (the earlier successful run's handoff is cleared), and the converter child has exited.
+    - Invalid output (compact bytes under a fixed request) and exit 4 both give "Conversion failed", never outputs.
+    - A later conversion succeeds.
+  - **Exact selection:**
+    - Picking `acq_coincFixed_5.ldat` offers exactly `_4` and `_12` and gives `_4, _5, _12` (no split 1). `acq_coincFixed_extra_2`, `acq_coincFixed2_1`, the unsplit `acq_coincFixed.ldat`, `other_coincFixed_1` and a `.lidx` are never offered.
+    - Declining keeps only the picked file.
+    - Unconfirmed lists show "NOT confirmed" and a readiness reason; confirming clears it.
+    - Reorder/remove changes the request order exactly; a duplicate add is refused.
+    - Wrong routes are refused: compact for calibration, group for LM, fixed for offline QC. Fixed group is accepted for calibration.
+    - A deleted listed file shows MISSING and "Input file not found".
+  - **Structure check:**
+    - A 12,000-record fixed file shows "first 10,000 records of 12,000 (from the file size) pass"; a small one "whole file checked".
+    - Fixed bytes declared compact fail, and an unmapped channel is named.
+    - A result for a list changed since is never shown.
+    - Without a processing YAML: "Not checked", never a pass.
+  - No off-thread Tk call in any test.
+  - **Real Cornell data (`--real`, read-only, 1/1):**
+    - In `C:\Users\dsanchez\Desktop\data\Cornell\full_system`, picking `allbrokenboardsRepeared_ge68_coincCompact_00000005.ldat` offers only `_00000004` (no split 1 on disk).
+    - Picking `20260119_..._coincCompact11s_00000005.ldat` offers exactly `_00000003`–`_00000008`, never the `coincFixed11s`, background, source or September files.
+    - **Finding:** the probe is map-specific. With `configs/cornell_full_system_20260928.yaml` the September files pass their first 10,000 records and the January files fail on unmapped channels; with `configs/cornell_full_system.yaml` it is the reverse. The January fixed files pass, 2.47 M records each from the file size.
+    - Declaring the compact files fixed fails ("fixed hit limit"), and the routes are refused.
+    - Each probe took under 1 s; file sizes and mtimes are unchanged.
+
+  **Regressions:**
+  - `--shell` 7/7 (fixture RAW now has an index) and `--acquisition` 6/6;
+  - manager modes plus `--cli --workflows` 175;
+  - numeric 80/80;
+  - T1 reference `--synthetic` 17/17;
+  - Inspector `--selftest` 59/59, slab 16/16, unpopulated 6/6, Inspector hidden GUI 29/29;
+  - compile PASS.
+
+  **Still pending:**
+  - Calibration/LM/QC/pipeline actions and results paths using these lists (T16).
+  - Linux runs of real converters from the GUI (T17).
+  - Installed-converter behaviour and operator review of the live UI (T19).
 
 - [ ] **T16 — Calibration, LM, QC and pipeline UI** (FR-1, FR-5, FR-11–FR-14, FR-16). Connect remaining tabs/manual actions/pipeline with actual artifacts, region/LM metadata fields, source/options and report destinations. Keep the reference layout recognizable; no Inspector embedding.
 

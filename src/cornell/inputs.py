@@ -504,6 +504,44 @@ def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=M
     alone never changes the explicit descriptor. A failed/cancelled scan returns
     no successful summary. Revalidate changed files at processing/ingest.
     """
+    records, hits, consumed, peak, limit, before, _ = _scan(
+        descriptor, channels, batch_records=batch_records, max_batch_bytes=max_batch_bytes,
+        expected_hit_limit=expected_hit_limit, cancelled=cancelled, max_records=None)
+    sides = 1 if descriptor.population == Population.GROUP else 2
+    return ValidationSummary(replace(descriptor, validated=True), records, records * sides, hits,
+                             consumed, limit, peak, before.st_size, before.st_mtime_ns)
+
+
+@dataclass(frozen=True)
+class ProbeSummary:
+    """Bounded operator feedback, never a validation: the descriptor stays unvalidated."""
+    descriptor: InputDescriptor
+    records_checked: int
+    channel_hits_checked: int
+    complete: bool              # the whole file was checked (equivalent to a full scan)
+    records_total: int | None   # fixed: exact from the size; compact: known only when complete
+    file_size: int
+    hit_limit: int | None
+
+
+def probe_ldat(descriptor, channels, *, max_records=10000, expected_hit_limit=None, cancelled=None):
+    """The validate_ldat checks on the first ``max_records`` records only.
+
+    Catches a wrong declared format/population, truncation, unmapped channels or
+    nonfinite energy near the start; a passing probe is not a full validation.
+    """
+    _integer(max_records, "max_records", 1, 1000000)
+    records, hits, _, _, limit, before, complete = _scan(
+        descriptor, channels, batch_records=min(max_records, 5000), max_batch_bytes=MAX_BATCH_BYTES,
+        expected_hit_limit=expected_hit_limit, cancelled=cancelled, max_records=max_records)
+    total = records if complete else None
+    if descriptor.format == DataFormat.FIXED:
+        sides = 1 if descriptor.population == Population.GROUP else 2
+        total = (before.st_size - 4) // (sides + sides * limit * HIT.size)
+    return ProbeSummary(replace(descriptor, validated=False), records, hits, complete, total, before.st_size, limit)
+
+
+def _scan(descriptor, channels, *, batch_records, max_batch_bytes, expected_hit_limit, cancelled, max_records):
     if not isinstance(descriptor, InputDescriptor) or not descriptor.path.is_absolute():
         raise InputError("Validation requires an absolute explicit input descriptor")
     if descriptor.format == DataFormat.COMPACT and descriptor.population != Population.COINCIDENCE:
@@ -519,6 +557,7 @@ def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=M
     sides = 1 if descriptor.population == Population.GROUP else 2
     records = hits = consumed = peak = 0
     limit = None
+    stopped = False
     def check_stop():
         if cancelled is not None and cancelled():
             raise ValidationCancelled("Input validation cancelled")
@@ -546,7 +585,7 @@ def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=M
                 raise InputError("Empty/truncated fixed records or inconsistent remainder/population")
             batch_bytes = min(batch_records, max_batch_bytes // record_bytes) * record_bytes
             consumed = 4
-            while True:
+            while not stopped:
                 check_stop()
                 payload = stream.read(batch_bytes)
                 if not payload:
@@ -555,6 +594,9 @@ def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=M
                     raise InputError("Truncated fixed record during reading")
                 peak = max(peak, len(payload))
                 for offset in range(0, len(payload), record_bytes):
+                    if max_records is not None and records >= max_records:
+                        stopped = True
+                        break
                     for side in range(sides):
                         count = payload[offset + side]
                         if not 1 <= count <= limit:
@@ -564,9 +606,12 @@ def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=M
                     records += 1
                 consumed += len(payload)
                 del payload
+            complete = 4 + records * record_bytes == before.st_size
         else:
             while True:
                 check_stop()
+                if max_records is not None and records >= max_records:
+                    break
                 header = stream.read(2)
                 if not header:
                     break
@@ -585,11 +630,12 @@ def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=M
                     consumed += len(payload)
                     del payload
                 records += 1
+            complete = consumed == before.st_size
         after = os.fstat(stream.fileno())
     current = descriptor.path.stat()
     fingerprint = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
-    if fingerprint(before) != fingerprint(after) or fingerprint(after) != fingerprint(current) or consumed != before.st_size:
+    if fingerprint(before) != fingerprint(after) or fingerprint(after) != fingerprint(current) or (
+            max_records is None and consumed != before.st_size):
         raise InputError("Input changed during validation")
     check_stop()
-    return ValidationSummary(replace(descriptor, validated=True), records, records * sides, hits,
-                             consumed, limit, peak, before.st_size, before.st_mtime_ns)
+    return records, hits, consumed, peak, limit, before, complete

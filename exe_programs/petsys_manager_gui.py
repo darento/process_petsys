@@ -6,8 +6,12 @@ workers reach this window only through its queue, drained here with `after` on
 the Tk thread. Controls follow the backend: DAQD readiness/initialization come
 from the service's revisioned statuses, a workflow's buttons from its token, and
 older statuses or results never re-enable a control. DAQD, Initialize, Acquire
-and STOP are connected (T14); conversion and processing controls are connected
-by T15-T16 and stay disabled beside their prerequisite reasons until then.
+and STOP are connected (T14), as are RAW conversion and the exact ordered LDAT
+input lists of the processing tabs (T15); calibration, LM, QC and pipeline
+controls are connected by T16 and stay disabled beside their prerequisite
+reasons until then. Conversion duration, splits and hit limit are explicit
+settings, never read from a file name; an LDAT's format and population are
+declared and confirmed by the operator, never guessed from its extension.
 Nothing launches at startup. Closing stops the workflow, waits for its bias-off,
 then stops the owned DAQD, while the window keeps polling.
 """
@@ -16,15 +20,18 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import os
 from pathlib import Path
 import queue
+import re
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
 from src.petsys_manager.acquisition import DaqdState
-from src.petsys_manager.contracts import Action, Population, ResultStatus, SourceMode
+from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, Population, ResultStatus,
+                                          SourceMode)
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, PrerequisiteIssue, ProfileError, RunOptions,
                                          default_profile_path)
@@ -71,7 +78,29 @@ ISSUE_LABELS.update({
     "capabilities.fixed_output_confirmed": "Converter fixed output", "options": "Run options",
     "settings": "Settings", "profile": "Profile",
 })
-CONNECTED = {"daqd", "initialize", "acquire"}  # checks whose controls this window drives
+CONNECTED = {"daqd", "initialize", "acquire", "convert_coincidence", "convert_group"}  # controls driven here
+STOP_KEYS = ("stop", "convert_stop")
+ACTION_TEXT = {Action.ACQUIRE: "Acquisition", Action.CONVERT: "Conversion"}
+SPLIT_TIME_OFFSET_S = 0.1  # display of commands.build_conversion's --splitTime rule
+# Declared LDAT content: key -> (label, format, population). Bytes/extension cannot prove it.
+DECLARED = {
+    "fixed_coincidence": ("Fixed coincidence", DataFormat.FIXED, Population.COINCIDENCE),
+    "fixed_group": ("Fixed group", DataFormat.FIXED, Population.GROUP),
+    "compact_coincidence": ("Compact coincidence", DataFormat.COMPACT, Population.COINCIDENCE),
+}
+# Processing input lists: check key -> (frame title, default declaration).
+SELECTIONS = {
+    "calibrate": ("Input LDAT Files (fixed coincidence or fixed group)", "fixed_coincidence"),
+    "listmode": ("Input LDAT Files (fixed coincidence)", "fixed_coincidence"),
+    "qc_analyze": ("Existing LDAT Files for Offline QC (compact coincidence)", "compact_coincidence"),
+}
+# Which processing lists may take a conversion's validated outputs.
+OUTPUT_TARGETS = {(DataFormat.FIXED, Population.COINCIDENCE): ("calibrate", "listmode"),
+                  (DataFormat.FIXED, Population.GROUP): ("calibrate",),
+                  (DataFormat.COMPACT, Population.COINCIDENCE): ("qc_analyze",)}
+SPLIT_NAME = re.compile(r"(.+)_(\d+)\.ldat\Z")
+MAX_FOLDER_ENTRIES = 20000  # bound for the split-sibling folder scan
+PROBE_RECORDS = 10000
 DAQD_TEXT = {DaqdState.OFF: "DAQD OFF", DaqdState.STARTING: "DAQD STARTING", DaqdState.READY: "DAQD ON",
              DaqdState.STOPPING: "DAQD STOPPING", DaqdState.FAILED: "DAQD FAILED"}
 STATUS_COLOURS = {"info": ("gray10", "gray90"), "ok": ("#1e7d3a", "#6fcf8a"), "warn": ("#a04000", "#f0a050"),
@@ -94,11 +123,22 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 
+ROUTE_NEEDS = {  # what each processing action consumes (plan route table)
+    "calibrate": "Energy calibration takes fixed coincidence or fixed group files (convert with Fixed output)",
+    "listmode": "LM generation takes fixed coincidence files (convert with Fixed output)",
+    "qc_analyze": "Offline QC takes compact coincidence files (convert with Compact output)",
+}
+WRONG_ROUTE = re.compile(r"Unsupported format/population for (\w+): ")
+
+
 def issue_lines(issues):
-    """Specific reasons; unselected tools and missing LM metadata collapse to one line each."""
-    lines, tools, metadata = [], [], []
+    """Specific reasons; unselected tools, missing LM metadata and wrong-route inputs collapse to one line each."""
+    lines, tools, metadata, routes = [], [], [], {}
     for issue in issues:
-        if issue.field.startswith("tool:") and issue.message == "Select the PETsys tools folder":
+        route = WRONG_ROUTE.match(issue.message) if issue.field == "inputs" else None
+        if route is not None and route.group(1) in ROUTE_NEEDS:
+            routes[route.group(1)] = routes.get(route.group(1), 0) + 1
+        elif issue.field.startswith("tool:") and issue.message == "Select the PETsys tools folder":
             tools.append(issue.field[5:])
         elif issue.field.startswith("lm_metadata."):
             metadata.append(issue.field[12:])
@@ -110,7 +150,273 @@ def issue_lines(issues):
         lines.append(f"{ISSUE_LABELS['petsys_folder']}: select it (needs {', '.join(tools)})")
     if metadata:
         lines.append(f"LM metadata missing from the profile: {', '.join(metadata)}")
+    for action, count in routes.items():
+        lines.append(f"{ISSUE_LABELS['inputs']}: {ROUTE_NEEDS[action]}; {count} listed file(s) are declared "
+                     "as another content")
     return lines
+
+
+def natural_key(path):
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(path))]
+
+
+def split_siblings(path):
+    """Other split files of exactly this prefix, ``<prefix>_<n>.ldat`` in the same folder, in split order.
+
+    Returns (siblings, complete); complete is False when the folder exceeds the scan bound.
+    Files of another prefix (``<prefix>_extra_2``, ``<prefix>2_1``, an unsplit ``<prefix>.ldat``) never match.
+    """
+    match = SPLIT_NAME.fullmatch(path.name)
+    if match is None:
+        return (), True
+    pattern = re.compile(re.escape(match.group(1)) + r"_\d+\.ldat\Z")
+    found = []
+    with os.scandir(path.parent) as entries:
+        for count, entry in enumerate(entries):
+            if count >= MAX_FOLDER_ENTRIES:
+                return tuple(sorted(found, key=natural_key)), False
+            if entry.name != path.name and pattern.fullmatch(entry.name) and entry.is_file():
+                found.append(Path(entry.path))
+    return tuple(sorted(found, key=natural_key)), True
+
+
+def megabytes(size):
+    return f"{size / 1e6:,.1f} MB"
+
+
+class InputSelection:
+    """A processing tab's exact ordered LDAT list and its declared, confirmed format/population (FR-10/FR-11).
+
+    Main thread only. Nothing is matched by wildcard: picking one split file offers
+    the other splits of exactly that prefix for confirmation. Structure checks run
+    in the session's worker and only the newest result is shown.
+    """
+
+    def __init__(self, app, parent, key, title, default):
+        self.app, self.key = app, key
+        self.paths = []
+        self.origin = None          # "conversion run <id>" when filled from validated converter outputs
+        self.probe_request = None
+        self._setting = False
+        root = app.root
+        self.declared = tk.StringVar(root, default)
+        self.confirmed = tk.BooleanVar(root, False)
+        frame = app._frame(parent, title)
+        holder = ctk.CTkFrame(frame, fg_color="transparent")
+        holder.grid(row=1, column=0, columnspan=4, sticky="ew", padx=10, pady=2)
+        holder.grid_columnconfigure(0, weight=1)
+        dark = ctk.get_appearance_mode() == "Dark"  # plain Tk widget: match the theme once
+        self.listbox = tk.Listbox(holder, height=6, selectmode="browse", exportselection=False, activestyle="none",
+                                  bg="#2b2b2b" if dark else "white", fg="#dce4ee" if dark else "black",
+                                  selectbackground="#1f6aa5", selectforeground="white", highlightthickness=0)
+        self.listbox.grid(row=0, column=0, sticky="ew")
+        scroll = ctk.CTkScrollbar(holder, command=self.listbox.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.listbox.configure(yscrollcommand=scroll.set)
+        row = ctk.CTkFrame(frame, fg_color="transparent")
+        row.grid(row=2, column=0, columnspan=4, sticky="w", padx=10, pady=2)
+        self.buttons = {}
+        for name, text, command in (("add", "Add files...", self.add), ("remove", "Remove", self.remove),
+                                    ("up", "Up", lambda: self.move(-1)), ("down", "Down", lambda: self.move(1)),
+                                    ("clear", "Clear", self.clear), ("check", "Check structure", self.check)):
+            self.buttons[name] = ctk.CTkButton(row, text=text, width=90, command=command)
+            self.buttons[name].pack(side="left", padx=(0, 6))
+        declared = ctk.CTkFrame(frame, fg_color="transparent")
+        declared.grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(declared, text="Declared content:").pack(side="left", padx=(0, 6))
+        for value, (label, _, _) in DECLARED.items():
+            ctk.CTkRadioButton(declared, text=label, variable=self.declared, value=value).pack(side="left", padx=4)
+        self.confirm_check = ctk.CTkCheckBox(
+            frame, variable=self.confirmed,
+            text="I confirm the listed files have this format and population (an .ldat name cannot tell)")
+        self.confirm_check.grid(row=4, column=0, columnspan=4, sticky="w", padx=10, pady=2)
+        self.summary = ctk.CTkLabel(frame, text="", justify="left", anchor="w", wraplength=780)
+        self.summary.grid(row=5, column=0, columnspan=4, sticky="w", padx=10, pady=(2, 0))
+        self.feedback = ctk.CTkLabel(frame, text="", justify="left", anchor="w", wraplength=780,
+                                     font=ctk.CTkFont(size=11))
+        self.feedback.grid(row=6, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 5))
+        self.declared.trace_add("write", self._declared_changed)
+        self.confirmed.trace_add("write", lambda *_: self._changed(reset_probe=False))
+        self.refresh()
+
+    # Declaration -------------------------------------------------------------------------------
+
+    @property
+    def declaration(self):
+        return DECLARED[self.declared.get()]
+
+    def descriptors(self):
+        """The exact ordered list as declared; confirmation is reported separately (confirmation_issue)."""
+        _, data_format, population = self.declaration
+        return tuple(InputDescriptor(path, data_format, population) for path in self.paths)
+
+    def confirmation_issue(self):
+        if self.paths and not self.confirmed.get():
+            return "Confirm the declared format and population of the listed files (legacy .ldat is ambiguous)"
+        return None
+
+    def _declared_changed(self, *_):
+        if self._setting:
+            return
+        self.origin = None  # an operator declaration replaces the converter's
+        self._set(confirmed=False)
+        self._changed()
+
+    def _set(self, *, declared=None, confirmed=None):
+        self._setting = True
+        try:
+            if declared is not None:
+                self.declared.set(declared)
+            if confirmed is not None:
+                self.confirmed.set(confirmed)
+        finally:
+            self._setting = False
+
+    # List editing --------------------------------------------------------------------------------
+
+    def add(self, chosen=None):
+        """Append operator-chosen files in natural order; offer only same-prefix split siblings."""
+        if chosen is None:
+            start = str(self.paths[-1].parent) if self.paths else None
+            chosen = self.app.ask_files(title="Select LDAT files", initialdir=start,
+                                        filetypes=[("LDAT files", "*.ldat"), ("All files", "*")])
+        chosen = sorted({Path(item) for item in chosen or ()}, key=natural_key)
+        if not chosen:
+            return
+        additions, offered = list(chosen), {}
+        for path in chosen:
+            try:
+                siblings, complete = split_siblings(path)
+            except OSError as exc:
+                self.app.log(f"Split files of {path.name} not offered: {exc}")
+                continue
+            if not complete:
+                self.app.log(f"Split files of {path.name} not offered: its folder exceeds {MAX_FOLDER_ENTRIES} entries")
+            stem = SPLIT_NAME.fullmatch(path.name).group(1) if siblings else None
+            for sibling in siblings:
+                if sibling not in additions and sibling not in self.paths:
+                    offered.setdefault((path.parent, stem), []).append(sibling)
+        for (folder, stem), extra in offered.items():
+            extra = sorted(set(extra), key=natural_key)
+            names = "\n".join(item.name for item in extra[:12]) + (f"\n... {len(extra) - 12} more" if len(extra) > 12 else "")
+            if self.app.ask_yes_no("Add the other split files?",
+                                   f"{len(extra)} other split file(s) of exactly {stem}_<n>.ldat in {folder}:\n\n"
+                                   f"{names}\n\nAdd them to the list? Files of any other prefix are not offered."):
+                additions.extend(extra)
+                self.app.log(f"Added {len(extra)} split sibling(s) of {stem}_<n>.ldat after confirmation")
+        additions = sorted(set(additions), key=natural_key)
+        repeated = [path for path in additions if path in self.paths]
+        if repeated:
+            self.app.log(f"Already listed, not added again: {', '.join(path.name for path in repeated)}")
+        self.paths.extend(path for path in additions if path not in self.paths)
+        self.origin = None
+        self._set(confirmed=False)  # the confirmation covers the listed files: confirm again
+        self._changed()
+
+    def _selected(self):
+        chosen = self.listbox.curselection()
+        return chosen[0] if chosen else None
+
+    def remove(self):
+        index = self._selected()
+        if index is not None:
+            del self.paths[index]
+            self._changed()
+            if self.paths:
+                self.listbox.selection_set(min(index, len(self.paths) - 1))
+
+    def move(self, delta):
+        index = self._selected()
+        if index is None or not 0 <= index + delta < len(self.paths):
+            return
+        self.paths[index], self.paths[index + delta] = self.paths[index + delta], self.paths[index]
+        self._changed()
+        self.listbox.selection_set(index + delta)
+
+    def clear(self):
+        self.paths, self.origin = [], None
+        self._set(confirmed=False)
+        self._changed()
+
+    def use_outputs(self, descriptors, run_id):
+        """Replace the list with a conversion's exact validated outputs and their converter declaration."""
+        data_format, population = descriptors[0].format, descriptors[0].population
+        key = next(key for key, (_, f, p) in DECLARED.items() if (f, p) == (data_format, population))
+        self.paths = [Path(item.path) for item in descriptors]
+        self.origin = f"conversion run {run_id}"
+        self._set(declared=key, confirmed=True)
+        self._changed()
+
+    def _changed(self, reset_probe=True):
+        if self._setting:
+            return
+        if reset_probe:
+            self.probe_request = None
+            self.feedback.configure(text="", text_color=STATUS_COLOURS["info"])
+        self.refresh()
+        self.app._edited()
+
+    def refresh(self):
+        self.listbox.delete(0, "end")
+        total, missing = 0, 0
+        for index, path in enumerate(self.paths, 1):
+            try:
+                size = path.stat().st_size
+                total += size
+                self.listbox.insert("end", f"{index}. {path}   ({megabytes(size)})")
+            except OSError:
+                missing += 1
+                self.listbox.insert("end", f"{index}. {path}   (MISSING)")
+        label = self.declaration[0]
+        if not self.paths:
+            text = f"No files selected; declared {label.lower()}"
+        else:
+            text = f"{len(self.paths)} file(s), {megabytes(total)}" + (f", {missing} missing" if missing else "")
+            text += f"; declared {label.lower()}"
+            text += f" from {self.origin}" if self.origin else ""
+            text += "; confirmed" if self.confirmed.get() else "; NOT confirmed"
+        self.summary.configure(text=text)
+        busy = self.probe_request is not None
+        for name in ("remove", "up", "down", "clear"):
+            self.buttons[name].configure(state="normal" if self.paths else "disabled")
+        self.buttons["check"].configure(state="normal" if self.paths and not busy else "disabled")
+
+    # Structure check -----------------------------------------------------------------------------
+
+    def check(self):
+        profile = self.app._profile_or_log()
+        if profile is None or not self.paths:
+            return
+        self.probe_request = self.app.session.probe_inputs(profile, self.key, self.descriptors(),
+                                                           max_records=PROBE_RECORDS)
+        self.feedback.configure(text=f"Checking the first {PROBE_RECORDS:,} records of each file against the "
+                                     "selected map...", text_color=STATUS_COLOURS["info"])
+        self.refresh()
+
+    def show_probe(self, result):
+        if result.request != self.probe_request:
+            return False  # an older check, or the list changed since
+        self.probe_request = None
+        lines, failed = [], bool(result.message)
+        if result.message:
+            lines.append(result.message)
+        for path, summary, error in result.results:
+            name = Path(path).name
+            if error is not None:
+                failed = True
+                lines.append(f"FAILED {name}: {error.removeprefix(f'{path}: ')}")
+            elif summary.complete:
+                lines.append(f"OK {name}: whole file checked, {summary.records_checked:,} records, "
+                             f"{summary.channel_hits_checked:,} hits")
+            else:
+                total = f" of {summary.records_total:,} (from the file size)" if summary.records_total else ""
+                lines.append(f"OK {name}: first {summary.records_checked:,} records{total} pass")
+        if not failed:
+            lines.append("Partial check only: full validation runs before processing; the bytes cannot prove "
+                         "group versus coincidence.")
+        self.feedback.configure(text="\n".join(lines), text_color=STATUS_COLOURS["error" if failed else "ok"])
+        self.refresh()
+        return True
 
 
 class PETsysManager:
@@ -142,6 +448,13 @@ class PETsysManager:
         self.closed = False
         self.bias_unknown = False
         self.shutdown_timeout_s = SHUTDOWN_TIMEOUT_S
+        self._action = None             # the action of this window's workflow token
+        self._status_label = None       # where that workflow's progress is shown
+        self.last_conversion = None     # (run id, exact validated output descriptors) of the last conversion
+        self._last_raw = None           # the RAW input the running conversion reported
+        self.selections = {}
+        self.ask_files = filedialog.askopenfilenames   # dialogs are attributes so checks can answer them
+        self.ask_yes_no = messagebox.askyesno
         self.root.title(f"{TITLE} {__version__}")
         self.root.geometry("900x950")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -151,13 +464,19 @@ class PETsysManager:
         self.hw_trigger = tk.BooleanVar(root, False)
         self.raw_input = tk.StringVar(root)
         self.splits = tk.StringVar(root, "1")
+        self.convert_duration = tk.StringVar(root, "10")  # explicit; never parsed from the RAW name
+        self.hit_limit = tk.StringVar(root, "16")
+        self.coincidence_format = tk.StringVar(root, DataFormat.FIXED.value)
+        self.fixed_confirmed = tk.BooleanVar(root, False)  # profile capability
         self.qc_source = tk.StringVar(root, SourceMode.WITH.value)
         self.qc_plots = tk.BooleanVar(root, False)
         self.qc_slabs = tk.BooleanVar(root, False)
         self.safety_vars = {name: tk.StringVar(root) for name in SAFETY_FIELDS}
         self._build()
         for variable in (*self.vars.values(), *self.safety_vars.values(), self.acq_time, self.hw_trigger,
-                         self.raw_input, self.splits, self.qc_source, self.qc_plots, self.qc_slabs):
+                         self.raw_input, self.splits, self.convert_duration, self.hit_limit,
+                         self.coincidence_format, self.fixed_confirmed, self.qc_source, self.qc_plots,
+                         self.qc_slabs):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
         self.profile_state = session.open()
@@ -304,28 +623,59 @@ class PETsysManager:
         self._readiness(tab, ("daqd", "initialize", "acquire", "pipeline"))
 
     def _conversion_tab(self, tab):
+        small = {"font": ctk.CTkFont(size=11), "justify": "left", "anchor": "w", "wraplength": 780}
         selection = self._frame(tab, "Data File Selection")
-        self.entries["raw_input"] = [self._row(selection, 1, "RAW Data File:", self.raw_input,
-                                               lambda: self._browse(self.raw_input, "file"))]
+        self.entries["raw_input"] = [self._row(selection, 1, "RAW Data File (.rawf):", self.raw_input,
+                                               self._browse_raw)]
+        self.raw_plan = ctk.CTkLabel(selection, text="", **small)
+        self.raw_plan.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         settings = self._frame(tab, "Processing Settings")
         self._row(settings, 1, "Number of Split Files:", self.splits, width=100)
+        self._row(settings, 2, "RAW Acquisition Duration (s):", self.convert_duration, width=100)
+        self._row(settings, 3, "Max Hits per Side:", self.hit_limit, width=100)
+        self.split_plan = ctk.CTkLabel(settings, text="", **small)
+        self.split_plan.grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         options = self._frame(tab, "Conversion Options")
-        self._button(options, "convert_coincidence", "Convert Raw to Coincidence").grid(row=1, column=0, padx=20, pady=10)
-        self._button(options, "convert_group", "Convert Raw to Group").grid(row=1, column=1, padx=20, pady=10)
+        formats = ctk.CTkFrame(options, fg_color="transparent")
+        formats.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(formats, text="Coincidence output:").pack(side="left", padx=(0, 6))
+        for text, value in (("Fixed (calibration / LM)", DataFormat.FIXED), ("Compact (QC)", DataFormat.COMPACT)):
+            ctk.CTkRadioButton(formats, text=text, variable=self.coincidence_format, value=value.value).pack(
+                side="left", padx=4)
+        ctk.CTkCheckBox(options, variable=self.fixed_confirmed,
+                        text="Installed converters support fixed output (--writeBinaryFixed); saved in the profile"
+                        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        self._button(options, "convert_coincidence", "Convert Raw to Coincidence",
+                     command=lambda: self.convert(group=False)).grid(row=3, column=0, padx=20, pady=10)
+        self._button(options, "convert_group", "Convert Raw to Group (fixed)",
+                     command=lambda: self.convert(group=True)).grid(row=3, column=1, padx=20, pady=10)
+        self._button(options, "convert_stop", "STOP", width=100, fg_color=RED, hover_color=RED_HOVER,
+                     command=self.stop).grid(row=3, column=2, padx=20, pady=10)
+        status = self._frame(tab, "Conversion Result")
+        self.convert_status = ctk.CTkLabel(status, text="No conversion run in this session", **small)
+        self.convert_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        self._button(status, "use_outputs", "Use these outputs as processing inputs",
+                     command=self.use_conversion_outputs).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
         self._readiness(tab, ("convert_coincidence", "convert_group"))
 
     def _ldat_tab(self, tab):
+        self._selection(tab, "calibrate")
         frame = self._frame(tab, "Energy cal file generation")
         self._fields(frame, ("cog_limits_file", "calibration_dir", "report_dir"))
         self._button(frame, "calibrate", "Create Energy cal file").grid(row=4, column=0, columnspan=3, padx=20, pady=10)
         self._readiness(tab, ("calibrate",))
 
     def _lm_tab(self, tab):
+        self._selection(tab, "listmode")
         frame = self._frame(tab, "LM File Generation Settings")
         self._fields(frame, ("calibration_file", "cog_limits_file", "doi_limits_file", "pair_map_file",
                              "region_map_file", "lm_dir"))
         self._button(frame, "listmode", "Generate LM File").grid(row=7, column=0, columnspan=3, padx=20, pady=10)
         self._readiness(tab, ("listmode",))
+
+    def _selection(self, tab, key):
+        title, default = SELECTIONS[key]
+        self.selections[key] = InputSelection(self, tab, key, title, default)
 
     def _qc_tab(self, tab):
         settings = self._frame(tab, "Acquisition Settings")
@@ -351,6 +701,7 @@ class PETsysManager:
         self.qc_status = ctk.CTkLabel(status, text="Quality control is not connected yet",
                                       font=ctk.CTkFont(size=12))
         self.qc_status.grid(row=1, column=0, pady=10)
+        self._selection(tab, "qc_analyze")
         self._readiness(tab, ("qc", "qc_analyze"))
 
     def _add_logo(self):
@@ -383,7 +734,14 @@ class PETsysManager:
             elif event.kind == "readiness":
                 if event.payload.generation == self._awaiting:
                     self.shown_generation = event.payload.generation
-                    self._show_readiness({**event.payload.issues, **self._option_issues})
+                    found = event.payload.issues
+                    self._show_readiness({key: tuple(found.get(key, ())) + tuple(self._option_issues.get(key, ()))
+                                          for key in {*found, *self._option_issues}})
+            elif event.kind == "inputs_probed":
+                selection = self.selections.get(event.payload.key)
+                if selection is not None and selection.show_probe(event.payload):
+                    lines.append(f"{CHECKS[event.payload.key][1]} inputs checked: "
+                                 + selection.feedback.cget("text").splitlines()[0])
             elif event.kind == "daqd":
                 self._daqd_pending = False
                 self._accept_daqd(event.payload, lines)
@@ -489,26 +847,55 @@ class PETsysManager:
         elif kind == "bias_unknown":
             self.show_bias_unknown(event.message)
             text, tone = event.message, "error"
+        elif event.kind == "stage_started" and event.identity.stage_id == "conversion":
+            self._last_raw = payload.get("raw")
+            text = f"{event.message}\nRAW input: {payload.get('raw')}\nWriting to: {payload.get('directory')}"
+        elif event.kind == "stage_finished":
+            text = event.message
         elif event.kind == "workflow_finished":
             text = f"{payload['status']}: {event.message}"
         if text is not None:
-            self.acq_status.configure(text=text, text_color=STATUS_COLOURS[tone])
+            self._status_label.configure(text=text, text_color=STATUS_COLOURS[tone])
 
     def _workflow_done(self, result, lines):
         if result.token != self._token:
             lines.append(f"Ignored a stale workflow result (request {result.token})")
             return
+        action, label, run_id = self._action, self._status_label, self._run_id
         self._token, self._run_id, self._stop_requested = None, None, False
         outcome = result.outcome
         if outcome is None:
             text, tone = result.message, "warn"
         else:
-            text = f"Acquisition {outcome.status.value}: {outcome.message}"
+            text = f"{ACTION_TEXT.get(action, action.value)} {outcome.status.value}: {outcome.message}"
             if outcome.run_root is not None:
                 text += f"\nRun directory: {outcome.run_root}"
             tone = {ResultStatus.SUCCEEDED: "ok", ResultStatus.CANCELLED: "warn"}.get(outcome.status, "error")
-        self.acq_status.configure(text=text, text_color=STATUS_COLOURS[tone])
+            if action == Action.CONVERT:
+                text += self._conversion_report(outcome, run_id)
+        label.configure(text=text, text_color=STATUS_COLOURS[tone])
         lines.append(text)
+
+    def _conversion_report(self, outcome, run_id):
+        """The exact RAW input and the exact recorded outputs, in order; nothing is guessed from names."""
+        stage = next((item for item in outcome.stages if item.stage_id == "conversion"), None)
+        if stage is None:
+            return ""
+        text = f"\nRAW input: {self._last_raw}" if self._last_raw else ""
+        counts = {item["path"]: item["records"] for item in stage.details.get("ldat", ())}
+        outputs = outcome.outputs("conversion")
+        if outputs:
+            descriptor = outputs[0].input_descriptor
+            text += (f"\nOutputs ({len(outputs)}, {descriptor.format.value} {descriptor.population.value}, "
+                     "validated against the selected map, in this order):")
+            for index, artifact in enumerate(outputs, 1):
+                records = counts.get(str(artifact.path))
+                text += f"\n  {index}. {artifact.path}" + (f"   ({records:,} records)" if records is not None else "")
+            self.last_conversion = (run_id, tuple(artifact.input_descriptor for artifact in outputs))
+        empty = stage.details.get("empty_ldat", ())
+        if empty:
+            text += "\nEmpty split files (kept, not outputs): " + ", ".join(Path(path).name for path in empty)
+        return text
 
     def show_bias_unknown(self, message):
         self.bias_unknown = True
@@ -538,8 +925,12 @@ class PETsysManager:
             "initialize": not busy and ready and not initializing and self._ready.get("initialize", False),
             "acquire": (not busy and ready and status.initialized and not initializing and not self.bias_unknown
                         and self._ready.get("acquire", False)),
-            "stop": self._token is not None and not self._stop_requested and not self._shutting_down,
+            "use_outputs": not busy and self.last_conversion is not None,
         }
+        for key in ("convert_coincidence", "convert_group"):
+            enable[key] = not busy and self._ready.get(key, False)
+        for key in STOP_KEYS:
+            enable[key] = self._token is not None and not self._stop_requested and not self._shutting_down
         for key, button in self.buttons.items():
             button.configure(state="normal" if enable.get(key, False) else "disabled")
         self.daqd_state.set(live)
@@ -591,18 +982,79 @@ class PETsysManager:
             self.log(f"Acquisition not started: Acq. Time (s): {exc}")
             options = None
         if profile is not None and options is not None:
-            self._token = self.session.start_workflow(profile, Action.ACQUIRE, options)
-            self._run_id, self._stop_requested = None, False
-            self.acq_status.configure(text="Starting acquisition...", text_color=STATUS_COLOURS["info"])
+            self._start(profile, Action.ACQUIRE, options, self.acq_status, "Starting acquisition...")
         self._refresh_controls()
+
+    def convert(self, group=False):
+        """Manual conversion of the selected RAW with the explicit duration/split/hit settings shown."""
+        key = "convert_group" if group else "convert_coincidence"
+        profile = self._profile_or_log()
+        requests, issues = self.requests()
+        if key in issues:
+            self.log(f"{CHECKS[key][1]} not started: " + "; ".join(issue.message for issue in issues[key]))
+        elif profile is not None:
+            options = requests[key][1]
+            what = "fixed group" if group else f"{options.output_format.value} coincidence"
+            self._start(profile, Action.CONVERT, options, self.convert_status, f"Starting {what} conversion...")
+        self._refresh_controls()
+
+    def _start(self, profile, action, options, label, text):
+        self._token = self.session.start_workflow(profile, action, options)
+        self._action, self._status_label, self._last_raw = action, label, None
+        self._run_id, self._stop_requested = None, False
+        if action == Action.CONVERT:
+            self.last_conversion = None  # "Use these outputs" only ever means the run shown
+        label.configure(text=text, text_color=STATUS_COLOURS["info"])
 
     def stop(self):
         if self._token is not None and self.session.stop_workflow():
             self._stop_requested = True
-            self.acq_status.configure(text="STOP: terminating the acquisition and switching bias off; "
-                                           "no further attempt", text_color=STATUS_COLOURS["warn"])
+            text = ("STOP: terminating the acquisition and switching bias off; no further attempt"
+                    if self._action == Action.ACQUIRE else "STOP: terminating the conversion; no later stage")
+            self._status_label.configure(text=text, text_color=STATUS_COLOURS["warn"])
             self.log("STOP requested")
         self._refresh_controls()
+
+    def use_conversion_outputs(self):
+        """Hand the last conversion's exact validated outputs to the processing lists that accept them."""
+        if self.last_conversion is None:
+            return
+        run_id, descriptors = self.last_conversion
+        targets = OUTPUT_TARGETS[(descriptors[0].format, descriptors[0].population)]
+        for key in targets:
+            replaced = len(self.selections[key].paths)
+            self.selections[key].use_outputs(descriptors, run_id)
+            self.log(f"{CHECKS[key][1]} inputs: {len(descriptors)} output(s) of conversion run {run_id}"
+                     + (f" (replaced {replaced} listed file(s))" if replaced else ""))
+
+    def _update_conversion_plan(self):
+        """Exact converter input/output naming and split time for the current fields (display only)."""
+        raw = self.raw_input.get().strip()
+        group = "_group"
+        coincidence = "_coincFixed" if self.coincidence_format.get() == DataFormat.FIXED.value else "_coincCompact"
+        if raw:
+            path = Path(raw)
+            prefix = path.with_suffix("") if path.suffix == ".rawf" else path
+            text = f"Converter input (-i): {prefix}  (reads {prefix.name}.rawf and its .idxf index)"
+            if path.suffix != ".rawf":
+                text += "\nWARNING: select the acquisition's .rawf file"
+            text += (f"\nOutputs: a new run folder in the Output Data Folder, conversion/attempt-1/"
+                     f"{prefix.name}{coincidence}[_<n>].ldat (group: {prefix.name}{group}[_<n>].ldat)")
+        else:
+            text = "Select the RAW acquisition (.rawf); any file name is accepted"
+        self.raw_plan.configure(text=text)
+        try:
+            splits, duration = int(self.splits.get().strip()), float(self.convert_duration.get().strip())
+            if splits > 1 and duration > 0:
+                text = (f"--splitTime {duration / splits + SPLIT_TIME_OFFSET_S:g} s: duration {duration:g} s / "
+                        f"{splits} splits + {SPLIT_TIME_OFFSET_S:g} s (duration as entered, not from the file name)")
+            elif splits == 1:
+                text = "One output file (no --splitTime); split numbering, if any, comes from the converter"
+            else:
+                text = "Splits and duration must be positive"
+        except ValueError:
+            text = "Splits must be an integer and duration a number"
+        self.split_plan.configure(text=text)
 
     # Profile and options ------------------------------------------------------------------------
 
@@ -620,9 +1072,11 @@ class PETsysManager:
                 value = (profile.safety.min_growth_bytes / 1e6 if name == "min_growth_mb"
                          else getattr(profile.safety, name))
                 self.safety_vars[name].set(str(value) if type(value) is int else format(value, ".15g"))
+            self.fixed_confirmed.set(profile.capabilities.fixed_output_confirmed)
         finally:
             self._loading = False
         self._update_profile_status()
+        self._update_conversion_plan()
         self._run_check()
 
     def profile_from_ui(self):
@@ -632,6 +1086,8 @@ class PETsysManager:
         values["socket_path"] = self.vars["socket_path"].get().strip()
         values["cards"] = tuple(card.strip() for card in self.vars["cards"].get().split(",") if card.strip())
         values["safety"] = self.safety_from_ui()
+        values["capabilities"] = replace(self.session.profile.capabilities,
+                                         fixed_output_confirmed=self.fixed_confirmed.get())
         return replace(self.session.profile, **values)
 
     def safety_from_ui(self):
@@ -648,33 +1104,45 @@ class PETsysManager:
         return AcquisitionSafety(**values)  # range checks raise ProfileError
 
     def requests(self):
-        """Prerequisite requests per check plus run-option reasons found while parsing."""
+        """Prerequisite requests per check (action, options, exact inputs) plus reasons found while parsing."""
         requests, issues = {}, {}
 
-        def add(key, **options):
+        def reason(key, field, message):
+            issues[key] = issues.get(key, ()) + (PrerequisiteIssue(field, message),)
+
+        def add(key, inputs=(), **options):
             try:
-                requests[key] = (CHECKS[key][0], RunOptions(**options))
+                requests[key] = (CHECKS[key][0], RunOptions(**options), inputs)
             except ProfileError as exc:
-                issues[key] = (PrerequisiteIssue("options", str(exc)),)
+                reason(key, "options", str(exc))
 
         def number(variable, kind, label, keys):
             try:
                 return kind(variable.get().strip())
             except ValueError:
                 for key in keys:
-                    issues[key] = (PrerequisiteIssue("options", f"{label} must be a positive number"),)
+                    reason(key, "options", f"{label} must be {'a positive integer' if kind is int else 'a positive number'}")
 
         duration = number(self.acq_time, float, "Acq. Time (s)", ("acquire", "pipeline"))
-        splits = number(self.splits, int, "Number of Split Files", ("convert_coincidence", "convert_group"))
-        for key in ("daqd", "initialize", "calibrate", "listmode", "qc_analyze"):
+        conversions = ("convert_coincidence", "convert_group")
+        splits = number(self.splits, int, "Number of Split Files", conversions)
+        raw_duration = number(self.convert_duration, float, "RAW Acquisition Duration (s)", conversions)
+        hits = number(self.hit_limit, int, "Max Hits per Side", conversions)
+        for key in ("daqd", "initialize"):
             add(key)
+        for key, selection in self.selections.items():
+            add(key, selection.descriptors())
+            problem = selection.confirmation_issue()
+            if problem:
+                reason(key, "inputs", problem)
         if duration is not None:
             for key in ("acquire", "pipeline"):
                 add(key, duration_s=duration, hardware_trigger=self.hw_trigger.get())
-        if splits is not None:
-            raw = self.raw_input.get().strip() or None
-            add("convert_coincidence", splits=splits, raw_input=raw)
-            add("convert_group", splits=splits, raw_input=raw, population=Population.GROUP)
+        if None not in (splits, raw_duration, hits):
+            common = dict(splits=splits, duration_s=raw_duration, hit_limit=hits,
+                          raw_input=self.raw_input.get().strip() or None)
+            add("convert_coincidence", output_format=DataFormat(self.coincidence_format.get()), **common)
+            add("convert_group", population=Population.GROUP, **common)
         add("qc", source_mode=SourceMode(self.qc_source.get()), plots=self.qc_plots.get(),
             slabs=self.qc_plots.get() and self.qc_slabs.get())
         return requests, issues
@@ -683,6 +1151,7 @@ class PETsysManager:
         if self._loading or self._closing:
             return
         self._update_profile_status()
+        self._update_conversion_plan()
         if self._check_id is not None:
             self.root.after_cancel(self._check_id)
         self._check_id = self.root.after(CHECK_DELAY_MS, self._run_check)
@@ -751,6 +1220,14 @@ class PETsysManager:
                   else filedialog.askdirectory(initialdir=start))
         if chosen:
             variable.set(chosen)
+
+    def _browse_raw(self):
+        current = self.raw_input.get().strip() or self.vars["data_dir"].get().strip()
+        chosen = filedialog.askopenfilename(initialdir=str(Path(current).parent if current.endswith(".rawf")
+                                                           else current or Path.home()),
+                                            filetypes=[("PETsys RAW", "*.rawf"), ("All files", "*")])
+        if chosen:
+            self.raw_input.set(chosen)
 
     def _browse_profile(self):
         current = self.profile_path.get().strip()

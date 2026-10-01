@@ -482,8 +482,13 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
         effective_format = DataFormat.COMPACT if action == Action.QC else options.output_format
         if effective_format == DataFormat.FIXED and not profile.capabilities.fixed_output_confirmed:
             issue("capabilities.fixed_output_confirmed", "Installed converter fixed-output support is unconfirmed")
-    if action == Action.CONVERT:
-        need_file("raw_input")
+    if action == Action.CONVERT and need_file("raw_input"):
+        # PETsys RawReader opens <prefix>.rawf plus <prefix>.tmpf or <prefix>.idxf.
+        raw = paths["raw_input"]
+        if raw.suffix != ".rawf":
+            issue("raw_input", f"Select the acquisition's .rawf file; converters read <prefix>.rawf: {raw}")
+        elif not (probe.file(raw.with_suffix(".idxf")) or probe.file(raw.with_suffix(".tmpf"))):
+            issue("raw_input", f"RAW index not found (the converter reads it): {raw.with_suffix('.idxf')}")
     for name in sorted(tool_names):
         path = paths["petsys_folder"] / name if paths["petsys_folder"] is not None else None
         paths[f"tool:{name}"] = path
