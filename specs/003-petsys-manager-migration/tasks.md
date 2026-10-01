@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T11 are complete; T12 manual actions and fail-closed pipelines is next. Live hardware and GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T12 are complete; T13 manager shell is next. Live hardware and GUI wiring have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -357,13 +357,76 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
 ## Workflow and separate GUI
 
-- [ ] **T12 — Manual actions and fail-closed pipelines** (FR-5, FR-7, FR-9–FR-11, FR-13–FR-14, FR-16). Add workflow coordinator with settings snapshots and manifest-derived exact artifacts. Implement acquire/fixed/calibrate/LM and acquire/compact/QC stage graphs plus manual actions; preflight the entire chosen graph.
+- [x] **T12 — Manual actions and fail-closed pipelines** (FR-5, FR-7, FR-9–FR-11, FR-13–FR-14, FR-16). Add workflow coordinator with settings snapshots and manifest-derived exact artifacts. Implement acquire/fixed/calibrate/LM and acquire/compact/QC stage graphs plus manual actions; preflight the entire chosen graph.
 
   **Depends on:** T3–T7, T11.
 
   **Done when:** `python scripts/petsys_manager_check.py --workflows` runs fake successful graphs and injects spawn error/nonzero exit/invalid or missing output/STOP at every stage. No successor starts after failure/cancel; old similarly named files cannot substitute for new output. Only one foreground workflow starts; all paths end in consistent controls/state and unchanged persistent settings. QC uses correct 60/180 s presets and compact descriptors, full pipeline uses fixed coincidence, manual group action never feeds LM. Stage logs/manifests distinguish completed processing from QC findings.
 
-  **Verified:** pending.
+  **Verified 2026-10-01:** new tracked `src/petsys_manager/workflow.py`.
+  - **Graphs:**
+    - manual `acquire`, `convert` (fixed/compact coincidence or fixed group), `calibrate`, `listmode` and `qc_analyze` are single stages;
+    - `qc` is acquisition (60/180 s preset) → compact coincidence conversion → QC;
+    - `pipeline` is acquisition → fixed coincidence conversion → calibration → listmode.
+  - **`prepare(settings)`:** checks the whole graph from the immutable T2 preflight snapshot before anything is created or launched:
+    - the destination exists;
+    - every argv contract builds (acquisition, bias-off, conversion, internal CLI);
+    - the processing YAML/map loads, for conversion-output validation too;
+    - COG/DOI limits, pair/region maps, the manual calibration file and LM metadata load and are complete;
+    - manual inputs pass T5 `select_inputs`;
+    - the QC preset and the pipeline/QC formats are right.
+
+    A live graph also needs `prerequisite()` (DAQD initialized) at `start`.
+  - **`WorkflowCoordinator`:**
+    - one foreground workflow at a time (`WorkflowBusy`);
+    - one worker thread and one `RunStore` run per workflow, in `data_dir` for acquire/convert/qc/pipeline, `calibration_dir`, `lm_dir` or `report_dir` for manual processing;
+    - STOP (`handle.stop()`/`close`) cancels the running stage, the acquisition and its retries, and every later stage;
+    - sinks only receive `RunEvent`s (never Tk).
+  - **Exact artifacts:**
+    - Acquisition is the T7 service; the conversion consumes exactly its successful attempt's `.rawf` prefix.
+    - Conversion outputs come from `discover_ldat` against the pre-launch inventory of a fresh attempt directory. A pre-existing match fails the stage. Every nonempty file is fully T5-validated (selected map, hit limit) and gets a validated descriptor. Zero-length splits are recorded disposable, kept and excluded.
+    - Processing stages write an exclusive `request.json` from the snapshot (inputs are the predecessor's exact descriptors; listmode gets the calibration stage's `.encal` + sidecar). They run `build_internal` and accept only a `cli.read_result` whose request path/SHA-256 and action match, with every output (hash-verified) inside the attempt directory and the required kinds present.
+  - **Failure handling:** failure, launch error, invalid/missing output or STOP ends the graph and finalizes the run failed/cancelled; files are kept as unvalidated `partial_output`. QC success records `process: completed` and the findings separately; the outcome message says the findings are not a detector verdict.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_check.py --workflows` → **PASS 9/9**. The real `CommandRunner`/`AcquisitionService` run against a check-only backend: fake acquisition/converter/`set_bias` children; converters copy seeded T9/T10 synthetic LDAT.
+  - Pipeline:
+    - argv: `--time` 10, `convert_raw_to_coincidence --writeBinaryFixed -i <this attempt's RAW prefix>`;
+    - outputs: `_1`/`_2` validated fixed coincidence; `_9` (empty) disposable, kept and not an output; an old look-alike in `data_dir` is unused;
+    - downstream: the calibration and listmode requests use exactly those inputs; listmode uses the calibration stage's `.encal`/sidecar, the profile LM metadata and batch 1000.
+  - QC with/without source: `--time` 60/180, `--writeBinaryCompact`, compact QC inputs, request options exact (plots, slabs, source, duration, pair limit). Findings are separate from `process: completed`, and no "PASS" appears in manifests or events.
+  - Real CLI children (pipeline: calibrate → listmode; QC 180 s): LM provenance names the calibration stage's `.encal`; records > 0; inputs exact; QC summary in the stage's actual results directory, 1200 records, without/180 s; progress events forwarded.
+  - Faults: spawn error, nonzero exit, invalid output, missing output, STOP during, and STOP right after each stage, at all 4 pipeline and 3 QC stages (42 cases).
+    - No successor launches.
+    - The status is `launch_error`/`failed`/`cancelled`, never success; the run manifest is terminal with no partial attempts.
+    - An invalid/missing acquisition is retried (2 attempts), then stops.
+    - Afterwards a new workflow succeeds.
+  - Stale outputs: a pre-existing converter-named file, a foreign successful CLI result (old request digest), an output outside the attempt and a hash-mismatched output all fail.
+  - Single workflow: a second `start` raises `WorkflowBusy`; `close` stops the blocked acquisition, `set_bias` bias-off runs and the run ends `cancelled`; then a new workflow succeeds.
+  - Preflight, before any run directory or launch: corrupted pair map, missing destination, compact pipeline, wrong QC preset, convert without processing YAML, LM with group inputs, incomplete LM metadata, untyped settings, DAQD action, prerequisite not met.
+  - Manual actions:
+    - acquire, calibrate, listmode (profile calibration, no sidecar) and offline QC (source/duration not recorded) run one stage in their destination;
+    - fixed group conversion (RAW path with spaces/metacharacters) runs only `convert_raw_to_group`, gives group descriptors, and is refused by listmode `prepare`/preflight.
+  - Every run:
+    - the profile YAML, processing YAML/map/limits/maps/inputs are byte-identical and the settings snapshot is unchanged and recorded in the manifest;
+    - events are strictly ordered, carry this run's identity and bracket each stage;
+    - `workflow.py` imports without Tk/numba/matplotlib.
+
+  **Regressions:**
+  - manager modes plus `--cli --workflows` 175;
+  - numeric 80/80;
+  - T1 reference `--synthetic` 17/17;
+  - Inspector 59/59, slab 16/16, unpopulated 6/6;
+  - compile PASS.
+
+  The local T11 CLI check was made commit-state independent: uncommitted runtime files are audited, and the dependency diff is taken against the revision before `reportlab` was added.
+
+  **Design note:** a pipeline/QC run keeps every stage under its run directory in `data_dir`, because the run store accepts only outputs inside its attempts. `calibration_dir`, `lm_dir` and `report_dir` are destinations for the manual actions only; the GUI must show the recorded actual paths (T16).
+
+  **Still pending:**
+  - Linux `LinuxProcessBackend` runs of these graphs (T17), then live hardware (T19).
+  - GUI wiring (T13–T16).
+  - Empty-LDAT removal: `remove_empty_ldat` exists but is not enabled by default.
+  - File-level worker pooling.
 
 - [ ] **T13 — Manager shell, profiles and input UI** (FR-1, FR-3, FR-7, FR-16). Add separate launcher/GUI shell, five tabs, main-thread event poller, settings/profile controls and optional safe asset loading. Do not instantiate another Inspector root or change its code.
 
