@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the Windows checkout audit are done; its Linux run is pending a Linux conda environment. Live hardware runs have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the checkout audit (Windows and the Cornell Linux machine) are complete; T19 operator acceptance is next. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -824,13 +824,13 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - A person checks the actual GUI on a display.
   - Installed Cornell tools and hardware (T19).
 
-- [ ] **T18 — Deployment docs and clean-runtime-checkout audit** (FR-2, FR-16, FR-18). Update README/add repo deployment documentation with Linux launch/prerequisites/profile/format routes, external input checklist, runtime module map and safety semantics. Preserve original repository and external shortcuts.
+- [x] **T18 — Deployment docs and clean-runtime-checkout audit** (FR-2, FR-16, FR-18). Update README/add repo deployment documentation with Linux launch/prerequisites/profile/format routes, external input checklist, runtime module map and safety semantics. Preserve original repository and external shortcuts.
 
   **Depends on:** T11–T17.
 
   **Done when:** `python scripts/petsys_manager_checkout_check.py --tracked-runtime` audits intended tracked runtime files/dependencies without ignored-script references, writes an isolated runtime copy for headless imports/fixture CLI checks and proves no original private settings/data are needed for import/startup validation. Include new intended tracked files explicitly if not yet staged; do not stage automatically. Linux startup/offline fixture checks run from a different cwd using explicit external settings. README distinguishes supported fixed/compact/group routes and unavailable hardware/data. No build/release, sibling edits or shortcut changes occur.
 
-  **Partly verified 2026-10-02 (Windows); Linux pending, so not ticked:**
+  **Verified 2026-10-02 (Windows, then the Cornell Linux machine):**
   - **Docs:**
     - New `docs/petsys_manager.md`:
       - status table (what is checked and what is pending);
@@ -852,7 +852,12 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
       - `load_profile()` without a file is the empty profile, and nothing is saved.
     - **Processing from the copy:** calibrate, listmode and QC run as `python -u -m src.cornell.cli` children with cwd = the copy, as `build_internal` launches them. The `.encal` and status bytes equal the working checkout's `calibrate()`.
     - **Explicit external profile:** a profile saved outside the checkout drives preflight, `prepare` and the copy's `WorkflowCoordinator` for a manual LM run. The stage launches `-u -m src.cornell.cli listmode` with cwd = the copy, writes to the profile's `lm_dir`, leaves the profile byte-identical, and the `.lm` bytes equal the working checkout's in-process run. On Windows the coordinator uses check-only direct children, because the production backend refuses non-Linux by design.
-  - **Still pending (blocker for ticking T18):** the Linux run of `--tracked-runtime` (startup and offline fixtures with the production backend from another cwd). WSL Ubuntu-24.04 has only system Python 3.12.3 without numpy/PyYAML/matplotlib; a Linux `process_petsys` conda environment is needed (owner decision: install it in WSL, or run it on the Cornell machine at T19).
+  - **Cornell Linux run (owner over TeamViewer, 2026-10-02):** host `sie`, Ubuntu 24.04.4 LTS, kernel 6.8.0-139-generic x86_64, the existing `process_petsys` conda environment (Python 3.10.14, conda-forge).
+    - **Setup:** a fresh clone of a `git bundle` of `main` at `4eb197f` in `~/pm_t18`, clean status, plus the 8 local check scripts the audit needs, copied into its `scripts/` (checked here first to run with all `scripts_cornell` access blocked). Run from `~`. No PETsys tools, daqd, hardware, data or existing checkout were touched.
+    - **Results:** `petsys_manager_checkout_check.py --tracked-runtime` → **PASS 5/5**. The manual LM workflow ran with the **production** `LinuxProcessBackend` (`manual LM backend: production`). Same 34-module closure; same dependency report. `petsys_manager_linux_check.py --all` → **PASS 16/16** (process groups, DAQD and acquisition dummies) on the deployment machine.
+    - **Finding, fixed with owner approval:** the first Cornell run failed 1/5. The headless import probe runs with `-s`, and there `customtkinter` was missing. `customtkinter` 5.2.2 and its dependency `darkdetect` 0.8.0 were installed only in `sie`'s user site (`~/.local/lib/python3.10/site-packages`, together with `natsort` 8.4.0), not in the conda environment. The GUI therefore depended on one user's personal packages.
+    - **Fix:** the owner ran `conda run -n process_petsys python -s -m pip install customtkinter==5.2.2 darkdetect==0.8.0`. Plain `pip install --no-user` reported "already satisfied" from the user site, so `-s` was needed. `python -s -c "import customtkinter"` now resolves to `~/miniconda3/envs/process_petsys/lib/python3.10/site-packages/`. The `~/.local` copies were left in place (same version; they still come first on the default path, so behaviour is unchanged). The check was not changed.
+  - **Docs:** `docs/petsys_manager.md` prerequisites now say to verify the environment with `python -s` and to install with `python -s -m pip`.
 
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 

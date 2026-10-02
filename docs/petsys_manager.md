@@ -8,12 +8,15 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
 |---|---|
 | Offline processing (calibration, LM, offline QC) | Checked on synthetic fixtures and read-only Cornell structure probes (Windows) |
 | Hardware workflows (DAQD, initialize, acquire, live QC, pipeline) | Checked with fake and dummy processes only; **not yet run on the Cornell machine** (T19) |
-| Linux runtime environment | Standard-library process checks pass under WSL; the full conda runtime on Linux is **unverified** |
+| Linux runtime environment | Clean-checkout audit (5/5, production process backend) and dummy process checks (16/16) pass on the Cornell machine (2026-10-02) |
 | Comparison with the installed reference scripts on real data | **Pending** (T19) |
 
 ## Prerequisites (Cornell Linux machine)
 
 - **The `process_petsys` conda environment** from `process_petsys.yml`. It covers numpy, scipy, matplotlib, pandas, pyyaml, numba, openpyxl, reportlab, tqdm and customtkinter; Pillow comes in through matplotlib/reportlab. After pulling, update an existing environment with `conda env update --name process_petsys --file process_petsys.yml`.
+  - Packages in a user's `~/.local` site-packages can hide gaps in the environment: on the Cornell machine `customtkinter` was found there and not in the environment.
+  - Check with `conda run -n process_petsys python -s -c "import numpy, yaml, scipy, matplotlib, pandas, numba, openpyxl, reportlab, tqdm, customtkinter, PIL, tkinter"`; `-s` ignores `~/.local`.
+  - Install anything missing with `conda run -n process_petsys python -s -m pip install <package>==<version from process_petsys.yml>`. Plain `pip install` reports a `~/.local` copy as already installed.
 - **A desktop session** for the Tk window. Processing runs in background child processes and does not need the display.
 - **The PETsys `sw_daq_tofpet2` tools folder**, containing `daqd`, `init_system`, `acquire_sipm_data`, `set_bias`, `convert_raw_to_coincidence` and `convert_raw_to_group`. Fixed coincidence output needs the converter build with `--writeBinaryFixed`; confirm it in the profile (`capabilities.fixed_output_confirmed`) after checking the installed converter.
 - **DAQ character devices** for `PFP_KX7` (one or two; the default is `/dev/psdaq1`, `/dev/psdaq0`).
