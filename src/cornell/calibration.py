@@ -869,7 +869,10 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
 
 
 def _sample(descriptor, context, add, event_limit, batch_records, cancelled, progress, *, validate):
-    """One pass over one file: pass 1 reads (and validates) all of it; pass 2 stops at the limit."""
+    """One pass over one file, validating what it reads; both passes stop at the limit (FR-24).
+
+    ``validate`` is kept for the call sites; records after the limit are neither read nor validated.
+    """
     reader = _Reader(descriptor, context.mapped, batch_records, cancelled)
     rejected = dict.fromkeys(REJECTIONS, 0)
     passed_total = accepted = 0
@@ -877,9 +880,7 @@ def _sample(descriptor, context, add, event_limit, batch_records, cancelled, pro
     read = 0
     for records, batch in reader:
         if stopped:
-            if not validate:
-                break
-            continue    # pass 1 keeps reading only to validate the whole file
+            break
         if progress is not None:
             progress(descriptor.path, reader.records)
         counted = dict.fromkeys(REJECTIONS, 0)
@@ -954,7 +955,9 @@ def sidecar(result, calibration_sha256):
                 "min_events": MIN_EVENTS, "outer_slabs": "0/15 take slab 1/14",
                 "estimates": f"fitted neighbours, else minimodule median (>= {MIN_FITTED_FOR_ESTIMATE} fitted)"},
         "sampling": {"batch_records": result.batch_records, "passing_event_limit_per_file": result.event_limit,
-                     "limit_semantics": "a file stops once more events than the limit have passed"},
+                     "limit_semantics": "a file stops once more events than the limit have passed",
+                     "validation": "records_validated = records read (whole reader batches); records after a limit "
+                                   "stop are neither read nor validated (FR-24)"},
         "sources": result.sources,
         "inputs": [{"path": str(f.path), "format": f.format.value, "records_validated": f.records_validated,
                     "records_read": f.records_read, "events_passed": f.events_passed,

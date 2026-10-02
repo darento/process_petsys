@@ -198,6 +198,7 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 | FR-21 | Compact/per-slab/position calibration, LM per-slab lookup | T20, T16, T19 |
 | FR-22 | Compact LM and pipeline conversion format | T21, T19 |
 | FR-23 | PETsys Python interpreter for init/acquire/bias tools | T22, T19 |
+| FR-24 | Each stage validates only the records it reads, in one pass | T24, T19 |
 
 ## Alternatives rejected
 

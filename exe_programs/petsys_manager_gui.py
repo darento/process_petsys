@@ -1017,7 +1017,7 @@ class PETsysManager:
             if stage.stage_id == "acquisition":
                 text += f" ({stage.details.get('attempts')} attempt(s))"
             elif stage.stage_id == "conversion":
-                text += f" ({len(stage.artifacts)} validated {stage.details.get('format')} "\
+                text += f" ({len(stage.artifacts)} structure-checked {stage.details.get('format')} "\
                         f"{stage.details.get('population')} file(s))"
             elif stage.stage_id == "calibration" and summary:
                 layout = "one factor per slab" if summary.get("layout") == "per_slab" else \
@@ -1062,15 +1062,19 @@ class PETsysManager:
         if stage is None:
             return ""
         text = f"\nRAW input: {self._last_raw}" if self._last_raw else ""
-        counts = {item["path"]: item["records"] for item in stage.details.get("ldat", ())}
+        counts = {item["path"]: item for item in stage.details.get("ldat", ())}
         outputs = outcome.outputs("conversion")
         if outputs:
             descriptor = outputs[0].input_descriptor
             text += (f"\nOutputs ({len(outputs)}, {descriptor.format.value} {descriptor.population.value}, "
-                     "validated against the selected map, in this order):")
+                     "structure-checked against the selected map, in this order; each processing stage "
+                     "validates the records it reads):")
             for index, artifact in enumerate(outputs, 1):
-                records = counts.get(str(artifact.path))
-                text += f"\n  {index}. {artifact.path}" + (f"   ({records:,} records)" if records is not None else "")
+                item = counts.get(str(artifact.path)) or {}
+                records, checked = item.get("records"), item.get("records_checked")
+                note = (f"{records:,} records" if records is not None else
+                        f"first {checked:,} records checked" if checked is not None else "")
+                text += f"\n  {index}. {artifact.path}" + (f"   ({note})" if note else "")
             self.last_conversion = (run_id, tuple(artifact.input_descriptor for artifact in outputs))
         empty = stage.details.get("empty_ldat", ())
         if empty:

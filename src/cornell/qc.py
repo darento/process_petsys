@@ -43,7 +43,7 @@ from src.mapping_generator import ChannelType
 from src.utils import get_max_num_ch, get_maxEnergy_sm_mM, get_slab_cornell
 
 from src.petsys_manager.contracts import DataFormat, InputDescriptor, Population, SourceMode
-from .inputs import InputError, ProcessingConfig, ValidationCancelled, validate_ldat
+from .inputs import InputError, ProcessingConfig
 
 GENERATOR = "src.cornell.qc (spec 003 T10; reference cornell_system_validation.py)"
 PAIR_LIMIT = 1_000_001              # reference breaks once accepted pairs exceed 1,000,000
@@ -167,12 +167,15 @@ class Accumulators:
         return self.minimodules.nbytes + self.slab_energy.nbytes + self.floods.nbytes
 
 
-def read_pairs(path, en_min_ch):
+def read_pairs(path, en_min_ch, channels=None):
     """Reference ``read_compact.read_binary_file(path, en_min_ch)`` without tqdm.
 
     Yields (det1, det2) lists of (timestamp, energy, channel) tuples keeping hits
     with energy >= ``en_min_ch``. Truncation raises instead of yielding garbage.
+    With ``channels`` (the selected map), every hit read, dropped ones included, gets the
+    T5 checks before its pair is yielded (FR-24: QC validates the records it reads).
     """
+    record = 0
     with open(path, "rb") as stream:
         while True:
             header = stream.read(2)
@@ -181,11 +184,21 @@ def read_pairs(path, en_min_ch):
             if len(header) != 2:
                 raise InputError(f"Truncated compact header: {path}")
             sides = []
-            for count in header:
+            for side, count in enumerate(header):
+                if channels is not None and count == 0:
+                    raise InputError(f"Invalid compact hit count at record {record}, side {side}")
                 payload = stream.read(count * _HIT.size)
                 if len(payload) != count * _HIT.size:
                     raise InputError(f"Truncated compact hits: {path}")
-                sides.append([hit for hit in _HIT.iter_unpack(payload) if hit[1] >= en_min_ch])
+                hits = list(_HIT.iter_unpack(payload))
+                if channels is not None:
+                    for _, energy, channel in hits:
+                        if channel not in channels:
+                            raise InputError(f"{path}: record {record}, side {side}: unmapped channel {channel}")
+                        if not math.isfinite(energy):
+                            raise InputError(f"{path}: record {record}, side {side}: nonfinite energy")
+                sides.append([hit for hit in hits if hit[1] >= en_min_ch])
+            record += 1
             yield sides[0], sides[1]
 
 
@@ -201,14 +214,15 @@ class FileSample:
     stopped_at_limit: bool
     rejected: dict
     slab_flags: dict
+    records_in_file: int | None = None   # known only when the whole file was read (FR-24)
 
     @property
     def accepted_sides(self):
         return 2 * self.accepted_pairs
 
 
-def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, validated_records=0,
-                flush_sides=DEFAULT_FLUSH_SIDES, cancelled=None, progress=None):
+def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, flush_sides=DEFAULT_FLUSH_SIDES,
+                cancelled=None, progress=None):
     """Reference ``extract_data_dict`` for one file, merged into ``accumulators``."""
     mapping = config.mapping
     types, modules, local = mapping.types, mapping.modules, mapping.local
@@ -233,7 +247,7 @@ def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, validated_
         for values in (mm_keys, slab_keys, energies, flood_sm, flood_x, flood_y):
             values.clear()
 
-    for det1, det2 in read_pairs(path, en_min_ch):
+    for det1, det2 in read_pairs(path, en_min_ch, modules):
         read += 1
         if cancelled is not None and read % 1024 == 0 and cancelled():
             raise QCCancelled("QC cancelled")
@@ -290,8 +304,9 @@ def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, validated_
     flush()
     if progress is not None:
         progress(path, read)
-    return FileSample(str(path), validated_records, read, processed, occupancy_pairs, occupancy_hits, accepted,
-                      stopped, rejected, dict(zip(SLAB_FLAGS, flags)))
+    # FR-24: the records read are the records validated; the file total is known only if read whole.
+    return FileSample(str(path), read, read, processed, occupancy_pairs, occupancy_hits, accepted,
+                      stopped, rejected, dict(zip(SLAB_FLAGS, flags)), None if stopped else read)
 
 
 @dataclass(frozen=True)
@@ -461,23 +476,23 @@ def _check_options(descriptors, config, plots, slabs, source_mode, acquisition_t
 
 def run_qc(descriptors, config, *, plots=False, slabs=False, source_mode=None, acquisition_time_s=None,
            pair_limit=PAIR_LIMIT, flush_sides=DEFAULT_FLUSH_SIDES, cancelled=None, progress=None):
-    """Validate every input (T5), sample each file in the given order, then fit. Writes nothing."""
+    """Sample each file in the given order, validating the records read (FR-24), then fit. Writes nothing."""
     descriptors = tuple(descriptors)
     _check_options(descriptors, config, plots, slabs, source_mode, acquisition_time_s, pair_limit)
     mapping = config.mapping
     acc = Accumulators(plots, slabs)
     files = []
     for descriptor in descriptors:
-        try:
-            summary = validate_ldat(descriptor, mapping.modules, cancelled=cancelled)
-        except ValidationCancelled as exc:
-            raise QCCancelled("QC cancelled during input validation") from exc
-        files.append(sample_file(descriptor.path, config, acc, pair_limit=pair_limit,
-                                 validated_records=summary.records, flush_sides=flush_sides,
+        if cancelled is not None and cancelled():
+            raise QCCancelled("QC cancelled")
+        before = os.stat(descriptor.path)
+        if before.st_size == 0:
+            raise InputError(f"Empty LDAT: {descriptor.path}")
+        files.append(sample_file(descriptor.path, config, acc, pair_limit=pair_limit, flush_sides=flush_sides,
                                  cancelled=cancelled, progress=progress))
         info = os.stat(descriptor.path)
-        if (info.st_size, info.st_mtime_ns) != (summary.file_size, summary.mtime_ns):
-            raise InputError(f"Input changed after validation: {descriptor.path}")
+        if (info.st_size, info.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+            raise InputError(f"Input changed while reading: {descriptor.path}")
     absent = unpopulated(config)
     expected = expected_channels(mapping, absent)
     occupancy = {sm: dict(sorted(channels.items())) for sm, channels in sorted(acc.occupancy.items())}

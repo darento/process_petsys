@@ -20,6 +20,8 @@ import stat
 import struct
 from types import MappingProxyType
 
+from numba import njit
+import numpy as np
 import yaml
 
 from src.fem_handler import get_FEM_instance
@@ -535,6 +537,145 @@ class ValidationSummary:
     mtime_ns: int
 
 
+# Record checks: one compiled pass over raw bytes that releases the GIL, so a worker
+# thread validating a large file does not starve the Tk thread. Same checks, order and
+# first error as reading record by record (FR-15; Cornell T19 freeze, 2026-10-02).
+_BAD_COUNT, _UNMAPPED, _NONFINITE, _TRUNCATED_HEADER, _TRUNCATED_HITS = 1, 2, 3, 4, 5
+_MAX_CHANNEL_LOOKUP = 1 << 26
+_MAX_COMPACT_RECORD = 2 + 2 * 255 * 16   # largest compact coincidence record
+
+
+def _mapped_array(channels):
+    """Bitset of the mapped channel IDs (``channel in channels``); its size follows the map, not the data."""
+    keys = np.fromiter(channels.keys(), dtype=np.int64, count=len(channels))
+    if keys.min() < 0 or keys.max() >= _MAX_CHANNEL_LOOKUP:
+        raise InputError("Channel IDs of the selected map exceed the validation lookup bound")
+    mapped = np.zeros(int(keys.max()) // 8 + 1, dtype=np.uint8)
+    np.bitwise_or.at(mapped, keys >> 3, (1 << (keys & 7)).astype(np.uint8))
+    return mapped
+
+
+@njit(cache=True, nogil=True)
+def _check_hits(buf, start, count, mapped):
+    """(kind, channel) of the first bad hit, or (0, 0): unmapped before nonfinite, per hit."""
+    for i in range(count):
+        h = start + 16 * i
+        channel = np.int64(buf[h + 12]) | (np.int64(buf[h + 13]) << 8) | (np.int64(buf[h + 14]) << 16) \
+            | (np.int64(buf[h + 15]) << 24)
+        if channel >= 2147483648:
+            channel -= 4294967296
+        if channel < 0 or (channel >> 3) >= mapped.shape[0] or not (mapped[channel >> 3] >> (channel & 7)) & 1:
+            return 2, channel
+        exponent = ((np.int64(buf[h + 11]) & 0x7F) << 1) | (np.int64(buf[h + 10]) >> 7)
+        if exponent == 0xFF:            # float32 inf or nan
+            return 3, channel
+    return 0, 0
+
+
+@njit(cache=True, nogil=True)
+def _scan_kernel(buf, fixed, sides, limit, mapped, max_records, eof):
+    """Validate whole records in ``buf``.
+
+    Returns (records, hits, bytes used, error kind, error record, error side, channel).
+    Fixed: ``max_records`` records of ``sides + sides * limit * 16`` bytes. Compact: up to
+    ``max_records`` (-1: all); an incomplete last record is left for the next block unless
+    ``eof``, where it is a truncation error.
+    """
+    n = buf.shape[0]
+    done = 0
+    hits = 0
+    pos = 0
+    if fixed:
+        size = sides + sides * limit * 16
+        for r in range(max_records):
+            base = r * size
+            for s in range(sides):
+                count = np.int64(buf[base + s])
+                if count < 1 or count > limit:
+                    return done, hits, pos, 1, r, s, 0
+                kind, channel = _check_hits(buf, base + sides + s * limit * 16, count, mapped)
+                if kind:
+                    return done, hits, pos, kind, r, s, channel
+                hits += count
+            done += 1
+            pos = base + size
+        return done, hits, pos, 0, 0, 0, 0
+    while max_records < 0 or done < max_records:
+        start = pos
+        if pos >= n:
+            break
+        if pos + sides > n:
+            if eof:
+                return done, hits, start, 4, done, 0, 0
+            break
+        p = pos + sides
+        record_hits = 0
+        for s in range(sides):
+            count = np.int64(buf[start + s])
+            if count < 1 or count > limit:
+                return done, hits, start, 1, done, s, 0
+            if p + 16 * count > n:
+                if eof:
+                    return done, hits, start, 5, done, s, 0
+                return done, hits, start, 0, 0, 0, 0
+            kind, channel = _check_hits(buf, p, count, mapped)
+            if kind:
+                return done, hits, start, kind, done, s, channel
+            p += 16 * count
+            record_hits += count
+        hits += record_hits
+        done += 1
+        pos = p
+    return done, hits, pos, 0, 0, 0, 0
+
+
+def _raise_record_error(path, kind, record, side, channel, fmt):
+    if kind == _BAD_COUNT:
+        raise InputError(f"Invalid {fmt} hit count at record {record}, side {side}")
+    if kind == _UNMAPPED:
+        raise InputError(f"{path}: record {record}, side {side}: unmapped channel {channel}")
+    if kind == _NONFINITE:
+        raise InputError(f"{path}: record {record}, side {side}: nonfinite energy")
+    if kind == _TRUNCATED_HEADER:
+        raise InputError("Truncated compact coincidence header")
+    raise InputError(f"Truncated compact hits at record {record}, side {side}")
+
+
+def mapped_channels(channels):
+    """Channel lookup for :func:`check_fixed_records` (the selected map's channel IDs)."""
+    if not isinstance(channels, Mapping) or not channels:
+        raise InputError("Validation requires the selected channel mapping")
+    return _mapped_array(channels)
+
+
+def fixed_layout(path, sides, expected_hit_limit=None):
+    """Hit limit and record size of a fixed file, with the T5 header and size-arithmetic checks."""
+    size = os.stat(path).st_size
+    if size == 0:
+        raise InputError(f"Empty LDAT: {path}")
+    with open(path, "rb") as stream:
+        header = stream.read(4)
+    if len(header) != 4:
+        raise InputError("Truncated fixed hit-limit header")
+    limit = _integer(struct.unpack("<i", header)[0], "fixed hit limit", 1, 255)
+    if expected_hit_limit is not None and limit != expected_hit_limit:
+        raise InputError("Fixed hit limit differs from explicit conversion settings")
+    record_bytes = sides + sides * limit * HIT.size
+    if size <= 4 or (size - 4) % record_bytes:
+        raise InputError("Empty/truncated fixed records or inconsistent remainder/population")
+    return limit, record_bytes, (size - 4) // record_bytes
+
+
+def check_fixed_records(records, sides, limit, mapped, first_record, path):
+    """T5 checks on whole fixed records already read (a contiguous array of them), in the reader's pass
+    (FR-24). Returns the active hits; raises the :func:`validate_ldat` error for the first bad record."""
+    buffer = np.ascontiguousarray(records).view(np.uint8).reshape(-1)
+    done, hits, _, kind, at, side, channel = _scan_kernel(buffer, True, sides, limit, mapped, len(records), True)
+    if kind:
+        _raise_record_error(path, kind, first_record + at, side, channel, "fixed")
+    return hits
+
+
 def validate_ldat(descriptor, channels, *, batch_records=5000, max_batch_bytes=MAX_BATCH_BYTES,
                   expected_hit_limit=None, cancelled=None):
     """Full strict scan. Counts describe input pairs/groups/sides/hits before cuts.
@@ -596,17 +737,12 @@ def _scan(descriptor, channels, *, batch_records, max_batch_bytes, expected_hit_
     sides = 1 if descriptor.population == Population.GROUP else 2
     records = hits = consumed = peak = 0
     limit = None
-    stopped = False
+    mapped = _mapped_array(channels)
     def check_stop():
         if cancelled is not None and cancelled():
             raise ValidationCancelled("Input validation cancelled")
-    def hit_check(payload, count, offset, record, side):
-        for index in range(count):
-            _, energy, channel = HIT.unpack_from(payload, offset + index * HIT.size)
-            if channel not in channels:
-                raise InputError(f"{descriptor.path}: record {record}, side {side}: unmapped channel {channel}")
-            if not math.isfinite(energy):
-                raise InputError(f"{descriptor.path}: record {record}, side {side}: nonfinite energy")
+    def fail(kind, record, side, channel, fmt):
+        _raise_record_error(descriptor.path, kind, record, side, channel, fmt)
     with descriptor.path.open("rb") as stream:
         before = os.fstat(stream.fileno())
         if before.st_size == 0:
@@ -624,7 +760,7 @@ def _scan(descriptor, channels, *, batch_records, max_batch_bytes, expected_hit_
                 raise InputError("Empty/truncated fixed records or inconsistent remainder/population")
             batch_bytes = min(batch_records, max_batch_bytes // record_bytes) * record_bytes
             consumed = 4
-            while not stopped:
+            while True:
                 check_stop()
                 payload = stream.read(batch_bytes)
                 if not payload:
@@ -632,43 +768,47 @@ def _scan(descriptor, channels, *, batch_records, max_batch_bytes, expected_hit_
                 if len(payload) % record_bytes:
                     raise InputError("Truncated fixed record during reading")
                 peak = max(peak, len(payload))
-                for offset in range(0, len(payload), record_bytes):
-                    if max_records is not None and records >= max_records:
-                        stopped = True
-                        break
-                    for side in range(sides):
-                        count = payload[offset + side]
-                        if not 1 <= count <= limit:
-                            raise InputError(f"Invalid fixed hit count at record {records}, side {side}")
-                        hit_check(payload, count, offset + sides + side * limit * HIT.size, records, side)
-                        hits += count
-                    records += 1
+                count = len(payload) // record_bytes
+                if max_records is not None:
+                    count = min(count, max_records - records)
+                done, side_hits, pos, kind, at, side, channel = _scan_kernel(
+                    np.frombuffer(payload, dtype=np.uint8), True, sides, limit, mapped, count, True)
+                if kind:
+                    fail(kind, records + at, side, channel, "fixed")
+                records += done
+                hits += side_hits
                 consumed += len(payload)
                 del payload
-            complete = 4 + records * record_bytes == before.st_size
-        else:
-            while True:
-                check_stop()
                 if max_records is not None and records >= max_records:
                     break
-                header = stream.read(2)
-                if not header:
+            complete = 4 + records * record_bytes == before.st_size
+        else:
+            # Bounded blocks; an incomplete record is carried to the next block (at most
+            # 2 + 2 x 255 hits). Checks and their order are those of the record-by-record reading.
+            # readinto one uninitialized buffer: no large fills or copies while holding the GIL.
+            buffer = np.empty(min(max_batch_bytes, before.st_size) + _MAX_COMPACT_RECORD, dtype=np.uint8)
+            view = memoryview(buffer)
+            carried = 0
+            while max_records is None or records < max_records:
+                check_stop()
+                read = stream.readinto(view[carried:carried + max_batch_bytes]) or 0
+                length = carried + read
+                if not length:
                     break
-                if len(header) != 2:
-                    raise InputError("Truncated compact coincidence header")
-                consumed += 2
-                for side, count in enumerate(header):
-                    if not 1 <= count <= (expected_hit_limit or 255):
-                        raise InputError(f"Invalid compact hit count at record {records}, side {side}")
-                    payload = stream.read(count * HIT.size)
-                    if len(payload) != count * HIT.size:
-                        raise InputError(f"Truncated compact hits at record {records}, side {side}")
-                    hit_check(payload, count, 0, records, side)
-                    peak = max(peak, len(payload) + 2)
-                    hits += count
-                    consumed += len(payload)
-                    del payload
-                records += 1
+                peak = max(peak, length)
+                remaining = -1 if max_records is None else max_records - records
+                done, side_hits, pos, kind, at, side, channel = _scan_kernel(
+                    buffer[:length], False, sides, expected_hit_limit or 255, mapped, remaining, read == 0)
+                if kind:
+                    fail(kind, records + at, side, channel, "compact")
+                records += done
+                hits += side_hits
+                consumed += pos
+                carried = length - pos              # at most one incomplete record
+                buffer[:carried] = buffer[pos:length].copy()
+                if not read:
+                    break
+            view.release()
             complete = consumed == before.st_size
         after = os.fstat(stream.fileno())
     current = descriptor.path.stat()

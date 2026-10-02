@@ -61,7 +61,7 @@ from src.petsys_manager.contracts import DataFormat, InputDescriptor, Population
 from src.petsys_manager.settings import LMMetadata
 from .calibration import HIT_DTYPE, CalibrationMaps, _Reader, create_region_boundaries
 from .inputs import (Calibration, ChannelMap, InputError, Limits, NumericTable, ProcessingConfig,
-                     ValidationCancelled, _metadata_bytes, _rows, validate_ldat)
+                     _metadata_bytes, _rows, check_fixed_records, fixed_layout, mapped_channels)
 
 GENERATOR = "src.cornell.listmode (spec 003 T9; reference cornell_listmode_cog_fixed_position.py)"
 RTP_Y_VAL = 2
@@ -921,13 +921,14 @@ def _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
 
 def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, batch_records, debug,
                   cancelled, progress, index, hit_limit=None):
-    try:
-        summary = validate_ldat(descriptor, mapping.modules, cancelled=cancelled,
-                                expected_hit_limit=hit_limit if descriptor.format == DataFormat.COMPACT else None)
-    except ValidationCancelled as exc:
-        raise ListmodeCancelled("Listmode cancelled during input validation") from exc
-    if summary.records == 0:
-        raise InputError(f"No coincidence records: {descriptor.path}")
+    # FR-24: one pass; each record is validated as it is read, before the merged LM exists.
+    before = os.stat(descriptor.path)
+    fixed = descriptor.format == DataFormat.FIXED
+    if fixed:
+        limit, _, expected_records = fixed_layout(descriptor.path, 2)
+        mapped = mapped_channels(mapping.modules)
+    elif before.st_size == 0:
+        raise InputError(f"Empty LDAT: {descriptor.path}")
     name = segment_name(descriptor.path)
     token = uuid4().hex
     segment = segments / f"{name}-{token}.part"
@@ -941,6 +942,8 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
         for chunk in _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
             if cancelled is not None and cancelled():
                 raise ListmodeCancelled("Listmode cancelled")
+            if fixed:
+                check_fixed_records(chunk, 2, limit, mapped, records, descriptor.path)
             records += len(chunk)
             payload = process_batch(chunk, ctx, rejected, observations, slab_flags, file_debug).tobytes()
             out.write(payload)
@@ -951,12 +954,15 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
         out.flush()
         os.fsync(out.fileno())
     info = os.stat(descriptor.path)
-    if (info.st_size, info.st_mtime_ns) != (summary.file_size, summary.mtime_ns) or records != summary.records:
-        raise InputError(f"Input changed after validation: {descriptor.path}")
+    if (info.st_size, info.st_mtime_ns) != (before.st_size, before.st_mtime_ns) or (
+            fixed and records != expected_records):
+        raise InputError(f"Input changed while reading: {descriptor.path}")
+    if records == 0:
+        raise InputError(f"No coincidence records: {descriptor.path}")
     if records != written + sum(rejected.values()):
         raise InputError(f"Listmode pair accounting failed for {descriptor.path}")
     record = {"schema_version": 1, "job_sha256": job_sha256, "input": job_input,
-              "validated_records": summary.records, "records_read": records, "records_written": written,
+              "validated_records": records, "records_read": records, "records_written": written,
               "rejected": rejected, "observations": observations,
               "slab_flags": {str(k): v for k, v in sorted(slab_flags.items())},
               "segment": {"name": segment.name, "bytes": segment.stat().st_size, "sha256": digest.hexdigest()},
@@ -967,7 +973,7 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
             file_debug.save(out)
         record["debug"] = {"name": path.name, "sha256": _sha256(path)}
     _write_json_exclusive(segments / f"{name}.json", record)      # completion record, written last
-    item = FileListmode(Path(descriptor.path), summary.records, records, written, rejected, observations,
+    item = FileListmode(Path(descriptor.path), records, records, written, rejected, observations,
                         slab_flags, segment, digest.hexdigest(), record["segment"]["bytes"])
     return item, file_debug
 

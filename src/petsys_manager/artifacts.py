@@ -285,8 +285,7 @@ class RunStore:
             raise ArtifactError("LDAT requires an explicit format/population descriptor")
         if descriptor is not None and _absolute(descriptor.path) != path:
             raise ArtifactError("Artifact descriptor path does not match its file")
-        if validated and descriptor is not None and not descriptor.validated:
-            raise ArtifactError("Successful data artifact needs a validated descriptor")
+        # A successful LDAT may be structure-checked only (FR-24): its descriptor says whether it was read whole.
         if artifact.disposable and (artifact.kind != "ldat" or path.suffix != ".ldat"
                                     or info.st_size != 0):
             raise ArtifactError("Only explicitly empty LDAT may be disposable")

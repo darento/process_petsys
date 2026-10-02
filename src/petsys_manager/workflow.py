@@ -63,6 +63,7 @@ STAGES = {
 DESTINATIONS = {Action.ACQUIRE: "data_dir", Action.CONVERT: "data_dir", Action.QC: "data_dir",
                 Action.PIPELINE: "data_dir", Action.CALIBRATE: "calibration_dir", Action.LISTMODE: "lm_dir",
                 Action.QC_ANALYZE: "report_dir"}
+CONVERSION_CHECK_RECORDS = 10_000   # FR-24: converter outputs are structure-checked, not read whole
 CLI_ACTIONS = {"calibration": "calibrate", "listmode": "listmode", "qc": "qc"}
 STAGE_ACTIONS = {"calibration": Action.CALIBRATE, "listmode": Action.LISTMODE, "qc": Action.QC_ANALYZE}
 REQUIRED_KINDS = {"calibrate": {"encal", "calibration_sidecar", "calibration_status", "calibration_plot"},
@@ -491,7 +492,7 @@ class WorkflowCoordinator:
     # Conversion ----------------------------------------------------------------
 
     def _conversion(self, handle, plan, store, context):
-        from src.cornell.inputs import InputError, ValidationCancelled, validate_ldat
+        from src.cornell.inputs import InputError, ValidationCancelled, probe_ldat
 
         settings = plan.settings
         options = settings.options
@@ -515,27 +516,32 @@ class WorkflowCoordinator:
                 if artifact.path.stat().st_size == 0:
                     empty.append(replace(artifact, disposable=True))
                     continue
-                try:
-                    summary = validate_ldat(artifact.input_descriptor, mapping.modules,
-                                            expected_hit_limit=options.hit_limit, cancelled=handle._cancel.is_set)
+                try:   # FR-24: structure check only; the consuming stage validates what it reads
+                    summary = probe_ldat(artifact.input_descriptor, mapping.modules,
+                                         max_records=CONVERSION_CHECK_RECORDS, expected_hit_limit=options.hit_limit,
+                                         cancelled=handle._cancel.is_set)
                 except ValidationCancelled:
-                    return OutputValidation(False, "Cancelled while validating converter output")
+                    return OutputValidation(False, "Cancelled while checking converter output")
                 except InputError as exc:
                     return OutputValidation(False, f"Converter output invalid: {exc}")
-                validated.append(replace(artifact, input_descriptor=summary.descriptor))
-                counts.append({"path": str(artifact.path), "records": summary.records,
-                               "detector_sides": summary.detector_sides, "channel_hits": summary.channel_hits})
+                checked = replace(summary.descriptor, validated=summary.complete)   # whole small file: validated
+                validated.append(replace(artifact, input_descriptor=checked))
+                counts.append({"path": str(artifact.path), "records": summary.records_total,
+                               "records_checked": summary.records_checked, "whole_file_checked": summary.complete,
+                               "channel_hits_checked": summary.channel_hits_checked, "file_bytes": summary.file_size})
             if empty:
                 store.record_artifacts(attempt, empty)      # recorded, kept (no cleanup by default)
             if not validated:
                 return OutputValidation(False, f"No nonempty converter output for prefix {prefix.name}")
-            return OutputValidation(True, f"{len(validated)} validated LDAT file(s)", validated)
+            return OutputValidation(True, f"{len(validated)} structure-checked LDAT file(s)", validated)
 
         command = build_conversion(settings, identity, prefix, raw_input=raw)
         result = self._runner(settings).run(command, cancellation=handle._cancel, validate_outputs=validate,
                                             log_sink=self._log)
         details = {"ldat": counts, "empty_ldat": [str(a.path) for a in empty],
-                   "format": plan.conversion_format.value, "population": plan.conversion_population.value}
+                   "format": plan.conversion_format.value, "population": plan.conversion_population.value,
+                   "output_check": f"structure: first {CONVERSION_CHECK_RECORDS:,} records of each file (fixed: "
+                                   "plus size arithmetic); each later stage validates the records it reads (FR-24)"}
         result = self._finish(store, attempt, result, details, exclude={str(a.path) for a in empty})
         if result.status == ResultStatus.SUCCEEDED:
             context["inputs"] = tuple(a.input_descriptor for a in result.artifacts)
