@@ -1017,6 +1017,10 @@ class PETsysManager:
                         f"have a factor ({counts})"
             elif stage.stage_id == "listmode" and summary:
                 text += f"\n  {summary.get('records_written', 0):,} LM records written"
+                if summary.get("calibration_non_positive_mu_as_no_factor"):
+                    text += f"\n  Warning: {summary['calibration_non_positive_mu_as_no_factor']:,} calibration " \
+                            "row(s) with mu <= 0 (failed fits) were read as no factor; their pairs are rejected " \
+                            "as missing calibration. The keys are in the LM provenance."
             elif stage.stage_id == "qc":
                 findings = stage.details.get("findings") or {}
                 summary_path = next((a.path for a in stage.artifacts if a.kind == "qc_summary"), None)
@@ -1025,6 +1029,11 @@ class PETsysManager:
                 text += "\n  Processing completed. Findings are observations of the coincidence sample, not a " \
                         "detector verdict:"
                 text += "".join(f"\n    {key.replace('_', ' ')}: {value}" for key, value in findings.items())
+            widths = {k: v for k, v in (summary.get("zero_width_limit_keys") or {}).items() if v}
+            if widths:
+                text += "\n  Warning: zero-width limits (left = right) for " + ", ".join(
+                    f"{v:,} {k.upper()} key(s)" for k, v in widths.items()) + \
+                    "; their sides fall out of range, as in the reference. The keys are in the provenance."
             if stage.stage_id != "conversion":
                 for artifact in stage.artifacts:
                     if artifact.kind not in HIDDEN_ARTIFACTS:

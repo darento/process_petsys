@@ -6,10 +6,10 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
 
 | Area | State |
 |---|---|
-| Offline processing (calibration, LM, offline QC) | Checked on synthetic fixtures and read-only Cornell structure probes (Windows) |
+| Offline processing (calibration, LM, offline QC) | Checked on synthetic fixtures, and on six real January 2026 Cornell splits against the reference scripts (Windows, 2026-10-02) |
 | Hardware workflows (DAQD, initialize, acquire, live QC, pipeline) | Checked with fake and dummy processes only; **not yet run on the Cornell machine** (T19) |
 | Linux runtime environment | Clean-checkout audit (5/5, production process backend) and dummy process checks (16/16) pass on the Cornell machine (2026-10-02) |
-| Comparison with the installed reference scripts on real data | **Pending** (T19) |
+| Comparison with the reference scripts on real data | Pass on the January 2026 Cornell data: calibration, LM and QC identical to the reference ([`acceptance.md`](../specs/003-petsys-manager-migration/acceptance.md)). Repeat on a new Cornell acquisition during operator acceptance (T19) |
 
 ## Prerequisites (Cornell Linux machine)
 
@@ -143,6 +143,8 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - Failed or partial outputs are kept and marked unvalidated.
   - A run manifest records the settings snapshot, the exact inputs and every output with its hash. Later stages use only the outputs recorded for this run, never similarly named files.
 - **Calibration:** a new `.encal` is never applied automatically. The GUI offers it for LM as an unsaved profile edit.
+  - An existing `.encal` row with μ ≤ 0 (a failed legacy fit) is read as "no factor", as the reference LM does: its pairs are rejected as missing calibration, and the keys are listed in the LM provenance and as a warning in the log. Nothing is estimated in their place; to fill them from neighbours, make a new calibration, whose status file labels borrowed and estimated keys.
+  - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.
 - **LM header:** the 11 metadata fields come from the profile. Empty fields block LM; there are no hardcoded values. The pipeline writes its own Acq. Time as the acquisition and measurement time.
 

@@ -390,6 +390,7 @@ def run_calibrate(request, events, cancelled):
                     "events_passed": f.events_passed, "accepted_sides": f.accepted_sides,
                     "stopped_at_limit": f.stopped_at_limit, "rejected": f.rejected} for f in result.files],
         "status_counts": result.status_counts(), "keys": len(result.keys), "factors": len(result.factors),
+        "zero_width_limit_keys": {"cog": len(limits.zero_width) if limits is not None else 0},
         "energy_units": "a.u.",
     }
     return written, summary
@@ -405,10 +406,11 @@ def run_listmode(request, events, cancelled):
     calibration = load_calibration(files["calibration"], mapping, expected_regions=options["num_regions"],
                                    region_boundaries=options["region_boundaries"],
                                    metadata_path=files["calibration_sidecar"])
+    cog = load_limits(files["cog_limits"], mapping, kind="cog")
+    doi = load_limits(files["doi_limits"], mapping, kind="doi")
     paths = [str(d.path) for d in descriptors]
     result = lm.generate_listmode(
-        descriptors, config, calibration, load_limits(files["cog_limits"], mapping, kind="cog"),
-        load_limits(files["doi_limits"], mapping, kind="doi"), lm.load_pair_map(files["pair_map"]),
+        descriptors, config, calibration, cog, doi, lm.load_pair_map(files["pair_map"]),
         lm.load_region_map(files["region_map"], mapping), options["metadata"], request.outputs["directory"],
         resume=options["resume"], debug=options["debug"], batch_records=options["batch_records"],
         cancelled=cancelled,
@@ -431,6 +433,8 @@ def run_listmode(request, events, cancelled):
                     "reused_segment": f.reused} for f in result.files],
         "rejected": result.totals("rejected"), "observations": result.totals("observations"),
         "en_min_ch_applied": False,
+        "calibration_non_positive_mu_as_no_factor": len(calibration.non_positive),
+        "zero_width_limit_keys": {"cog": len(cog.zero_width), "doi": len(doi.zero_width)},
     }
     return written, summary
 

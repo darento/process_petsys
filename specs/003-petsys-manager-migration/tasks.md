@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the checkout audit (Windows and the Cornell Linux machine) are complete; T19 operator acceptance is next. Live hardware runs have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the checkout audit (Windows and the Cornell Linux machine) are complete. T19 real-data parity passed on the owner workstation (2026-10-02); its live Cornell operator acceptance is next. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -865,7 +865,30 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
   **Done when:** `python scripts/petsys_manager_reference_check.py --real --manifest <operator-baseline.json>` records input/settings/version fingerprints and parity for fixed calibration/LM and compact QC at predefined tolerances. Operator records live initialization, monitored acquisition (including that `set_bias --power off` exists and switches bias off after a STOP/abort), both coincidence conversions, group conversion/manual group calibration where used, LM compatibility with its consumer, 60/180 s QC with plot/slab options, complete pipeline, failure/STOP/retry and close. Existing data survives; no owned children remain; actual result locations and scope match reports. Representative Cornell/IMAS Inspector regression results and the FR-by-FR pass/fail table are recorded. Only all completion criteria passing permits `Status: shipped`; sibling retirement remains a separate owner decision.
 
-  **Verified:** pending; requires Cornell Linux hardware/operator and representative data, not available as a demonstrated check on this workstation.
+  **Progress 2026-10-02 (owner request "continue with T19"):** record in [`acceptance.md`](acceptance.md).
+  - **Real-data parity (section A), owner workstation:** `--real --manifest` added to the local reference check. The comparison is in `scripts/petsys_manager_real_check.py`; the operator baseline is `scripts/petsys_manager_t19_baseline_jan2026.json`; `--only calibration|listmode|qc` runs a subset.
+    - The reference scripts run in process as oracles (no `main()`, no pools), with `np.random`/`random` seeded identically on both sides. Inputs are read only and fingerprinted before and after.
+    - Final run on the final code → **PASS 8/8**. Results: `C:\Users\dsanchez\AppData\Local\Temp\process_petsys\petsys-manager-real-20261002T092346Z-2a5a5253\real_baseline.json`.
+    - Dataset: January 2026 Cornell, six fixed and six compact splits, with the owner limits and maps.
+    - P = 1 compact `.encal` and status byte-identical to the reference-written files; fixed ≡ compact.
+    - P = 5 byte-identical to the reference-function oracle on the first 400,000 passing events per file; whole-file P = 5 fixed ≡ compact.
+    - LM byte-identical to the reference loop: 2,267,361 records.
+    - QC equal to the reference `process_file`/fits: 6,000,006 accepted pairs; counts, occupancy, histograms, 6,690 fits and floods.
+  - **Two real-data findings, owner decisions, FR-12 amended:**
+    - The owner 5-region `.encal` has 4 rows with μ ≤ 0 (failed legacy fits). `load_calibration` now reads them as no factor, as the reference does (`Calibration.non_positive`). They are recorded in the LM job/provenance (`non_positive_mu_as_no_factor`) and the CLI summary, and the GUI shows a warning. Before, it refused the file.
+    - The owner DOI limits have the zero-width row `(136027, 0) 3.2 3.2`. `load_limits` now keeps zero-width rows (`Limits.zero_width`) for the reference formulas, which put their sides out of range. They are recorded in the LM provenance, the calibration sidecar, the CLI summary and a GUI warning. A row with right < left still refuses the file.
+  - **Expected-difference handling in the real check:**
+    - A reference QC fit with μ ≤ 0 or non-finite μ/σ must be `invalid_result` in ours (T10). None occurred in the six-file run.
+    - Uncommitted runtime changes are recorded by diff SHA-256 rather than refused.
+  - **Checks:** numeric `--formats --listmode` 55/55. New tests:
+    - μ ≤ 0 rows read as no factor;
+    - LM with negative-μ keys byte-identical to the reference loop, with the keys in provenance;
+    - LM with zero-width DOI and COG keys byte-identical to the reference loop, with a reversed row still refused.
+
+    Regressions after both changes: manager `--all` 175/175, calibration 14/14, numeric `--all` 86/86, GUI `--all` 25/25. Inspector, source unchanged: selftest 59/59; `--real` scale 15/15, unpopulated 8/8, views 174/174, pair choices 19/19, issue 8/8; slab convention 16/16. Compile PASS.
+  - **For information:** the new P = 5 calibration compared with the legacy `fit_gaussian` file over 31,553 common keys: median μ ratio +1.0 %; |Δμ|/μ 3.0 % (50th percentile), 78 % (95th), 188 % (99th). For the 4 failed keys, the new calibration fits `(4360, 2, *)` and borrows slab 1 for the slab-0 keys.
+
+  **Verified:** pending. Live acceptance (section B) on the Cornell Linux machine with hardware and an operator is still open. So are a representative IMAS Inspector run (no IMAS acquisition on the owner workstation), LM consumer compatibility and timestamp units, the installed tool versions, and the FR-by-FR live lines.
 
 ## Planning validation
 

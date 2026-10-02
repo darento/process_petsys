@@ -393,6 +393,7 @@ class Limits:
     sha256: str
     kind: str
     values: NumericTable
+    zero_width: tuple = ()          # keys with left == right: kept, their sides fall out of range (FR-12)
 
 
 def load_limits(path, mapping, *, kind):
@@ -401,7 +402,7 @@ def load_limits(path, mapping, *, kind):
     if kind not in ("cog", "doi"):
         raise InputError("Limits require explicit COG or DOI kind")
     rows, digest = _rows(path)
-    entries = []
+    entries, zero_width = [], []
     for number, line in rows:
         if line.startswith("#"):
             continue
@@ -413,12 +414,14 @@ def load_limits(path, mapping, *, kind):
             left, right = (_number(float(value), f"limits row {number}") for value in fields[1:])
         except ValueError as exc:
             raise InputError(f"Invalid limits row {number}: {exc}") from exc
-        if right <= left:
-            raise InputError(f"Limits row {number}: right must exceed left")
+        if right < left:
+            raise InputError(f"Limits row {number}: right must not be below left")
+        if right == left:     # the reference formulas put every side of this key out of range
+            zero_width.append(key)
         entries.append((key, (left, right)))
     if not entries:
         raise InputError("Limits contain no entries")
-    return Limits(Path(path).resolve(), digest, kind, NumericTable(tuple(entries)))
+    return Limits(Path(path).resolve(), digest, kind, NumericTable(tuple(entries)), tuple(zero_width))
 
 
 def _boundaries(values, count):
@@ -441,6 +444,7 @@ class Calibration:
     metadata: FrozenMapping
     layout: str = "position"        # "position": (time_ch, slab, region); "per_slab": (time_ch, slab)
     unfitted: int = 0               # "0\t0" rows (the reference writes every mapped key)
+    non_positive: tuple = ()        # keys whose finite mu <= 0 (failed legacy fits) read as no factor
 
 
 def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=None,
@@ -463,7 +467,7 @@ def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=
         layout, regions, body, arity = "position", _integer(int(match[1]), "calibration regions", 1, 1000), rows[2:], 3
     if expected_regions is not None and _integer(expected_regions, "selected regions", 1, 1000) != regions:
         raise InputError("Selected region count differs from calibration")
-    entries, unfitted = [], 0
+    entries, unfitted, non_positive = [], 0, []
     for number, line in body:
         fields = line.split("\t")
         if len(fields) != 3:
@@ -476,8 +480,12 @@ def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=
                 unfitted += 1     # the reference's "no factor" row: a missing key, never a factor
                 entries.append((key, None))
                 continue
-            mu = _number(float(fields[1]), "mu (a.u.)", positive=True)
+            mu = _number(float(fields[1]), "mu (a.u.)")
             sigma = _number(float(fields[2]), "sigma (a.u.)", nonnegative=True)
+            if mu <= 0:           # the reference LM uses only mu > 0: a key without a factor (FR-12)
+                non_positive.append(key)
+                entries.append((key, None))
+                continue
         except ValueError as exc:
             raise InputError(f"Calibration row {number}: {exc}") from exc
         entries.append((key, (mu, sigma)))
@@ -511,7 +519,7 @@ def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=
             raise InputError("Calibration sidecar fingerprint is missing/stale")
         boundaries, provenance = supplied, str(Path(metadata_path).resolve())
     return Calibration(Path(path).resolve(), digest, regions, NumericTable(tuple(entries)),
-                       boundaries, provenance, freeze(metadata), layout, unfitted)
+                       boundaries, provenance, freeze(metadata), layout, unfitted, tuple(non_positive))
 
 
 @dataclass(frozen=True)

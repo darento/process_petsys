@@ -861,7 +861,8 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
     sources = {"processing_config": {"path": str(config.path), "sha256": config.sha256},
                "map": {"path": str(mapping.path), "sha256": mapping.sha256}}
     if positions > 1:
-        sources["cog_limits"] = {"path": str(limits.path), "sha256": limits.sha256}
+        sources["cog_limits"] = {"path": str(limits.path), "sha256": limits.sha256,
+                                 "zero_width_keys": [list(k) for k in limits.zero_width]}
     return CalibrationResult(positions, tuple(float(b) for b in context.boundaries), data_format, population,
                              context.min_ch, context.en_min_ch, event_limit, batch_records, tuple(files),
                              tuple(sorted(_mapped_keys(mapping, positions))), factors, statuses, sources=sources)
