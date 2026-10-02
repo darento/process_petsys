@@ -149,7 +149,10 @@ class LMMetadata:
         return tuple(item.name for item in fields(self) if getattr(self, item.name) is None)
 
 
-_PATH_FIELDS = ("petsys_folder", "processing_root", "ini_file", "yaml_file", "data_dir",
+# PETsys tools that are Python scripts (FR-23): run with the profile's petsys_python when set.
+PETSYS_PYTHON_TOOLS = ("init_system", "acquire_sipm_data", "set_bias")
+
+_PATH_FIELDS = ("petsys_folder", "petsys_python", "processing_root", "ini_file", "yaml_file", "data_dir",
                 "calibration_dir", "report_dir", "lm_dir", "cog_limits_file", "doi_limits_file",
                 "calibration_file", "pair_map_file", "region_map_file")
 
@@ -158,6 +161,7 @@ _PATH_FIELDS = ("petsys_folder", "processing_root", "ini_file", "yaml_file", "da
 class MachineProfile:
     schema_version: int = SCHEMA_VERSION
     petsys_folder: str | None = None
+    petsys_python: str | None = None      # interpreter PETsys was installed for (FR-23); None: tool shebang
     processing_root: str | None = None
     ini_file: str | None = None
     yaml_file: str | None = None
@@ -186,6 +190,8 @@ class MachineProfile:
             _text(getattr(self, name), name, optional=True)
         for name in ("daq_type", "socket_path", "shared_memory_path"):
             _text(getattr(self, name), name)
+        if self.petsys_python is not None and not _absolute_path(self.petsys_python):
+            raise ProfileError("petsys_python must be an absolute interpreter path")
         if not _absolute_path(self.socket_path) or not _absolute_path(self.shared_memory_path):
             raise ProfileError("DAQ socket/shared-memory paths must be absolute")
         if isinstance(self.cards, str) or not isinstance(self.cards, (tuple, list)):
@@ -447,6 +453,8 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
     root = _resolve(profile.processing_root, checkout) or checkout
     paths = {name: _resolve(getattr(profile, name), root) for name in _PATH_FIELDS}
     paths["processing_root"] = root
+    if profile.petsys_python is not None:      # as given: resolving a venv's symlinked python would leave the venv
+        paths["petsys_python"] = Path(profile.petsys_python).expanduser()
     if options.raw_input is not None:
         paths["raw_input"] = _resolve(options.raw_input, root)
     issues = []
@@ -500,6 +508,8 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             issue("raw_input", f"Select the acquisition's .rawf file; converters read <prefix>.rawf: {raw}")
         elif not (probe.file(raw.with_suffix(".idxf")) or probe.file(raw.with_suffix(".tmpf"))):
             issue("raw_input", f"RAW index not found (the converter reads it): {raw.with_suffix('.idxf')}")
+    if tool_names & set(PETSYS_PYTHON_TOOLS) and paths["petsys_python"] is not None             and not probe.executable(paths["petsys_python"]):
+        issue("petsys_python", f"PETsys Python interpreter not found or not executable: {paths['petsys_python']}")
     for name in sorted(tool_names):
         path = paths["petsys_folder"] / name if paths["petsys_folder"] is not None else None
         paths[f"tool:{name}"] = path

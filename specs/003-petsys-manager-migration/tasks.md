@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the checkout audit (Windows and the Cornell Linux machine) are complete. T19 real-data parity passed on the owner workstation (2026-10-02); its live Cornell operator acceptance is next. T21 (compact LM and pipeline, FR-22, owner request 2026-10-02) is complete. Live hardware runs have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the checkout audit (Windows and the Cornell Linux machine) are complete. T19 real-data parity passed on the owner workstation (2026-10-02); its live Cornell operator acceptance is next. T21 (compact LM and pipeline, FR-22, owner request 2026-10-02) is complete. T22 (PETsys Python interpreter, FR-23) is complete. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -882,6 +882,26 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
     - Real data (`--real --only listmode`, January splits 3–8): fixed LM byte-identical to the reference loop, and compact LM (hit limit 16 from the fixed header) byte-identical to it: **PASS 4/4**, 2,267,361 records, sha256 `725efe83…5884`; compact 253 s vs fixed 192 s. Results `C:\Users\dsanchez\AppData\Local\Temp\process_petsys\petsys-manager-real-20261002T123710Z-2a8af9d2\real_baseline.json`. The first attempt failed only because the check's compact output path exceeded the Windows 260-character limit; the check now writes to a shorter folder.
   - **Updated expectations:** the T2 settings check (compact pipeline accepted, group refused, compact LM ready, mixed refused), the T12 workflow preflight case (pipeline group instead of compact), the T15/T16 GUI route texts and output targets, and the CLI request helpers (`hit_limit`).
   - **Regressions:** manager `--all` 176/176; numeric `--all` 88/88; GUI `--shell --acquisition --conversion --processing --real` 25/25; calibration 14/14; T1 reference `--synthetic` 17/17; compile PASS. Inspector source unchanged.
+
+- [x] **T22 — PETsys Python interpreter for the PETsys Python tools** (FR-3, FR-4, FR-16, FR-23). Owner request 2026-10-02: on the Cornell machine, Initialize failed with `ModuleNotFoundError: No module named 'bitarray'` because `init_system` (`#!/usr/bin/env python3`) ran with the `process_petsys` env Python; PETsys is installed for `/usr/bin/python3` (has `bitarray`; `~/miniconda3/bin/python3` does not). The old GUI worked because the operator deactivated the env first.
+
+  **Depends on:** T2, T3, T6, T7, T13.
+
+  **Done when:**
+  - profile field `petsys_python` (absolute, optional; saved/loaded; GUI Settings field);
+  - with it set, `init_system`, `acquire_sipm_data` and `set_bias` argv start with the interpreter, and their environment has no `CONDA_*`/`_CE_*`/`PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV` and the interpreter's folder first on `PATH`; `daqd`, converters and an empty setting are unchanged;
+  - a missing interpreter blocks Initialize/Acquire/QC/pipeline only; a relative path is refused;
+  - on Linux, real processes: without the setting a conda-like `python3` first on `PATH` runs the tool (the Cornell failure); with `/usr/bin/python3` the tool and a nested `env python3` run `/usr/bin/python3` without conda variables.
+
+  **Verified 2026-10-02:**
+  - **`settings.py`:** `MachineProfile.petsys_python` (absolute or refused), in the path fields but kept as given (a venv's symlinked python must not be resolved out of its venv); `PETSYS_PYTHON_TOOLS`; preflight issue `petsys_python` when any of those tools is needed and the interpreter is not executable.
+  - **`commands.py`:** `_external` runs those tools as `<petsys_python> <tool> …` with `petsys_python_environment` (drops `CONDA_*`, `_CE_*`, `PYTHONHOME`, `PYTHONPATH`, `PYTHONEXECUTABLE`, `VIRTUAL_ENV`, `__PYVENV_LAUNCHER__`; interpreter folder first on `PATH`, other entries kept in order); caller overrides still apply last. The init argv is part of `InitConfig`, so changing the interpreter invalidates initialization (existing T6 rule).
+  - **GUI:** Settings field "PETsys Python (init/acquire/bias)" with Browse, saved in the profile.
+  - **Checks:**
+    - `petsys_manager_check.py --settings --commands` 45/45, new `test_command_petsys_python_runs_python_tools_without_manager_activation`: argv/environment of the three tools, `daqd` and an empty setting unchanged, preflight per action, relative path refused, profile round-trip.
+    - WSL Ubuntu 24.04 `/usr/bin/python3 -B scripts/petsys_manager_linux_check.py --all` → **PASS 17/17**, new `--petsys-python` check with real processes: a fake env `python3` first on `PATH` (exit 3) makes the shebang-run tool fail as on the Cornell machine; with `petsys_python: /usr/bin/python3` the tool and its nested `env python3` both run `/usr/bin/python3`, with no `CONDA_*` or `PYTHONPATH`.
+  - **Regressions:** manager `--all` 177/177; GUI `--shell --acquisition --conversion --processing --real` 25/25; compile PASS. Processing code unchanged (numeric/LM/QC not affected).
+  - **Still pending:** Initialize on the Cornell machine with `petsys_python: /usr/bin/python3` (T19 step 2).
 
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 

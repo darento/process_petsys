@@ -51,6 +51,7 @@ SHUTDOWN_TIMEOUT_S = 60.0
 # Profile fields: (name, label, browse kind). INI and processing YAML are separate selections.
 PROFILE_FIELDS = {
     "petsys_folder": ("PETsys Tools Folder:", "dir"),
+    "petsys_python": ("PETsys Python (init/acquire/bias):", "file"),   # FR-23; empty: the tools' shebang
     "ini_file": ("PETsys INI (DAQ/conversion):", "file"),
     "yaml_file": ("Processing YAML (cal/LM/QC):", "file"),
     "processing_root": ("Root for relative map paths:", "dir"),
@@ -599,10 +600,10 @@ class PETsysManager:
         self.profile_status = ctk.CTkLabel(profile, text="", justify="left", anchor="w", wraplength=780)
         self.profile_status.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         settings = self._frame(tab, "Settings")
-        self._fields(settings, ("petsys_folder", "ini_file", "data_dir"))
-        for row, (name, label) in enumerate(DAQ_FIELDS.items(), 4):
+        self._fields(settings, ("petsys_folder", "petsys_python", "ini_file", "data_dir"))
+        for row, (name, label) in enumerate(DAQ_FIELDS.items(), 5):
             self.entries[name] = [self._row(settings, row, label, self.vars[name])]
-        self._row(settings, 7, "Acq. Time (s):", self.acq_time, width=100)
+        self._row(settings, 8, "Acq. Time (s):", self.acq_time, width=100)
         safety = self._frame(tab, "Acquisition Safety Limits")
         safety.grid_columnconfigure(3, weight=1)
         for index, (name, (label, _)) in enumerate(SAFETY_FIELDS.items()):

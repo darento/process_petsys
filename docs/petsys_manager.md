@@ -19,6 +19,7 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
   - Install anything missing with `conda run -n process_petsys python -s -m pip install <package>==<version from process_petsys.yml>`. Plain `pip install` reports a `~/.local` copy as already installed.
 - **A desktop session** for the Tk window. Processing runs in background child processes and does not need the display.
 - **The PETsys `sw_daq_tofpet2` tools folder**, containing `daqd`, `init_system`, `acquire_sipm_data`, `set_bias`, `convert_raw_to_coincidence` and `convert_raw_to_group`. Fixed output needs a converter build with `--writeBinaryFixed` (not in stock PETsys; check with `strings <tools>/convert_raw_to_coincidence | grep -i fixed`) and confirmation in the profile (`capabilities.fixed_output_confirmed`). Without it, use compact: calibration, LM and the pipeline all accept compact coincidence.
+- **The Python PETsys was installed for.** `init_system`, `acquire_sipm_data` and `set_bias` are Python scripts (`#!/usr/bin/env python3`) that need that interpreter's packages (`bitarray`, `pandas`). On the Cornell machine this is the system `/usr/bin/python3`; the `process_petsys` env lacks `bitarray`. Set `petsys_python` in the profile so the manager runs them with it (FR-23); check with `/usr/bin/python3 -c "import bitarray, pandas"`.
 - **DAQ character devices** for `PFP_KX7` (one or two; the default is `/dev/psdaq1`, `/dev/psdaq0`).
 - **The default DAQD socket `/tmp/d.sock`.** A custom socket stays refused unless `capabilities.custom_socket_confirmed` is set after checking that every tool honours it.
 
@@ -48,6 +49,7 @@ Relative paths resolve against `processing_root`, which resolves against the che
 ```yaml
 schema_version: 1
 petsys_folder: /opt/sw_daq_tofpet2          # tools folder (example path)
+petsys_python: /usr/bin/python3             # runs init_system/acquire_sipm_data/set_bias; null: their shebang
 processing_root: null                       # base for relative paths below (default: the checkout)
 ini_file: /path/to/config.ini               # PETsys INI used by init/acquire/convert
 yaml_file: configs/<cornell config>.yaml    # processing config; its map_file selects the map
@@ -137,6 +139,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - Only startup timeout, no growth, no data and frame loss are retried, up to `max_attempts`, each to a new path. A nonzero exit is a failure and is not retried.
   - The GUI shows RAW started, growth passed, live size and rate, and a stall warning.
 - **SiPM bias:** after an attempt that did not end normally (STOP, abort, nonzero exit), the manager runs `set_bias --power off` before anything else. If that fails, a persistent "SiPM bias state unknown" warning appears, no retry starts, and Acquire stays locked until the operator confirms the bias state. On close, a running bias-off finishes before DAQD stops.
+- **PETsys Python tools:** with `petsys_python` set, `init_system`, `acquire_sipm_data` and `set_bias` run as `<petsys_python> <tool>` without the manager's conda/Python activation (`CONDA_*`, `PYTHONHOME`, `PYTHONPATH`, `VIRTUAL_ENV` removed; the interpreter's folder first on `PATH`), as when the env was deactivated by hand. `daqd`, the converters and processing are unaffected. Changing it invalidates initialization.
 - **STOP:** stops the running stage, and no later stage of that run starts.
 - **Outputs:**
   - Every run, stage and attempt gets a new folder, created exclusively; existing files are never overwritten.

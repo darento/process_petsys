@@ -11,7 +11,10 @@ from pathlib import Path
 import sys
 
 from .contracts import Action, CommandSpec, DataFormat, Identity, Population
-from .settings import RunSettings
+from .settings import PETSYS_PYTHON_TOOLS, RunSettings
+
+# Activation of the manager's own Python environment, removed for the PETsys Python tools (FR-23).
+ACTIVATION_VARIABLES = ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")
 
 
 def _absolute(value, label):
@@ -29,13 +32,29 @@ def _path(settings, name):
     return _absolute(settings.paths.get(name), name)
 
 
+def petsys_python_environment(base, interpreter):
+    """``base`` without Python/conda activation, the interpreter's directory first on PATH (FR-23)."""
+    env = {key: value for key, value in base.items()
+           if not key.startswith(("CONDA_", "_CE_")) and key not in ACTIVATION_VARIABLES}
+    directory = str(Path(interpreter).parent)
+    rest = [part for part in base.get("PATH", "").split(os.pathsep) if part and part != directory]
+    env["PATH"] = os.pathsep.join([directory, *rest])
+    return env
+
+
 def _external(settings, identity, name, arguments=(), environment=None):
     cwd = _path(settings, "petsys_folder")
     tool = _absolute(settings.paths.get(f"tool:{name}", cwd / name), name)
     env = dict(os.environ)
+    argv = (str(tool), *arguments)
+    interpreter = settings.paths.get("petsys_python")
+    if name in PETSYS_PYTHON_TOOLS and interpreter is not None:
+        interpreter = _absolute(interpreter, "petsys_python")
+        env = petsys_python_environment(env, interpreter)
+        argv = (str(interpreter), *argv)
     if environment is not None:
         env.update(environment)
-    return CommandSpec((str(tool), *arguments), cwd, identity, env)
+    return CommandSpec(argv, cwd, identity, env)
 
 
 def _default_connection(settings):

@@ -41,6 +41,8 @@ Findings from these files, both decided by the owner on 2026-10-02 and added to 
 - **Finding:** the installed converter's help lists `--writeBinary` and `--writeBinaryCompact` only, no `--writeBinaryFixed` (that flag exists only in the owner's fork). The owner asked for compact LM and a compact pipeline: FR-22, T21. Whether this build accepts the fork flag (`strings … | grep -i fixed`) is still to be recorded; until then `fixed_output_confirmed` stays false.
 - **Finding:** the reference LM's hardcoded header (120 modules, 5 rings, 820 mm) is wrong for Cornell. Owner values: 30 modules, 3 rings, ring distance 320 mm, 51.61 × 51.61 mm, 100 × 100 pixels, timestamp unit ps; isotope per acquisition (Ge68 for the test RAW). Section A compared bytes against the reference with its own header values, so its result is unaffected.
 - Profile written to `~/.config/process_petsys/petsys_manager.yaml`, outputs in `/mnt/nvme/petsys_manager_t19/`. Test RAW: `/mnt/nvme/decay_serie6/Ge68_10012026_test1/run_0001_attempt_01.rawf` (20.7 GB, `.idxf` present).
+- **Finding (step 2, first attempt):** Initialize failed with `ModuleNotFoundError: No module named 'bitarray'`; the failure was shown and Acquire stayed locked. `init_system`, `acquire_sipm_data` and `set_bias` are `#!/usr/bin/env python3` scripts for the system `/usr/bin/python3` (has `bitarray`, `pandas`); launched from `process_petsys`, they ran with the env Python. The owner chose a profile interpreter: FR-23, T22 (`petsys_python: /usr/bin/python3`). Step 2 is to be repeated with it.
+- The installed converter build also lacks the fork's fixed output (`strings … | grep -i fixed` prints nothing): this machine runs compact (FR-22).
 - With the scanner off, steps 3, 4, 9, 10 and 12, the initialized half of step 2, the acquisition part of 11 and 13 wait for a session with the scanner on.
 
 Before starting:
@@ -54,7 +56,7 @@ Launch with `python exe_programs/PETsysManager.py --profile <profile.yaml>`. Rec
 
 | # | Step | Pass when | FR | Result |
 |---|---|---|---|---|
-| 1 | Start DAQD | READY only after the daemon answers; the log shows the owned pid | FR-6 | pending |
+| 1 | Start DAQD | READY only after the daemon answers; the log shows the owned pid | FR-6 | **pass** 2026-10-02: STARTING → `DAQD ready; pid 799615 answered the shared-memory query (/daqd_shm)` → DAQD ON (not initialized) |
 | 2 | Initialize | ready; Acquire unlocks; edit the INI → initialization invalidated | FR-5, FR-6 | pending |
 | 3 | Acquire 30 s with source | RAW started, growth passed, live size/rate, frame loss shown (or "unknown"); `.rawf`/`.idxf` in a new attempt folder | FR-8, FR-20 | pending |
 | 4 | STOP during an acquisition | the child stops; `set_bias --power off` runs and its outcome is logged; no retry; bias actually off (operator check) | FR-7, FR-19 | pending |
@@ -101,3 +103,4 @@ Launch with `python exe_programs/PETsysManager.py --profile <profile.yaml>`. Rec
 | FR-20 | T7, T14 | B 3 | pending |
 | FR-21 | T20 | A pass; B 6 | pending (live) |
 | FR-22 | T21 | A pass (compact LM = fixed); B 5–7, 10 with compact | pending (live) |
+| FR-23 | T22 | B 2 (repeat), 3, 4, 12 | pending (live) |
