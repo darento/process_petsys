@@ -67,7 +67,7 @@ _SPEC = {
         "files": {"calibration": "file", "calibration_sidecar": "file?", "cog_limits": "file",
                   "doi_limits": "file", "pair_map": "file", "region_map": "file"},
         "options": {"num_regions": "int", "region_boundaries": "numbers?", "metadata": "metadata",
-                    "batch_records": "int", "debug": "bool", "resume": "bool"},
+                    "batch_records": "int", "debug": "bool", "resume": "bool", "hit_limit": "int?"},
         "outputs": {"directory": "job_dir"},
     },
     "qc": {
@@ -413,7 +413,7 @@ def run_listmode(request, events, cancelled):
         descriptors, config, calibration, cog, doi, lm.load_pair_map(files["pair_map"]),
         lm.load_region_map(files["region_map"], mapping), options["metadata"], request.outputs["directory"],
         resume=options["resume"], debug=options["debug"], batch_records=options["batch_records"],
-        cancelled=cancelled,
+        hit_limit=options["hit_limit"], cancelled=cancelled,
         progress=lambda index, path, records, written: events.progress(index, len(paths), path, records,
                                                                        records_written=written))
     if cancelled():
@@ -427,6 +427,7 @@ def run_listmode(request, events, cancelled):
     written += [_output("listmode_debug_plot", path) for path in result.debug_outputs]
     summary = {
         "records_written": result.records, "job_sha256": result.job_sha256, "resumed": result.resumed,
+        "input_format": descriptors[0].format.value, "compact_hit_limit": options["hit_limit"],
         "ignored_partial_files": [str(path) for path in result.ignored],
         "inputs": [{"path": str(f.path), "validated_records": f.validated_records, "records_read": f.records_read,
                     "records_written": f.records_written, "rejected": f.rejected, "observations": f.observations,

@@ -19,6 +19,7 @@ Dataset: Cornell full system, 2026-01-19, two Na-22 sources, 300 s, splits 3–8
 | Position calibration (P = 5), first 400,000 passing events per file | `.encal`/status byte-identical to the reference-function oracle | **pass**: 2,911,163 sides, 27,705 keys sampled, 38,400 rows |
 | Position calibration (P = 5), whole files | fixed identical to compact; written for review | **pass**: 23,672 fitted, 216 higher-peak checks, 3,759 borrowed, 4,119 estimated, 220 without a fit, 6,414 without values |
 | LM, six fixed files, owner 5-region calibration | records byte-identical to the reference loop; header = supplied metadata | **pass**: 2,267,361 records (376,785–378,560 per file); 4 μ ≤ 0 keys read as no factor and recorded |
+| LM, six compact files (FR-22, T21) | records byte-identical to the fixed-input LM | **pass**: 2,267,361 records, hit limit 16; `real_baseline.json` of run `…20261002T123710Z-2a8af9d2` |
 | QC, six compact files, plots + slabs | counts, occupancy, histograms, fits and floods equal to the reference | **pass**: 6,000,006 accepted pairs (1,000,001 per file, limit reached); 6,690 fitted, 74 sparse, 12 failed fits (fallback means within 1e-15 relative); 30 flood SuperModules |
 
 Findings from these files, both decided by the owner on 2026-10-02 and added to FR-12:
@@ -32,6 +33,15 @@ Findings from these files, both decided by the owner on 2026-10-02 and added to 
 - For the 4 failed keys, the new calibration fits `(4360, 2, *)` (μ 81–88 a.u.) and borrows slab 1 for the three slab-0 keys.
 
 ## B. Live acceptance (Cornell Linux machine, operator)
+
+**Pre-start record, 2026-10-02 (operator, by terminal; the scanner front end was off, DAQ cards on):**
+- Checkout `~/sw/process_petsys` at `4b6d4e81746d646fa607fff77138fcad37d97d18`. The five CMB/IMAS configs and their maps are deleted in that working tree (owner's local state, not used by Cornell); untracked torch files are the owner's. Environment check `python -s -c "import …"` passed.
+- A leftover `daqd` (pid 288705, socket from 30 Sep) was stopped by the operator before the manager was launched; `/tmp/d.sock` and `/dev/shm/daqd_shm` were then absent. `set_bias --power off` was not run first, so the bias state at that moment was unknown (no acquisition was running).
+- Tools `/home/sie/sw/sw_daq_tofpet2_20260731a/build` (all six present). SHA-256: `daqd` `c8996c4c…676e`, `init_system` `31f63688…a4c718`, `acquire_sipm_data` `2954848e…8993`, `set_bias` `3e9f3592…625c`, `convert_raw_to_coincidence` `5b026d33…68a7`, `convert_raw_to_group` `7d84cd4b…230`. INI `/home/sie/sw/20260304_final_system_newFEBDConf/config.ini` `b55722cd…b6f58`. Cards `/dev/psdaq0`, `/dev/psdaq1`.
+- **Finding:** the installed converter's help lists `--writeBinary` and `--writeBinaryCompact` only, no `--writeBinaryFixed` (that flag exists only in the owner's fork). The owner asked for compact LM and a compact pipeline: FR-22, T21. Whether this build accepts the fork flag (`strings … | grep -i fixed`) is still to be recorded; until then `fixed_output_confirmed` stays false.
+- **Finding:** the reference LM's hardcoded header (120 modules, 5 rings, 820 mm) is wrong for Cornell. Owner values: 30 modules, 3 rings, ring distance 320 mm, 51.61 × 51.61 mm, 100 × 100 pixels, timestamp unit ps; isotope per acquisition (Ge68 for the test RAW). Section A compared bytes against the reference with its own header values, so its result is unaffected.
+- Profile written to `~/.config/process_petsys/petsys_manager.yaml`, outputs in `/mnt/nvme/petsys_manager_t19/`. Test RAW: `/mnt/nvme/decay_serie6/Ge68_10012026_test1/run_0001_attempt_01.rawf` (20.7 GB, `.idxf` present).
+- With the scanner off, steps 3, 4, 9, 10 and 12, the initialized half of step 2, the acquisition part of 11 and 13 wait for a session with the scanner on.
 
 Before starting:
 - `git pull` on `main`; record `git rev-parse HEAD`.
@@ -90,3 +100,4 @@ Launch with `python exe_programs/PETsysManager.py --profile <profile.yaml>`. Rec
 | FR-19 | T7, T14 | B 4, 12, 13 | pending |
 | FR-20 | T7, T14 | B 3 | pending |
 | FR-21 | T20 | A pass; B 6 | pending (live) |
+| FR-22 | T21 | A pass (compact LM = fixed); B 5–7, 10 with compact | pending (live) |

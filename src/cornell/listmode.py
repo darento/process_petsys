@@ -26,6 +26,10 @@ reference. Changes:
   completion record matches this job's settings and input identities; any
   other file in the job directory refuses the resume. Nothing is deleted.
 
+Compact coincidence input (FR-22) is decoded into the fixed layout of the
+conversion hit limit (empty slots channel -1) and regrouped into the same
+batches, so both encodings of the same events give byte-identical output.
+
 ``en_min_ch`` is read by the reference but never applied; it is recorded as
 not applied. DOI is a light-sharing ratio mapped linearly from its limits, not
 an independently calibrated depth.
@@ -55,7 +59,7 @@ from src.utils_fixed import (create_dec_lookup_arrays, get_maxEnergy_sm_mM_vecto
 
 from src.petsys_manager.contracts import DataFormat, InputDescriptor, Population
 from src.petsys_manager.settings import LMMetadata
-from .calibration import CalibrationMaps, create_region_boundaries
+from .calibration import HIT_DTYPE, CalibrationMaps, _Reader, create_region_boundaries
 from .inputs import (Calibration, ChannelMap, InputError, Limits, NumericTable, ProcessingConfig,
                      ValidationCancelled, _metadata_bytes, _rows, validate_ldat)
 
@@ -709,12 +713,18 @@ class ListmodeResult:
 
 
 def _check_request(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
-                   batch_records):
+                   batch_records, hit_limit=None):
     descriptors = tuple(descriptors)
-    if not descriptors or any(not isinstance(d, InputDescriptor) or d.format != DataFormat.FIXED
-                              or d.population != Population.COINCIDENCE or not Path(d.path).is_absolute()
-                              for d in descriptors):
-        raise InputError("Listmode requires absolute fixed coincidence inputs with explicit descriptors")
+    if not descriptors or any(not isinstance(d, InputDescriptor) or d.population != Population.COINCIDENCE
+                              or not Path(d.path).is_absolute() for d in descriptors):
+        raise InputError("Listmode requires absolute fixed or compact coincidence inputs with explicit descriptors")
+    if len({d.format for d in descriptors}) > 1:
+        raise InputError("Do not mix fixed and compact inputs in one listmode job")
+    if descriptors[0].format == DataFormat.COMPACT:
+        if type(hit_limit) is not int or not 1 <= hit_limit <= 255:
+            raise InputError("Compact listmode requires the conversion hit limit (1-255 hits per side)")
+    elif hit_limit is not None:
+        raise InputError("A fixed input carries its own hit limit; give none")
     if not isinstance(config, ProcessingConfig) or "energy_range" not in config.values:
         raise InputError("Listmode requires a typed processing config with a keV energy_range")
     if float(config.values["energy_range"][1]) > MAX_ENERGY_KEV:
@@ -743,7 +753,7 @@ def _check_request(descriptors, config, calibration, cog_limits, doi_limits, pai
 
 
 def job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
-               batch_records, debug):
+               batch_records, debug, hit_limit=None):
     """Everything that determines the LM bytes; resume requires an identical record."""
     inputs = []
     for d in descriptors:
@@ -754,7 +764,7 @@ def job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, 
         inputs.append({"path": str(Path(d.path).resolve()), "size_bytes": info.st_size,
                        "mtime_ns": info.st_mtime_ns, "format": d.format.value, "population": d.population.value})
     source = lambda item: {"path": str(item.path), "sha256": item.sha256}
-    return {
+    job = {
         "generator": GENERATOR,
         "inputs": inputs,
         "processing_config": {**source(config), "min_ch": int(config.values["min_ch"]),
@@ -773,6 +783,10 @@ def job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, 
         "header_sha256": hashlib.sha256(header_bytes(metadata)).hexdigest(),
         "batch_records": batch_records, "debug": bool(debug),
     }
+    if hit_limit is not None:      # only compact jobs: fixed job records stay as before
+        job["compact_decoding"] = {"hit_limit": hit_limit,
+                                   "layout": "fixed coincidence of hit_limit slots, empty slots channel -1"}
+    return job
 
 
 def _digest(value):
@@ -867,10 +881,49 @@ def _reuse(record_path, job_sha256, job_input, debug):
     return item, summary
 
 
+def compact_chunks(descriptor, mapped, hit_limit, batch_records):
+    """Compact coincidence records as ``read_fixed_file_numpy`` chunks of ``hit_limit`` slots (FR-22).
+
+    Hits keep their order; empty slots are channel -1, time 0, energy 0. Chunks
+    hold exactly ``batch_records`` records (the last may be shorter), as the
+    fixed reader yields them. The slot count matters: the reference's float32
+    sums group terms by row width.
+    """
+    dtype = np.dtype([("header", "u1", (2,)), ("side1", HIT_DTYPE, (hit_limit,)),
+                      ("side2", HIT_DTYPE, (hit_limit,))])
+    pending, count = [], 0
+    for records, sides in _Reader(descriptor, mapped, batch_records, None):
+        chunk = np.zeros(records, dtype)
+        for s, (name, hits) in enumerate(zip(("side1", "side2"), sides)):
+            if hits.shape[1] > hit_limit and (hits["channelID"][:, hit_limit:] != -1).any():
+                raise InputError(f"{descriptor.path}: a side has more than {hit_limit} hits")
+            width = min(hits.shape[1], hit_limit)
+            chunk[name]["channelID"] = -1
+            chunk[name][:, :width] = hits[:, :width]
+            chunk["header"][:, s] = np.count_nonzero(hits["channelID"] != -1, axis=1)
+        pending.append(chunk)
+        count += records
+        while count >= batch_records:
+            joined = np.concatenate(pending) if len(pending) > 1 else pending[0]
+            yield joined[:batch_records]
+            pending, count = [joined[batch_records:]], count - batch_records
+    if count:
+        yield np.concatenate(pending) if len(pending) > 1 else pending[0]
+
+
+def _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
+    if descriptor.format == DataFormat.FIXED:
+        return read_fixed_file_numpy(str(descriptor.path), batch_size=batch_records, group_events=False)
+    mapped = np.zeros(ctx.maps.max_ch, dtype=bool)
+    mapped[[ch for ch in mapping.modules if ch < ctx.maps.max_ch]] = True
+    return compact_chunks(descriptor, mapped, hit_limit, batch_records)
+
+
 def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, batch_records, debug,
-                  cancelled, progress, index):
+                  cancelled, progress, index, hit_limit=None):
     try:
-        summary = validate_ldat(descriptor, mapping.modules, cancelled=cancelled)
+        summary = validate_ldat(descriptor, mapping.modules, cancelled=cancelled,
+                                expected_hit_limit=hit_limit if descriptor.format == DataFormat.COMPACT else None)
     except ValidationCancelled as exc:
         raise ListmodeCancelled("Listmode cancelled during input validation") from exc
     if summary.records == 0:
@@ -885,7 +938,7 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
     digest = hashlib.sha256()
     records = written = 0
     with open(segment, "xb") as out:
-        for chunk in read_fixed_file_numpy(str(descriptor.path), batch_size=batch_records, group_events=False):
+        for chunk in _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
             if cancelled is not None and cancelled():
                 raise ListmodeCancelled("Listmode cancelled")
             records += len(chunk)
@@ -964,7 +1017,9 @@ def sidecar(output, sha256, records, files, job, header_fields, *, resumed, igno
                       "offset": None, "scaling": None,
                       "operator_declared_unit": job["metadata"]["timestamp_unit"],
                       "dt": "int16 of int32(side1 - side2), sign follows pair orientation; wraps outside int16"},
-        "population": "fixed coincidence pairs (two detector sides per record)",
+        "population": (f"{job['inputs'][0]['format']} coincidence pairs (two detector sides per record)"
+                       + ("; compact decoded into the fixed layout of {} hits per side".format(
+                           job["compact_decoding"]["hit_limit"]) if "compact_decoding" in job else "")),
         "cuts": {"min_ch": job["processing_config"]["min_ch"],
                  "energy_window_kev": job["processing_config"]["energy_range_kev"],
                  "en_min_ch_au": job["processing_config"]["en_min_ch_au"], "en_min_ch_applied": False,
@@ -997,13 +1052,16 @@ def sidecar(output, sha256, records, files, job, header_fields, *, resumed, igno
 
 def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
                       destination, *, resume=False, debug=False, batch_records=DEFAULT_BATCH_RECORDS,
-                      cancelled=None, progress=None):
-    """Validate, stream one segment per input, merge with the supplied header and write provenance."""
+                      cancelled=None, progress=None, hit_limit=None):
+    """Validate, stream one segment per input, merge with the supplied header and write provenance.
+
+    ``hit_limit``: the conversion hit limit, required for compact input only (FR-22).
+    """
     descriptors = _check_request(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions,
-                                 metadata, batch_records)
+                                 metadata, batch_records, hit_limit)
     ctx = ListmodeContext.build(config, calibration, cog_limits, doi_limits, pairs, regions, metadata)
     job = job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
-                     batch_records, debug)
+                     batch_records, debug, hit_limit)
     job_sha256 = _digest(job)
     completed, ignored = _prepare(destination, job, resume)
     destination = Path(destination)
@@ -1016,7 +1074,7 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
         else:
             item, file_debug = _process_file(descriptor, ctx, config.mapping, segments, job_sha256, job_input,
                                              batch_records=batch_records, debug=debug, cancelled=cancelled,
-                                             progress=progress, index=index)
+                                             progress=progress, index=index, hit_limit=hit_limit)
         files.append(item)
         if total_debug is not None:
             total_debug.merge(file_debug)

@@ -18,7 +18,7 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
   - Check with `conda run -n process_petsys python -s -c "import numpy, yaml, scipy, matplotlib, pandas, numba, openpyxl, reportlab, tqdm, customtkinter, PIL, tkinter"`; `-s` ignores `~/.local`.
   - Install anything missing with `conda run -n process_petsys python -s -m pip install <package>==<version from process_petsys.yml>`. Plain `pip install` reports a `~/.local` copy as already installed.
 - **A desktop session** for the Tk window. Processing runs in background child processes and does not need the display.
-- **The PETsys `sw_daq_tofpet2` tools folder**, containing `daqd`, `init_system`, `acquire_sipm_data`, `set_bias`, `convert_raw_to_coincidence` and `convert_raw_to_group`. Fixed coincidence output needs the converter build with `--writeBinaryFixed`; confirm it in the profile (`capabilities.fixed_output_confirmed`) after checking the installed converter.
+- **The PETsys `sw_daq_tofpet2` tools folder**, containing `daqd`, `init_system`, `acquire_sipm_data`, `set_bias`, `convert_raw_to_coincidence` and `convert_raw_to_group`. Fixed output needs a converter build with `--writeBinaryFixed` (not in stock PETsys; check with `strings <tools>/convert_raw_to_coincidence | grep -i fixed`) and confirmation in the profile (`capabilities.fixed_output_confirmed`). Without it, use compact: calibration, LM and the pipeline all accept compact coincidence.
 - **DAQ character devices** for `PFP_KX7` (one or two; the default is `/dev/psdaq1`, `/dev/psdaq0`).
 - **The default DAQD socket `/tmp/d.sock`.** A custom socket stays refused unless `capabilities.custom_socket_confirmed` is set after checking that every tool honours it.
 
@@ -117,10 +117,10 @@ These files are machine- and system-specific, are not in the repository, and are
 | Convert, coincidence | `.rawf` | fixed **or** compact coincidence `.ldat`, chosen explicitly (`data_dir`) |
 | Convert, group | `.rawf` | fixed group `.ldat` (`data_dir`) |
 | Create energy cal file | fixed coincidence, fixed group or compact coincidence `.ldat`; positions per slab P | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
-| Generate LM file | **fixed coincidence** `.ldat`, `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
+| Generate LM file | fixed **or** compact coincidence `.ldat` (compact is read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
 | Run quality control (live) | 60 s with source or 180 s without (fixed presets) | compact coincidence conversion, then QC report (run folder in `data_dir`) |
 | Analyze existing compact LDAT | **compact coincidence** `.ldat` | QC report (`report_dir/<run>`) |
-| Run complete pipeline | Acq. Time, splits, max hits, positions per slab | acquire → **fixed** coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
+| Run complete pipeline | Acq. Time, splits, max hits, positions per slab, Fixed/Compact conversion | acquire → fixed or compact coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
 
 `.ldat` files carry no reliable format marker, so every input list states its format and population and must be confirmed before use. Inputs are validated structurally, within bounds, against the selected map before any result is published.
 
@@ -146,6 +146,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - An existing `.encal` row with μ ≤ 0 (a failed legacy fit) is read as "no factor", as the reference LM does: its pairs are rejected as missing calibration, and the keys are listed in the LM provenance and as a warning in the log. Nothing is estimated in their place; to fill them from neighbours, make a new calibration, whose status file labels borrowed and estimated keys.
   - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.
+- **Compact LM:** compact input is decoded at the Max Hits per Side of its conversion (a side with more hits refuses the file) and gives the same `.lm` file as fixed input of the same events. Do not mix fixed and compact files in one LM job.
 - **LM header:** the 11 metadata fields come from the profile. Empty fields block LM; there are no hardcoded values. The pipeline writes its own Acq. Time as the acquisition and measurement time.
 
 ## Runtime module map

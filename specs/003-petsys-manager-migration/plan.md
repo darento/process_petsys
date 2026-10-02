@@ -100,8 +100,8 @@ SiPM bias (FR-19): `acquire_sipm_data` switches bias off only at the end of a no
 | Manual coincidence conversion | RAW acquisition + selected INI | Explicit fixed or compact coincidence descriptor |
 | Manual group conversion | RAW acquisition + selected INI | Fixed group descriptor |
 | Energy calibration (FR-21) | Selected fixed group, fixed coincidence or compact coincidence files, positions P, processing config; COG limits when P ≥ 2 | Per-slab (P = 1) or position (P ≥ 2) `.encal`, per-key status file, sidecar provenance, summary plot |
-| Manual LM generation | Fixed coincidence files, per-slab or position calibration, COG/DOI limits, pair/region maps, metadata | Compatible LM header/records plus provenance/debug summaries |
-| Complete pipeline | Acquire → fixed coincidence conversion → position calibration → LM | Actual artifacts from each successful predecessor |
+| Manual LM generation | Fixed or compact coincidence files (FR-22; compact with its hit limit), per-slab or position calibration, COG/DOI limits, pair/region maps, metadata | Compatible LM header/records plus provenance/debug summaries |
+| Complete pipeline | Acquire → fixed or compact coincidence conversion (FR-22) → position calibration → LM | Actual artifacts from each successful predecessor |
 | QC | 60 s with-source or 180 s without-source acquisition → compact coincidence conversion → legacy QC | Existing QC output types with actual results directory |
 
 Full structural validation is fused with bounded reading and occurs before publishing final numerical output. Fixed validation checks the hit-limit header, supported record layout, remainder length, hit counts and mapped IDs; compact validation detects incomplete headers/hits and invalid/missing mapping. Group versus coincidence and arbitrary legacy format cannot always be inferred from bytes: explicit descriptors remain mandatory. Invalid files never yield an apparently successful partial result; retain owned partial artifacts as failed.
@@ -155,6 +155,7 @@ Owner decision 2026-10-01: one algorithm for every input format, from `scripts_c
 - Stream records in batches to owned per-file outputs; merge in the confirmed natural file order. Record the timestamp reference explicitly. Do not retain every debug point; accumulate the same plot-bin summaries or use explicitly bounded numeric samples where a reference computation needs them.
 - T1 proves the reference reads/prints `en_min_ch` but does not apply it in the fixed LM loop, unlike QC. Preserve and disclose that actual cut policy; do not silently add a threshold. The reference writes raw timestamp numeric values to float32, with an unused extracted first timestamp; confirm consumer units/precision before accepting LM metadata behavior.
 - Preserve the binary schema; supply known duration/isotope/geometry/pixel/profile fields explicitly. Missing required header values block generation; optional unknown metadata follows the confirmed schema convention and is disclosed in provenance. No fabricated 10 s measurement or guessed module count.
+- **Compact input (FR-22, T21):** each compact record is decoded into the fixed coincidence layout of the conversion hit limit H (empty slots channel −1, time 0, energy 0), regrouped into the same 1000-record batches, and passed to the unchanged batch function. Padding width matters: the reference's float32 sums use numpy pairwise summation, whose grouping depends on the row width, so H must be the fixed width. The slab draws (`np.random.randint(size=rows)`) do not depend on batching. Fixed input keeps `read_fixed_file_numpy` unchanged. The owner's fork writes side-1 padding as channel 0 (side 2: −1); channel 0 is in no minimodule of the Cornell map, so this has no effect there (byte-identical output with it masked, January split 3).
 - Existing resume support is not a new recovery system: retain it only for validated matching manifest/settings/artifacts. Never trust arbitrary existing LM files as successful predecessor outputs.
 
 ### QC and reports
@@ -195,6 +196,7 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 | FR-19 | Bias-off after abnormal acquisition end, unknown-bias warning | T7, T14, T19 |
 | FR-20 | Growth/progress feedback, editable safety limits | T7, T14, T19 |
 | FR-21 | Compact/per-slab/position calibration, LM per-slab lookup | T20, T16, T19 |
+| FR-22 | Compact LM and pipeline conversion format | T21, T19 |
 
 ## Alternatives rejected
 

@@ -113,13 +113,13 @@ DECLARED = {
 # Processing input lists: check key -> (frame title, default declaration).
 SELECTIONS = {
     "calibrate": ("Input LDAT Files (fixed coincidence, fixed group or compact coincidence)", "fixed_coincidence"),
-    "listmode": ("Input LDAT Files (fixed coincidence)", "fixed_coincidence"),
+    "listmode": ("Input LDAT Files (fixed or compact coincidence)", "fixed_coincidence"),
     "qc_analyze": ("Existing LDAT Files for Offline QC (compact coincidence)", "compact_coincidence"),
 }
 # Which processing lists may take a conversion's validated outputs.
 OUTPUT_TARGETS = {(DataFormat.FIXED, Population.COINCIDENCE): ("calibrate", "listmode"),
                   (DataFormat.FIXED, Population.GROUP): ("calibrate",),
-                  (DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "qc_analyze")}
+                  (DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "listmode", "qc_analyze")}
 SPLIT_NAME = re.compile(r"(.+)_(\d+)\.ldat\Z")
 MAX_FOLDER_ENTRIES = 20000  # bound for the split-sibling folder scan
 PROBE_RECORDS = 10000
@@ -147,7 +147,7 @@ ctk.set_default_color_theme("blue")
 
 ROUTE_NEEDS = {  # what each processing action consumes (plan route table)
     "calibrate": "Energy calibration takes fixed coincidence, fixed group or compact coincidence files",
-    "listmode": "LM generation takes fixed coincidence files (convert with Fixed output)",
+    "listmode": "LM generation takes fixed or compact coincidence files, not group files",
     "qc_analyze": "Offline QC takes compact coincidence files (convert with Compact output)",
 }
 WRONG_ROUTE = re.compile(r"Unsupported format/population for (\w+): ")
@@ -493,6 +493,7 @@ class PETsysManager:
         self.positions = tk.StringVar(root, "5")          # calibration positions per slab (FR-21)
         self.hit_limit = tk.StringVar(root, "16")
         self.coincidence_format = tk.StringVar(root, DataFormat.FIXED.value)
+        self.pipeline_format = tk.StringVar(root, DataFormat.FIXED.value)   # FR-22: compact without the fork
         self.fixed_confirmed = tk.BooleanVar(root, False)  # profile capability
         self.qc_source = tk.StringVar(root, SourceMode.WITH.value)
         self.qc_plots = tk.BooleanVar(root, False)
@@ -503,7 +504,8 @@ class PETsysManager:
         self._build()
         for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
-                         self.positions, self.coincidence_format, self.fixed_confirmed, self.qc_source,
+                         self.positions, self.coincidence_format, self.pipeline_format, self.fixed_confirmed,
+                         self.qc_source,
                          self.qc_plots, self.qc_slabs, self.lm_debug):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
@@ -645,6 +647,12 @@ class PETsysManager:
         pipeline = self._frame(right, "Complete Automated Pipeline")
         ctk.CTkLabel(pipeline, text="Execute complete workflow:\nAcquire → Convert → Calibrate → Generate LM",
                      font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=20, pady=10)
+        formats = ctk.CTkFrame(pipeline, fg_color="transparent")
+        formats.grid(row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        ctk.CTkLabel(formats, text="Conversion:").pack(side="left", padx=(0, 6))
+        for text, value in (("Fixed", DataFormat.FIXED), ("Compact", DataFormat.COMPACT)):
+            ctk.CTkRadioButton(formats, text=text, variable=self.pipeline_format, value=value.value).pack(
+                side="left", padx=4)
         big = {"font": ctk.CTkFont(size=16, weight="bold"), "height": 50}
         self._button(pipeline, "pipeline", "> RUN COMPLETE PIPELINE", fg_color=GREEN, hover_color=GREEN_HOVER,
                      command=self.run_pipeline, **big).grid(row=2, column=0, columnspan=2, padx=20, pady=10,
@@ -676,7 +684,8 @@ class PETsysManager:
         formats = ctk.CTkFrame(options, fg_color="transparent")
         formats.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
         ctk.CTkLabel(formats, text="Coincidence output:").pack(side="left", padx=(0, 6))
-        for text, value in (("Fixed (calibration / LM)", DataFormat.FIXED), ("Compact (QC)", DataFormat.COMPACT)):
+        for text, value in (("Fixed (calibration / LM)", DataFormat.FIXED),
+                            ("Compact (calibration / LM / QC)", DataFormat.COMPACT)):
             ctk.CTkRadioButton(formats, text=text, variable=self.coincidence_format, value=value.value).pack(
                 side="left", padx=4)
         ctk.CTkCheckBox(options, variable=self.fixed_confirmed,
@@ -1282,7 +1291,7 @@ class PETsysManager:
                       "hits per side (RAWF to LDAT tab)")
         acq_time = self.acq_time.get().strip() or '?'
         self.pipeline_plan.configure(
-            text=f"This run: acquire {acq_time} s -> fixed coincidence conversion, "
+            text=f"This run: acquire {acq_time} s -> {self.pipeline_format.get()} coincidence conversion, "
                  f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
                  f"Processing tab) -> LM with the LM tab files and metadata, header acquisition/measurement time "
                  f"{acq_time} s (Acq. Time). Every stage stays in a new run folder in the Output Data Folder.")
@@ -1390,7 +1399,15 @@ class PETsysManager:
                 if positions is not None:
                     add(key, selection.descriptors(), regions=positions)
             elif key == "listmode":
-                add(key, selection.descriptors(), debug=self.lm_debug.get())
+                descriptors = selection.descriptors()
+                if any(d.format == DataFormat.COMPACT for d in descriptors):   # FR-22: decoded at this width
+                    if hits is None:
+                        reason(key, "options", "Max Hits per Side (RAWF to LDAT tab) must be a positive integer: "
+                                               "compact LM decodes at the conversion hit limit")
+                    else:
+                        add(key, descriptors, debug=self.lm_debug.get(), hit_limit=hits)
+                else:
+                    add(key, descriptors, debug=self.lm_debug.get())
             else:
                 add(key, selection.descriptors(), **qc)
             problem = selection.confirmation_issue()
@@ -1398,9 +1415,10 @@ class PETsysManager:
                 reason(key, "inputs", problem)
         if duration is not None:
             add("acquire", duration_s=duration, hardware_trigger=self.hw_trigger.get())
-            if None not in (splits, hits, positions):   # always fixed coincidence; nothing else is offered
+            if None not in (splits, hits, positions):   # fixed or compact coincidence (FR-22)
                 add("pipeline", duration_s=duration, hardware_trigger=self.hw_trigger.get(), splits=splits,
-                    hit_limit=hits, output_format=DataFormat.FIXED, population=Population.COINCIDENCE,
+                    hit_limit=hits, output_format=DataFormat(self.pipeline_format.get()),
+                    population=Population.COINCIDENCE,
                     regions=positions, debug=self.lm_debug.get())
         if None not in (splits, raw_duration, hits):
             common = dict(splits=splits, duration_s=raw_duration, hit_limit=hits,

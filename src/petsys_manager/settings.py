@@ -524,9 +524,8 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             need_file(name)
     if action == Action.LISTMODE:
         need_file("calibration_file")
-    if action == Action.PIPELINE and (options.output_format != DataFormat.FIXED or
-                                      options.population != Population.COINCIDENCE):
-        issue("output_format", "Complete pipeline requires fixed coincidence conversion")
+    if action == Action.PIPELINE and options.population != Population.COINCIDENCE:
+        issue("output_format", "Complete pipeline requires coincidence conversion (fixed or compact)")
 
     config = FrozenMapping()
     if processing and need_file("yaml_file"):
@@ -572,6 +571,8 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
         inputs = tuple(resolved)
         if action == Action.CALIBRATE and len({(item.format, item.population) for item in inputs}) > 1:
             issue("inputs", "Do not mix formats or group and coincidence files in one calibration")
+        if action == Action.LISTMODE and len({item.format for item in inputs}) > 1:
+            issue("inputs", "Do not mix fixed and compact files in one LM job")
     if action == Action.QC:
         options = replace(options, duration_s=60.0 if options.source_mode == SourceMode.WITH else 180.0,
                           output_format=DataFormat.COMPACT, population=Population.COINCIDENCE)

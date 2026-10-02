@@ -12,10 +12,10 @@ Action             Stages (each consumes only its predecessor's recorded outputs
 ``acquire``        acquisition
 ``convert``        conversion (fixed/compact coincidence or fixed group)
 ``calibrate``      calibration of the selected fixed group/coincidence files
-``listmode``       listmode of the selected fixed coincidence files
+``listmode``       listmode of the selected fixed or compact coincidence files
 ``qc_analyze``     QC of the selected compact coincidence files
 ``qc``             acquisition (60/180 s preset) -> compact coincidence conversion -> QC
-``pipeline``       acquisition -> fixed coincidence conversion -> calibration -> listmode
+``pipeline``       acquisition -> fixed or compact coincidence conversion -> calibration -> listmode
 =================  ==============================================================
 
 A stage succeeds only with a validated exact output set: conversion outputs
@@ -201,8 +201,8 @@ def prepare(settings):
         fmt, population = options.output_format, options.population
         if action == Action.QC and (fmt, population) != (DataFormat.COMPACT, Population.COINCIDENCE):
             issues.append("QC requires compact coincidence conversion")
-        if action == Action.PIPELINE and (fmt, population) != (DataFormat.FIXED, Population.COINCIDENCE):
-            issues.append("The complete pipeline requires fixed coincidence conversion")
+        if action == Action.PIPELINE and population != Population.COINCIDENCE:
+            issues.append("The complete pipeline requires coincidence conversion (fixed or compact)")
     if action == Action.QC and options.duration_s != (60.0 if options.source_mode == SourceMode.WITH else 180.0):
         issues.append("QC acquisition must use the 60 s with-source / 180 s without-source preset")
     plan = WorkflowPlan(settings, stages, Path(destination) if destination else Path("/"), _basename(settings),
@@ -288,7 +288,8 @@ def processing_request(settings, stage, inputs, directory, context):
                        options={"num_regions": regions, "region_boundaries": None,
                                 "metadata": to_plain(lm_header_metadata(settings.profile, settings.action,
                                                                         settings.options)),
-                                "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False},
+                                "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False,
+                                "hit_limit": options.hit_limit if inputs[0].format == DataFormat.COMPACT else None},
                        outputs={"directory": str(directory / "listmode")})
     else:
         live = settings.action == Action.QC      # offline files: source mode/duration not recorded
@@ -494,7 +495,8 @@ class WorkflowCoordinator:
 
         settings = plan.settings
         options = settings.options
-        mapping = _processing_config(settings, Action.CALIBRATE if plan.conversion_format == DataFormat.FIXED
+        mapping = _processing_config(settings, Action.CALIBRATE if (plan.conversion_format == DataFormat.FIXED
+                                                                   or settings.action == Action.PIPELINE)
                                      else Action.QC_ANALYZE).mapping
         attempt = context["attempt"] = store.reserve_attempt("conversion", attempt_id="attempt-1")
         identity = attempt.identity

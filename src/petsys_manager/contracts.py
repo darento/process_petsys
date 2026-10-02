@@ -38,12 +38,12 @@ class SourceMode(str, Enum):
 
 def route_accepts(action, data_format, population):
     """Format routes: calibration takes fixed coincidence/group or compact coincidence (FR-21);
-    LM fixed coincidence; offline QC compact coincidence."""
+    LM and the pipeline fixed or compact coincidence (FR-22); offline QC compact coincidence."""
     action, data_format, population = Action(action), DataFormat(data_format), Population(population)
     if action == Action.CALIBRATE:
         return data_format == DataFormat.FIXED or population == Population.COINCIDENCE
     if action in (Action.LISTMODE, Action.PIPELINE):
-        return (data_format, population) == (DataFormat.FIXED, Population.COINCIDENCE)
+        return population == Population.COINCIDENCE
     if action in (Action.QC_ANALYZE, Action.QC):
         return (data_format, population) == (DataFormat.COMPACT, Population.COINCIDENCE)
     return False
