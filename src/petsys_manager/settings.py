@@ -16,7 +16,7 @@ import tempfile
 
 import yaml
 
-from .contracts import (Action, DataFormat, FrozenMapping, InputDescriptor,
+from .contracts import (Action, DataFormat, FrozenMapping, InputDescriptor, route_accepts,
                         Population, SourceMode, freeze, to_plain)
 
 
@@ -93,7 +93,7 @@ class AcquisitionSafety:
 class ProcessingLimits:
     workers: int = 1
     batch_records: int = 5000
-    calibration_side_limit: int = 4_000_000
+    calibration_event_limit: int = 10_000_000   # reference: a file stops once more events have passed
     qc_pair_limit: int = 1_000_001
     log_tail_lines: int = 1000
 
@@ -506,8 +506,8 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
         need_output("lm_dir")
         for name in profile.lm_metadata.missing():
             issue(f"lm_metadata.{name}", "Required LM profile/measurement metadata is unavailable")
-    if action in (Action.CALIBRATE, Action.LISTMODE, Action.PIPELINE):
-        need_file("cog_limits_file")
+    if action in (Action.LISTMODE, Action.PIPELINE) or (action == Action.CALIBRATE and options.regions > 1):
+        need_file("cog_limits_file")   # per-slab calibration (positions 1) needs no COG limits
     if action in (Action.LISTMODE, Action.PIPELINE):
         for name in ("doi_limits_file", "pair_map_file", "region_map_file"):
             need_file(name)
@@ -529,7 +529,7 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             _integer(value.get("min_ch"), "min_ch")
             if "en_min_ch" in value:
                 _number(value["en_min_ch"], "en_min_ch", strict=False)
-            if action in (Action.QC, Action.QC_ANALYZE, Action.LISTMODE, Action.PIPELINE) and "en_min_ch" not in value:
+            if "en_min_ch" not in value:
                 raise ProfileError("Processing YAML requires en_min_ch for this action")
             if action in (Action.LISTMODE, Action.PIPELINE):
                 window = value.get("energy_range")
@@ -555,14 +555,12 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             if path in seen:
                 issue("inputs", f"Duplicate selected input: {path}")
             seen.add(path)
-            wanted_format = DataFormat.COMPACT if action == Action.QC_ANALYZE else DataFormat.FIXED
-            if item.format != wanted_format or (action != Action.CALIBRATE and
-                                                item.population != Population.COINCIDENCE):
+            if not route_accepts(action, item.format, item.population):
                 issue("inputs", f"Unsupported format/population for {action.value}: {path}")
             resolved.append(replace(item, path=path))
         inputs = tuple(resolved)
-        if action == Action.CALIBRATE and len({item.population for item in inputs}) > 1:
-            issue("inputs", "Do not mix fixed group and coincidence files in one calibration")
+        if action == Action.CALIBRATE and len({(item.format, item.population) for item in inputs}) > 1:
+            issue("inputs", "Do not mix formats or group and coincidence files in one calibration")
     if action == Action.QC:
         options = replace(options, duration_s=60.0 if options.source_mode == SourceMode.WITH else 180.0,
                           output_format=DataFormat.COMPACT, population=Population.COINCIDENCE)

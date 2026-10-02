@@ -65,7 +65,7 @@ DESTINATIONS = {Action.ACQUIRE: "data_dir", Action.CONVERT: "data_dir", Action.Q
                 Action.QC_ANALYZE: "report_dir"}
 CLI_ACTIONS = {"calibration": "calibrate", "listmode": "listmode", "qc": "qc"}
 STAGE_ACTIONS = {"calibration": Action.CALIBRATE, "listmode": Action.LISTMODE, "qc": Action.QC_ANALYZE}
-REQUIRED_KINDS = {"calibrate": {"encal", "calibration_sidecar", "calibration_plot"},
+REQUIRED_KINDS = {"calibrate": {"encal", "calibration_sidecar", "calibration_status", "calibration_plot"},
                   "listmode": {"listmode", "listmode_provenance", "listmode_job"},
                   "qc": {"qc_report", "qc_summary"}}
 LM_BATCH_RECORDS = 1000      # reference LM reader batch (src.cornell.listmode.DEFAULT_BATCH_RECORDS)
@@ -227,7 +227,7 @@ def prepare(settings):
         config_action = Action.QC_ANALYZE if fmt == DataFormat.COMPACT else Action.CALIBRATE
     try:
         config = _processing_config(settings, config_action) if stages != ("acquisition",) else None
-        if "calibration" in stages or "listmode" in stages:
+        if "listmode" in stages or ("calibration" in stages and options.regions > 1):
             load_limits(paths.get("cog_limits_file"), config.mapping, kind="cog")
         if "listmode" in stages:
             from src.cornell.listmode import load_pair_map, load_region_map
@@ -237,8 +237,8 @@ def prepare(settings):
             missing = profile.lm_metadata.missing()
             if missing:
                 issues.append("LM metadata unavailable: " + ", ".join(missing))
-        if action == Action.LISTMODE:
-            load_calibration(paths.get("calibration_file"), config.mapping, expected_regions=options.regions)
+        if action == Action.LISTMODE:   # per-slab or position; its own region count is used
+            load_calibration(paths.get("calibration_file"), config.mapping)
         if action in (Action.CALIBRATE, Action.LISTMODE, Action.QC_ANALYZE):
             select_inputs(settings.inputs, action, processing_root=settings.processing_root)
     except WorkflowError as exc:
@@ -265,22 +265,27 @@ def processing_request(settings, stage, inputs, directory, context):
                "processing_config": str(paths["yaml_file"]), "inputs": [_entry(d) for d in inputs]}
     stem = Path(inputs[0].path).stem
     if action == "calibrate":
-        name = f"{stem}_position_{options.regions}regions"
-        request.update(files={"cog_limits": str(paths["cog_limits_file"])},
-                       options={"num_regions": options.regions, "side_limit": limits.calibration_side_limit,
+        positions = options.regions
+        name = f"{stem}_resolved" if positions == 1 else f"{stem}_position_{positions}regions"
+        cog = paths.get("cog_limits_file") if positions > 1 else None
+        request.update(files={"cog_limits": None if cog is None else str(cog)},
+                       options={"positions": positions, "event_limit": limits.calibration_event_limit,
                                 "batch_records": limits.batch_records},
                        outputs={"encal": str(directory / f"{name}.encal"),
                                 "sidecar": str(directory / f"{name}.encal.json"),
+                                "status": str(directory / f"{name}_status.txt"),
                                 "plot": str(directory / f"{name}.png")})
     elif action == "listmode":
+        from src.cornell.inputs import calibration_layout
         calibration = context.get("encal") or paths["calibration_file"]
         sidecar = context.get("sidecar")
+        regions = options.regions if context.get("encal") else calibration_layout(calibration)[1]
         request.update(files={"calibration": str(calibration),
                               "calibration_sidecar": None if sidecar is None else str(sidecar),
                               "cog_limits": str(paths["cog_limits_file"]),
                               "doi_limits": str(paths["doi_limits_file"]),
                               "pair_map": str(paths["pair_map_file"]), "region_map": str(paths["region_map_file"])},
-                       options={"num_regions": options.regions, "region_boundaries": None,
+                       options={"num_regions": regions, "region_boundaries": None,
                                 "metadata": to_plain(settings.profile.lm_metadata),
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False},
                        outputs={"directory": str(directory / "listmode")})

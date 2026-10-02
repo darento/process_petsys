@@ -7,9 +7,11 @@ the Tk thread. Controls follow the backend: DAQD readiness/initialization come
 from the service's revisioned statuses, a workflow's buttons from its token, and
 older statuses or results never re-enable a control. DAQD, Initialize, Acquire
 and STOP are connected (T14), as are RAW conversion and the exact ordered LDAT
-input lists of the processing tabs (T15); calibration, LM, QC and pipeline
-controls are connected by T16 and stay disabled beside their prerequisite
-reasons until then. Conversion duration, splits and hit limit are explicit
+input lists of the processing tabs (T15) and the calibration, LM, QC and
+complete pipeline actions (T16). Each result shows the recorded run directory
+and the exact validated outputs; a later stage only ever consumes its
+predecessor's recorded outputs, and nothing here edits a field or the profile
+on behalf of a run. Conversion duration, splits and hit limit are explicit
 settings, never read from a file name; an LDAT's format and population are
 declared and confirmed by the operator, never guessed from its extension.
 Nothing launches at startup. Closing stops the workflow, waits for its bias-off,
@@ -33,8 +35,8 @@ from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, Population, ResultStatus,
                                           SourceMode)
 from src.petsys_manager.session import ManagerSession
-from src.petsys_manager.settings import (AcquisitionSafety, PrerequisiteIssue, ProfileError, RunOptions,
-                                         default_profile_path)
+from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
+                                         RunOptions, default_profile_path)
 
 
 __version__ = "0.1.0"
@@ -78,9 +80,29 @@ ISSUE_LABELS.update({
     "capabilities.fixed_output_confirmed": "Converter fixed output", "options": "Run options",
     "settings": "Settings", "profile": "Profile",
 })
-CONNECTED = {"daqd", "initialize", "acquire", "convert_coincidence", "convert_group"}  # controls driven here
-STOP_KEYS = ("stop", "convert_stop")
-ACTION_TEXT = {Action.ACQUIRE: "Acquisition", Action.CONVERT: "Conversion"}
+# LM header metadata, saved in the profile (FR-12): name -> (label, type). Empty means unavailable.
+LM_FIELDS = {
+    "isotope": ("Isotope:", str), "acquisition_time_s": ("Acquisition time (s):", float),
+    "measurement_time_s": ("Measurement time (s):", float), "detector_size_x_mm": ("Detector size X (mm):", float),
+    "detector_size_y_mm": ("Detector size Y (mm):", float), "module_number": ("Module number:", int),
+    "ring_number": ("Ring number:", int), "ring_distance_mm": ("Ring distance (mm):", float),
+    "detector_pixels_x": ("Detector pixels X:", int), "detector_pixels_y": ("Detector pixels Y:", int),
+    "timestamp_unit": ("Timestamp unit:", str),
+}
+LIVE_KEYS = ("acquire", "pipeline", "qc")      # need an initialized system from this manager's DAQD
+PROCESSING_KEYS = ("calibrate", "listmode", "qc_analyze")
+STOP_KEYS = ("stop", "convert_stop", "qc_stop")
+ACTION_TEXT = {Action.ACQUIRE: "Acquisition", Action.CONVERT: "Conversion", Action.CALIBRATE: "Energy calibration",
+               Action.LISTMODE: "LM generation", Action.QC: "Quality control", Action.QC_ANALYZE: "Offline QC",
+               Action.PIPELINE: "Complete pipeline"}
+STAGE_TEXT = {"acquisition": "Acquisition", "conversion": "Conversion", "calibration": "Energy calibration",
+              "listmode": "LM generation", "qc": "QC analysis"}
+ARTIFACT_TEXT = {"encal": "Energy cal file", "calibration_sidecar": "Calibration provenance",
+                 "calibration_status": "Fit status per key", "calibration_plot": "Summary plot",
+                 "listmode": "LM file", "listmode_provenance": "LM provenance", "listmode_job": "LM job record",
+                 "listmode_debug_plot": "LM debug plot", "qc_report": "QC output", "qc_summary": "QC summary"}
+HIDDEN_ARTIFACTS = {"processing_request", "processing_result"}
+QC_PRESET_S = {SourceMode.WITH: 60.0, SourceMode.WITHOUT: 180.0}   # display of the preflight preset
 SPLIT_TIME_OFFSET_S = 0.1  # display of commands.build_conversion's --splitTime rule
 # Declared LDAT content: key -> (label, format, population). Bytes/extension cannot prove it.
 DECLARED = {
@@ -90,14 +112,14 @@ DECLARED = {
 }
 # Processing input lists: check key -> (frame title, default declaration).
 SELECTIONS = {
-    "calibrate": ("Input LDAT Files (fixed coincidence or fixed group)", "fixed_coincidence"),
+    "calibrate": ("Input LDAT Files (fixed coincidence, fixed group or compact coincidence)", "fixed_coincidence"),
     "listmode": ("Input LDAT Files (fixed coincidence)", "fixed_coincidence"),
     "qc_analyze": ("Existing LDAT Files for Offline QC (compact coincidence)", "compact_coincidence"),
 }
 # Which processing lists may take a conversion's validated outputs.
 OUTPUT_TARGETS = {(DataFormat.FIXED, Population.COINCIDENCE): ("calibrate", "listmode"),
                   (DataFormat.FIXED, Population.GROUP): ("calibrate",),
-                  (DataFormat.COMPACT, Population.COINCIDENCE): ("qc_analyze",)}
+                  (DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "qc_analyze")}
 SPLIT_NAME = re.compile(r"(.+)_(\d+)\.ldat\Z")
 MAX_FOLDER_ENTRIES = 20000  # bound for the split-sibling folder scan
 PROBE_RECORDS = 10000
@@ -124,7 +146,7 @@ ctk.set_default_color_theme("blue")
 
 
 ROUTE_NEEDS = {  # what each processing action consumes (plan route table)
-    "calibrate": "Energy calibration takes fixed coincidence or fixed group files (convert with Fixed output)",
+    "calibrate": "Energy calibration takes fixed coincidence, fixed group or compact coincidence files",
     "listmode": "LM generation takes fixed coincidence files (convert with Fixed output)",
     "qc_analyze": "Offline QC takes compact coincidence files (convert with Compact output)",
 }
@@ -149,7 +171,7 @@ def issue_lines(issues):
     if tools:
         lines.append(f"{ISSUE_LABELS['petsys_folder']}: select it (needs {', '.join(tools)})")
     if metadata:
-        lines.append(f"LM metadata missing from the profile: {', '.join(metadata)}")
+        lines.append(f"LM metadata missing from the profile: {', '.join(metadata)} (LM File Generation tab)")
     for action, count in routes.items():
         lines.append(f"{ISSUE_LABELS['inputs']}: {ROUTE_NEEDS[action]}; {count} listed file(s) are declared "
                      "as another content")
@@ -451,7 +473,10 @@ class PETsysManager:
         self._action = None             # the action of this window's workflow token
         self._status_label = None       # where that workflow's progress is shown
         self.last_conversion = None     # (run id, exact validated output descriptors) of the last conversion
+        self.last_calibration = None    # (run id, recorded .encal) of the last successful calibration stage
         self._last_raw = None           # the RAW input the running conversion reported
+        self._stages = ()               # stage ids of this window's running workflow
+        self._issues = {}               # check key -> reasons of the newest shown readiness
         self.selections = {}
         self.ask_files = filedialog.askopenfilenames   # dialogs are attributes so checks can answer them
         self.ask_yes_no = messagebox.askyesno
@@ -465,18 +490,21 @@ class PETsysManager:
         self.raw_input = tk.StringVar(root)
         self.splits = tk.StringVar(root, "1")
         self.convert_duration = tk.StringVar(root, "10")  # explicit; never parsed from the RAW name
+        self.positions = tk.StringVar(root, "5")          # calibration positions per slab (FR-21)
         self.hit_limit = tk.StringVar(root, "16")
         self.coincidence_format = tk.StringVar(root, DataFormat.FIXED.value)
         self.fixed_confirmed = tk.BooleanVar(root, False)  # profile capability
         self.qc_source = tk.StringVar(root, SourceMode.WITH.value)
         self.qc_plots = tk.BooleanVar(root, False)
         self.qc_slabs = tk.BooleanVar(root, False)
+        self.lm_debug = tk.BooleanVar(root, True)          # the reference LM call always passes -d
         self.safety_vars = {name: tk.StringVar(root) for name in SAFETY_FIELDS}
+        self.lm_vars = {name: tk.StringVar(root) for name in LM_FIELDS}
         self._build()
-        for variable in (*self.vars.values(), *self.safety_vars.values(), self.acq_time, self.hw_trigger,
-                         self.raw_input, self.splits, self.convert_duration, self.hit_limit,
-                         self.coincidence_format, self.fixed_confirmed, self.qc_source, self.qc_plots,
-                         self.qc_slabs):
+        for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time,
+                         self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
+                         self.positions, self.coincidence_format, self.fixed_confirmed, self.qc_source,
+                         self.qc_plots, self.qc_slabs, self.lm_debug):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
         self.profile_state = session.open()
@@ -529,6 +557,10 @@ class PETsysManager:
             entry = self._row(frame, row, label, self.vars[name],
                               lambda name=name, kind=kind: self._browse(self.vars[name], kind))
             self.entries.setdefault(name, []).append(entry)
+
+    @staticmethod
+    def _small():
+        return {"font": ctk.CTkFont(size=11), "justify": "left", "anchor": "w", "wraplength": 780}
 
     def _button(self, frame, key, text, **options):
         button = ctk.CTkButton(frame, text=text, state="disabled", **options)
@@ -615,11 +647,16 @@ class PETsysManager:
                      font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=20, pady=10)
         big = {"font": ctk.CTkFont(size=16, weight="bold"), "height": 50}
         self._button(pipeline, "pipeline", "> RUN COMPLETE PIPELINE", fg_color=GREEN, hover_color=GREEN_HOVER,
-                     **big).grid(row=2, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
+                     command=self.run_pipeline, **big).grid(row=2, column=0, columnspan=2, padx=20, pady=10,
+                                                            sticky="ew")
         self._button(pipeline, "stop", "STOP", fg_color=RED, hover_color=RED_HOVER, command=self.stop, **big).grid(
             row=3, column=0, columnspan=2, padx=20, pady=5, sticky="ew")
-        self.pipeline_status = ctk.CTkLabel(pipeline, text="", font=ctk.CTkFont(size=11), text_color="orange")
-        self.pipeline_status.grid(row=4, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="ew")
+        self.pipeline_plan = ctk.CTkLabel(pipeline, text="", font=ctk.CTkFont(size=11), justify="left", anchor="w",
+                                          wraplength=360)
+        self.pipeline_plan.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 5), sticky="w")
+        self.pipeline_status = ctk.CTkLabel(pipeline, text="", font=ctk.CTkFont(size=11), justify="left",
+                                            anchor="w", wraplength=360)
+        self.pipeline_status.grid(row=5, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
         self._readiness(tab, ("daqd", "initialize", "acquire", "pipeline"))
 
     def _conversion_tab(self, tab):
@@ -662,7 +699,18 @@ class PETsysManager:
         self._selection(tab, "calibrate")
         frame = self._frame(tab, "Energy cal file generation")
         self._fields(frame, ("cog_limits_file", "calibration_dir", "report_dir"))
-        self._button(frame, "calibrate", "Create Energy cal file").grid(row=4, column=0, columnspan=3, padx=20, pady=10)
+        self._row(frame, 4, "Positions per Slab:", self.positions, width=100)
+        ctk.CTkLabel(frame, text="1 = one factor per slab, ID(t_ch, slab), no COG limits needed; 2 or more = "
+                                 "position regions along the slab, ID(time_ch, slab, region), from the COG limits",
+                     font=ctk.CTkFont(size=11), justify="left", anchor="w", wraplength=780).grid(
+            row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        self._button(frame, "calibrate", "Create Energy cal file", command=self.calibrate).grid(
+            row=6, column=0, columnspan=3, padx=20, pady=10)
+        status = self._frame(tab, "Energy Calibration Result")
+        self.cal_status = ctk.CTkLabel(status, text="No calibration run in this session", **self._small())
+        self.cal_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        self._button(status, "use_calibration", "Use this .encal as the LM System Energy cal file",
+                     command=self.use_calibration).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
         self._readiness(tab, ("calibrate",))
 
     def _lm_tab(self, tab):
@@ -670,7 +718,27 @@ class PETsysManager:
         frame = self._frame(tab, "LM File Generation Settings")
         self._fields(frame, ("calibration_file", "cog_limits_file", "doi_limits_file", "pair_map_file",
                              "region_map_file", "lm_dir"))
-        self._button(frame, "listmode", "Generate LM File").grid(row=7, column=0, columnspan=3, padx=20, pady=10)
+        ctk.CTkLabel(frame, text="Regions come from the calibration file: ID(t_ch, slab) = one factor per slab, a "
+                                 "position file = its region count.", **self._small()).grid(
+            row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2))
+        ctk.CTkCheckBox(frame, text="Write LM debug plots (reference -d)", variable=self.lm_debug).grid(
+            row=8, column=0, columnspan=3, sticky="w", padx=20, pady=2)
+        self._button(frame, "listmode", "Generate LM File", command=self.generate_lm).grid(
+            row=9, column=0, columnspan=3, padx=20, pady=10)
+        metadata = self._frame(tab, "LM Header Metadata (saved in the profile; empty = unavailable)")
+        metadata.grid_columnconfigure(3, weight=1)
+        for index, (name, (label, _)) in enumerate(LM_FIELDS.items()):
+            row, column = 1 + index // 2, 2 * (index % 2)
+            ctk.CTkLabel(metadata, text=label).grid(row=row, column=column, sticky="e", padx=5, pady=2)
+            entry = ctk.CTkEntry(metadata, textvariable=self.lm_vars[name], width=120)
+            entry.grid(row=row, column=column + 1, sticky="w", padx=5, pady=2)
+            self.entries[f"lm_metadata.{name}"] = [entry]
+        ctk.CTkLabel(metadata, text="Written as given into every LM header (manual and pipeline); never measured "
+                                    "or inferred by the manager.", **self._small()).grid(
+            row=7, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 5))
+        status = self._frame(tab, "LM Result")
+        self.lm_status = ctk.CTkLabel(status, text="No LM generation run in this session", **self._small())
+        self.lm_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 8))
         self._readiness(tab, ("listmode",))
 
     def _selection(self, tab, key):
@@ -694,14 +762,21 @@ class PETsysManager:
         control = self._frame(tab, "Quality Control Execution")
         control.grid_columnconfigure(0, weight=1)
         self._button(control, "qc", "Run Quality Control", width=200, height=40, fg_color=GREEN,
-                     hover_color=GREEN_HOVER).grid(row=1, column=0, pady=5)
-        self._button(control, "qc_stop", "STOP", width=200, height=40, fg_color=RED, hover_color=RED_HOVER).grid(
-            row=2, column=0, pady=5)
+                     hover_color=GREEN_HOVER, command=self.run_qc).grid(row=1, column=0, pady=5)
+        self._button(control, "qc_stop", "STOP", width=200, height=40, fg_color=RED, hover_color=RED_HOVER,
+                     command=self.stop).grid(row=2, column=0, pady=5)
+        self.qc_plan = ctk.CTkLabel(control, text="", **self._small())
+        self.qc_plan.grid(row=3, column=0, sticky="w", padx=10, pady=(0, 5))
         status = self._frame(tab, "Status")
-        self.qc_status = ctk.CTkLabel(status, text="Quality control is not connected yet",
-                                      font=ctk.CTkFont(size=12))
-        self.qc_status.grid(row=1, column=0, pady=10)
+        self.qc_status = ctk.CTkLabel(status, text="No quality control run in this session", **self._small())
+        self.qc_status.grid(row=1, column=0, sticky="w", padx=10, pady=(2, 8))
         self._selection(tab, "qc_analyze")
+        offline = self._frame(tab, "Offline QC of the listed files")
+        self._button(offline, "qc_analyze", "Analyze existing compact LDAT", command=self.analyze_qc).grid(
+            row=1, column=0, padx=20, pady=10, sticky="w")
+        ctk.CTkLabel(offline, text="Uses the plot/slab options above; results go to a new run folder in the Report "
+                                   "Destination. Source mode and duration are not recorded for existing files.",
+                     **self._small()).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 5))
         self._readiness(tab, ("qc", "qc_analyze"))
 
     def _add_logo(self):
@@ -789,17 +864,36 @@ class PETsysManager:
         self.log_text.see("end")
 
     def _show_readiness(self, issues):
-        for key, label in self.readiness.items():
-            name = CHECKS[key][1]
-            found = issues.get(key, ())
-            self._ready[key] = not found
-            if found:
-                label.configure(text=f"{name} unavailable:\n" + "\n".join(f"  • {line}" for line in issue_lines(found)),
-                                text_color=STATUS_COLOURS["warn"])
-            else:
-                suffix = "" if key in CONNECTED else " (control not connected yet)"
-                label.configure(text=f"{name}: prerequisites met{suffix}", text_color=STATUS_COLOURS["ok"])
+        self._issues = {key: tuple(issues.get(key, ())) for key in self.readiness}
+        for key in self.readiness:
+            self._ready[key] = not self._issues[key]
         self._refresh_controls()
+
+    def _live_hint(self, key):
+        """Why a control whose settings are complete is still disabled by the live system state."""
+        status = self.daqd_status
+        ready = status is not None and status.state == DaqdState.READY
+        if key == "initialize" and not ready:
+            return " (start DAQD to enable)"
+        if key in LIVE_KEYS:
+            if self.bias_unknown:
+                return " (confirm the SiPM bias state to enable)"
+            if not (ready and status.initialized):
+                return " (start DAQD and initialize the system to enable)"
+        return ""
+
+    def _render_readiness(self):
+        for key, label in self.readiness.items():
+            name, found = CHECKS[key][1], self._issues.get(key)
+            if found is None:
+                continue  # not checked yet
+            if found:
+                text = f"{name} unavailable:\n" + "\n".join(f"  • {line}" for line in issue_lines(found))
+                colour = "warn"
+            else:
+                text, colour = f"{name}: prerequisites met{self._live_hint(key)}", "ok"
+            if label.cget("text") != text:
+                label.configure(text=text, text_color=STATUS_COLOURS[colour])
 
     # Backend state (main thread only) -----------------------------------------------------------
 
@@ -824,8 +918,14 @@ class PETsysManager:
         kind = event.kind.removeprefix("acquisition_")
         payload = event.payload
         text, tone = None, "info"
+        stage = event.identity.stage_id
+        step = ""
+        if stage in self._stages and len(self._stages) > 1:
+            step = f"Step {self._stages.index(stage) + 1}/{len(self._stages)} ({STAGE_TEXT.get(stage, stage)}): "
         if event.kind == "workflow_started":
-            text = f"Run {self._run_id} started"
+            self._stages = tuple(payload.get("stages", ()))
+            text = f"Run {self._run_id} started: {' -> '.join(STAGE_TEXT.get(s, s) for s in self._stages)}" \
+                   f"\nRun directory: {payload.get('run_root')}"
         elif kind == "attempt_started":
             self._growth_passed = False
             text = f"Attempt {payload['attempt']}/{payload['max_attempts']}: waiting for the RAW file to start writing"
@@ -847,11 +947,22 @@ class PETsysManager:
         elif kind == "bias_unknown":
             self.show_bias_unknown(event.message)
             text, tone = event.message, "error"
-        elif event.kind == "stage_started" and event.identity.stage_id == "conversion":
+        elif event.kind == "stage_started" and stage == "conversion":
             self._last_raw = payload.get("raw")
-            text = f"{event.message}\nRAW input: {payload.get('raw')}\nWriting to: {payload.get('directory')}"
+            text = f"{step}{event.message}\nRAW input: {payload.get('raw')}\nWriting to: {payload.get('directory')}"
+        elif event.kind == "stage_started":
+            text = f"{step}{event.message}\nWriting to: {payload.get('directory')}"
+        elif event.kind == "stage_progress":
+            index, files = payload.get("file_index"), payload.get("files")
+            text = f"{step}{STAGE_TEXT.get(stage, stage)}"
+            if isinstance(index, int) and isinstance(files, int):
+                text += f": file {index + 1}/{files} {Path(str(payload.get('path'))).name}"
+            if isinstance(payload.get("records_read"), int):
+                text += f", {payload['records_read']:,} records read"
+            if isinstance(payload.get("records_written"), int):
+                text += f", {payload['records_written']:,} LM records written"
         elif event.kind == "stage_finished":
-            text = event.message
+            text = f"{step}{event.message}"
         elif event.kind == "workflow_finished":
             text = f"{payload['status']}: {event.message}"
         if text is not None:
@@ -862,10 +973,10 @@ class PETsysManager:
             lines.append(f"Ignored a stale workflow result (request {result.token})")
             return
         action, label, run_id = self._action, self._status_label, self._run_id
-        self._token, self._run_id, self._stop_requested = None, None, False
+        self._token, self._run_id, self._stop_requested, self._stages = None, None, False, ()
         outcome = result.outcome
         if outcome is None:
-            text, tone = result.message, "warn"
+            text, tone = f"{ACTION_TEXT.get(action, action.value)} {result.message}", "warn"
         else:
             text = f"{ACTION_TEXT.get(action, action.value)} {outcome.status.value}: {outcome.message}"
             if outcome.run_root is not None:
@@ -873,8 +984,57 @@ class PETsysManager:
             tone = {ResultStatus.SUCCEEDED: "ok", ResultStatus.CANCELLED: "warn"}.get(outcome.status, "error")
             if action == Action.CONVERT:
                 text += self._conversion_report(outcome, run_id)
+            elif action != Action.ACQUIRE:
+                text += self._stage_report(outcome, run_id)
         label.configure(text=text, text_color=STATUS_COLOURS[tone])
         lines.append(text)
+
+    def _stage_report(self, outcome, run_id):
+        """Each recorded stage with its status and directory; successful ones list their exact validated outputs."""
+        text = ""
+        for stage in outcome.stages:
+            name = STAGE_TEXT.get(stage.stage_id, stage.stage_id)
+            text += f"\n{name}: {stage.status.value}"
+            if stage.directory is not None:
+                text += f" in {stage.directory}"
+            if stage.status != ResultStatus.SUCCEEDED:
+                text += f"\n  {stage.message}"
+                if stage.directory is not None:
+                    text += "\n  Partial outputs, if any, are kept there and recorded as unvalidated"
+                continue
+            summary = stage.details.get("summary") or {}
+            if stage.stage_id == "acquisition":
+                text += f" ({stage.details.get('attempts')} attempt(s))"
+            elif stage.stage_id == "conversion":
+                text += f" ({len(stage.artifacts)} validated {stage.details.get('format')} "\
+                        f"{stage.details.get('population')} file(s))"
+            elif stage.stage_id == "calibration" and summary:
+                layout = "one factor per slab" if summary.get("layout") == "per_slab" else \
+                    f"{summary.get('positions')} position regions per slab"
+                counts = ", ".join(f"{key} {value:,}" for key, value in (summary.get("status_counts") or {}).items())
+                text += f"\n  {layout}; {summary.get('factors', 0):,} of {summary.get('keys', 0):,} mapped keys " \
+                        f"have a factor ({counts})"
+            elif stage.stage_id == "listmode" and summary:
+                text += f"\n  {summary.get('records_written', 0):,} LM records written"
+            elif stage.stage_id == "qc":
+                findings = stage.details.get("findings") or {}
+                summary_path = next((a.path for a in stage.artifacts if a.kind == "qc_summary"), None)
+                if summary_path is not None:
+                    text += f"\n  Results directory: {Path(summary_path).parent}"
+                text += "\n  Processing completed. Findings are observations of the coincidence sample, not a " \
+                        "detector verdict:"
+                text += "".join(f"\n    {key.replace('_', ' ')}: {value}" for key, value in findings.items())
+            if stage.stage_id != "conversion":
+                for artifact in stage.artifacts:
+                    if artifact.kind not in HIDDEN_ARTIFACTS:
+                        text += f"\n  {ARTIFACT_TEXT.get(artifact.kind, artifact.kind)}: {artifact.path}"
+            else:
+                text += "".join(f"\n  {index}. {artifact.path}" for index, artifact in enumerate(stage.artifacts, 1))
+            if stage.stage_id == "calibration":
+                encal = next((a.path for a in stage.artifacts if a.kind == "encal"), None)
+                if encal is not None:
+                    self.last_calibration = (run_id, Path(encal))
+        return text
 
     def _conversion_report(self, outcome, run_id):
         """The exact RAW input and the exact recorded outputs, in order; nothing is guessed from names."""
@@ -919,22 +1079,28 @@ class PETsysManager:
         initializing = self._init_pending or (status is not None and status.initializing)
         ready = state == DaqdState.READY
         live = state in (DaqdState.STARTING, DaqdState.READY)
+        system = ready and status.initialized and not initializing and not self.bias_unknown
         enable = {
             "daqd": not busy and not self._daqd_pending and not initializing and (
                 live or (state in (DaqdState.OFF, DaqdState.FAILED) and self._ready.get("daqd", False))),
             "initialize": not busy and ready and not initializing and self._ready.get("initialize", False),
-            "acquire": (not busy and ready and status.initialized and not initializing and not self.bias_unknown
-                        and self._ready.get("acquire", False)),
             "use_outputs": not busy and self.last_conversion is not None,
+            "use_calibration": not busy and self.last_calibration is not None,
         }
-        for key in ("convert_coincidence", "convert_group"):
+        for key in LIVE_KEYS:
+            enable[key] = not busy and system and self._ready.get(key, False)
+        for key in ("convert_coincidence", "convert_group", *PROCESSING_KEYS):
             enable[key] = not busy and self._ready.get(key, False)
         for key in STOP_KEYS:
             enable[key] = self._token is not None and not self._stop_requested and not self._shutting_down
-        for key, button in self.buttons.items():
-            button.configure(state="normal" if enable.get(key, False) else "disabled")
-        self.daqd_state.set(live)
-        self.buttons["daqd"].configure(text=DAQD_TEXT[state])
+        for key, button in self.buttons.items():  # a redraw per poll and button would starve Tk: changes only
+            wanted = "normal" if enable.get(key, False) else "disabled"
+            if button.cget("state") != wanted:
+                button.configure(state=wanted)
+        if self.daqd_state.get() != live:
+            self.daqd_state.set(live)
+        if self.buttons["daqd"].cget("text") != DAQD_TEXT[state]:
+            self.buttons["daqd"].configure(text=DAQD_TEXT[state])
         if status is None:
             text = "DAQD not started by this manager"
         else:
@@ -943,8 +1109,10 @@ class PETsysManager:
                 text += "; initialized" if status.initialized else "; not initialized"
             if status.message:
                 text += f"\n{status.message}"
-        self.daqd_label.configure(text=text, text_color=STATUS_COLOURS[
-            {DaqdState.READY: "ok", DaqdState.FAILED: "error"}.get(state, "info")])
+        colour = STATUS_COLOURS[{DaqdState.READY: "ok", DaqdState.FAILED: "error"}.get(state, "info")]
+        if (self.daqd_label.cget("text"), self.daqd_label.cget("text_color")) != (text, colour):
+            self.daqd_label.configure(text=text, text_color=colour)
+        self._render_readiness()
 
     # Actions --------------------------------------------------------------------------------------
 
@@ -998,22 +1166,67 @@ class PETsysManager:
             self._start(profile, Action.CONVERT, options, self.convert_status, f"Starting {what} conversion...")
         self._refresh_controls()
 
-    def _start(self, profile, action, options, label, text):
-        self._token = self.session.start_workflow(profile, action, options)
+    def _start(self, profile, action, options, label, text, inputs=()):
+        self._token = self.session.start_workflow(profile, action, options, inputs)
         self._action, self._status_label, self._last_raw = action, label, None
-        self._run_id, self._stop_requested = None, False
+        self._run_id, self._stop_requested, self._stages = None, False, ()
         if action == Action.CONVERT:
             self.last_conversion = None  # "Use these outputs" only ever means the run shown
+        if action in (Action.CALIBRATE, Action.PIPELINE):
+            self.last_calibration = None
         label.configure(text=text, text_color=STATUS_COLOURS["info"])
+
+    def _run(self, key, label, text):
+        """Start the check's exact request (options and ordered inputs) as shown by its prerequisites."""
+        profile = self._profile_or_log()
+        requests, issues = self.requests()
+        if key in issues:
+            self.log(f"{CHECKS[key][1]} not started: " + "; ".join(issue.message for issue in issues[key]))
+        elif not self._ready.get(key, False):
+            self.log(f"{CHECKS[key][1]} not started: prerequisites not met (see its Prerequisites)")
+        elif profile is not None and key in requests:
+            action, options, inputs = requests[key]
+            self._start(profile, action, options, label, text, inputs)
+        self._refresh_controls()
+
+    def calibrate(self):
+        self._run("calibrate", self.cal_status, "Starting energy calibration of the listed files...")
+
+    def generate_lm(self):
+        self._run("listmode", self.lm_status, "Starting LM generation of the listed files...")
+
+    def analyze_qc(self):
+        self._run("qc_analyze", self.qc_status, "Starting offline QC of the listed files...")
+
+    def run_qc(self):
+        mode = SourceMode(self.qc_source.get())
+        self._run("qc", self.qc_status, f"Starting quality control {mode.value} source "
+                                        f"({QC_PRESET_S[mode]:g} s acquisition)...")
+
+    def run_pipeline(self):
+        self._run("pipeline", self.pipeline_status, "Starting the complete pipeline...")
 
     def stop(self):
         if self._token is not None and self.session.stop_workflow():
             self._stop_requested = True
-            text = ("STOP: terminating the acquisition and switching bias off; no further attempt"
-                    if self._action == Action.ACQUIRE else "STOP: terminating the conversion; no later stage")
+            if self._action == Action.ACQUIRE:
+                text = "STOP: terminating the acquisition and switching bias off; no further attempt"
+            elif self._action in (Action.QC, Action.PIPELINE):
+                text = ("STOP: terminating the running stage (an acquisition switches bias off); "
+                        "no further attempt or later stage")
+            else:
+                text = f"STOP: terminating the {ACTION_TEXT[self._action].lower()}; no later stage"
             self._status_label.configure(text=text, text_color=STATUS_COLOURS["warn"])
             self.log("STOP requested")
         self._refresh_controls()
+
+    def use_calibration(self):
+        """Operator choice: put the last recorded .encal into the LM field (an unsaved profile edit)."""
+        if self.last_calibration is None:
+            return
+        run_id, path = self.last_calibration
+        self.vars["calibration_file"].set(str(path))
+        self.log(f"System Energy cal file set to {path} from run {run_id} (unsaved profile edit)")
 
     def use_conversion_outputs(self):
         """Hand the last conversion's exact validated outputs to the processing lists that accept them."""
@@ -1055,6 +1268,17 @@ class PETsysManager:
         except ValueError:
             text = "Splits must be an integer and duration a number"
         self.split_plan.configure(text=text)
+        conversion = (f"{self.splits.get().strip() or '?'} split(s), max {self.hit_limit.get().strip() or '?'} "
+                      "hits per side (RAWF to LDAT tab)")
+        self.pipeline_plan.configure(
+            text=f"This run: acquire {self.acq_time.get().strip() or '?'} s -> fixed coincidence conversion, "
+                 f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
+                 "Processing tab) -> LM with the LM tab files and metadata. Every stage stays in a new run folder "
+                 "in the Output Data Folder.")
+        mode = SourceMode(self.qc_source.get())
+        self.qc_plan.configure(
+            text=f"This run: acquire {QC_PRESET_S[mode]:g} s {mode.value} source -> compact coincidence conversion, "
+                 f"{conversion} -> QC; a new run folder in the Output Data Folder.")
 
     # Profile and options ------------------------------------------------------------------------
 
@@ -1072,6 +1296,10 @@ class PETsysManager:
                 value = (profile.safety.min_growth_bytes / 1e6 if name == "min_growth_mb"
                          else getattr(profile.safety, name))
                 self.safety_vars[name].set(str(value) if type(value) is int else format(value, ".15g"))
+            for name in LM_FIELDS:
+                value = getattr(profile.lm_metadata, name)
+                self.lm_vars[name].set("" if value is None else format(value, ".15g") if type(value) is float
+                                       else str(value))
             self.fixed_confirmed.set(profile.capabilities.fixed_output_confirmed)
         finally:
             self._loading = False
@@ -1086,9 +1314,22 @@ class PETsysManager:
         values["socket_path"] = self.vars["socket_path"].get().strip()
         values["cards"] = tuple(card.strip() for card in self.vars["cards"].get().split(",") if card.strip())
         values["safety"] = self.safety_from_ui()
+        values["lm_metadata"] = self.lm_metadata_from_ui()
         values["capabilities"] = replace(self.session.profile.capabilities,
                                          fixed_output_confirmed=self.fixed_confirmed.get())
         return replace(self.session.profile, **values)
+
+    def lm_metadata_from_ui(self):
+        """Typed LM header metadata; an empty field stays unavailable (None), never a default."""
+        values = {}
+        for name, (label, kind) in LM_FIELDS.items():
+            text = self.lm_vars[name].get().strip()
+            try:
+                values[name] = None if not text else kind(text)
+            except (ValueError, OverflowError):
+                raise ProfileError(f"LM {label.rstrip(':')} must be {'an integer' if kind is int else 'a number'}") \
+                    from None
+        return LMMetadata(**values)  # range checks raise ProfileError
 
     def safety_from_ui(self):
         values = {}
@@ -1125,26 +1366,38 @@ class PETsysManager:
 
         duration = number(self.acq_time, float, "Acq. Time (s)", ("acquire", "pipeline"))
         conversions = ("convert_coincidence", "convert_group")
-        splits = number(self.splits, int, "Number of Split Files", conversions)
+        splits = number(self.splits, int, "Number of Split Files", (*conversions, "pipeline", "qc"))
         raw_duration = number(self.convert_duration, float, "RAW Acquisition Duration (s)", conversions)
-        hits = number(self.hit_limit, int, "Max Hits per Side", conversions)
+        hits = number(self.hit_limit, int, "Max Hits per Side", (*conversions, "pipeline", "qc"))
         for key in ("daqd", "initialize"):
             add(key)
+        positions = number(self.positions, int, "Positions per Slab", ("calibrate", "pipeline"))
+        plots = self.qc_plots.get()
+        qc = dict(plots=plots, slabs=plots and self.qc_slabs.get())    # slab analysis requires plots
         for key, selection in self.selections.items():
-            add(key, selection.descriptors())
+            if key == "calibrate":
+                if positions is not None:
+                    add(key, selection.descriptors(), regions=positions)
+            elif key == "listmode":
+                add(key, selection.descriptors(), debug=self.lm_debug.get())
+            else:
+                add(key, selection.descriptors(), **qc)
             problem = selection.confirmation_issue()
             if problem:
                 reason(key, "inputs", problem)
         if duration is not None:
-            for key in ("acquire", "pipeline"):
-                add(key, duration_s=duration, hardware_trigger=self.hw_trigger.get())
+            add("acquire", duration_s=duration, hardware_trigger=self.hw_trigger.get())
+            if None not in (splits, hits, positions):   # always fixed coincidence; nothing else is offered
+                add("pipeline", duration_s=duration, hardware_trigger=self.hw_trigger.get(), splits=splits,
+                    hit_limit=hits, output_format=DataFormat.FIXED, population=Population.COINCIDENCE,
+                    regions=positions, debug=self.lm_debug.get())
         if None not in (splits, raw_duration, hits):
             common = dict(splits=splits, duration_s=raw_duration, hit_limit=hits,
                           raw_input=self.raw_input.get().strip() or None)
             add("convert_coincidence", output_format=DataFormat(self.coincidence_format.get()), **common)
             add("convert_group", population=Population.GROUP, **common)
-        add("qc", source_mode=SourceMode(self.qc_source.get()), plots=self.qc_plots.get(),
-            slabs=self.qc_plots.get() and self.qc_slabs.get())
+        if None not in (splits, hits):   # duration and compact format: the preflight's source preset
+            add("qc", source_mode=SourceMode(self.qc_source.get()), splits=splits, hit_limit=hits, **qc)
         return requests, issues
 
     def _edited(self, *_):

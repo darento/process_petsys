@@ -99,8 +99,8 @@ SiPM bias (FR-19): `acquire_sipm_data` switches bias off only at the end of a no
 | --- | --- | --- |
 | Manual coincidence conversion | RAW acquisition + selected INI | Explicit fixed or compact coincidence descriptor |
 | Manual group conversion | RAW acquisition + selected INI | Fixed group descriptor |
-| Position calibration | Selected fixed group or fixed coincidence files, COG limits, processing config | Position `.encal`, status/provenance, summary plot |
-| Manual LM generation | Fixed coincidence files, position calibration, COG/DOI limits, pair/region maps, metadata | Compatible LM header/records plus provenance/debug summaries |
+| Energy calibration (FR-21) | Selected fixed group, fixed coincidence or compact coincidence files, positions P, processing config; COG limits when P ≥ 2 | Per-slab (P = 1) or position (P ≥ 2) `.encal`, per-key status file, sidecar provenance, summary plot |
+| Manual LM generation | Fixed coincidence files, per-slab or position calibration, COG/DOI limits, pair/region maps, metadata | Compatible LM header/records plus provenance/debug summaries |
 | Complete pipeline | Acquire → fixed coincidence conversion → position calibration → LM | Actual artifacts from each successful predecessor |
 | QC | 60 s with-source or 180 s without-source acquisition → compact coincidence conversion → legacy QC | Existing QC output types with actual results directory |
 
@@ -129,6 +129,25 @@ Exact counts, accepted/rejected selection, calibration keys and record layouts a
 - Do not silently add a channel-energy cut absent from the confirmed reference; report the actual calibration cut separately from LM/QC cuts.
 
 **T8 outcome (2026-10-01):** `src/cornell/calibration.py` reproduces the reference's accepted sides, keys, histograms and fitted values exactly on seeded synthetic data. Fallbacks agree within 0.001 a.u. and are now labelled. Storage is fixed per mapped key. The `.encal` is unchanged and readable by `KevConverter`; the T5-compatible sidecar records boundaries, cuts, sampling, rejections and non-fitted keys. 14/14 checks pass; real-data parity is T19. Evidence in [`tasks.md`](tasks.md).
+
+### Energy calibration (FR-21, T20)
+
+Owner decision 2026-10-01: one algorithm for every input format, from `scripts_cornell/cornell_slab_en_cal.py`, plus a positions-per-slab count P.
+
+- **Readers:** fixed and compact batches are decoded into the same padded per-side arrays (empty slots are channel −1; fixed slots beyond the header count are ignored). Hits below `en_min_ch` are emptied in place, keeping the order of the remaining hits, as the compact reader drops them. One vectorized selection then serves both formats, so equal events give equal results by construction.
+- **Selection** mirrors the per-event reference:
+  - both sides pass `filter_min_ch`;
+  - the highest-energy minimodule is found (an exact energy tie falls back to the reference function, whose result depends on Python set order);
+  - both maximum minimodules pass `filter_min_ch`;
+  - `get_slab_cornell` is applied; an event with both slabs undetermined is skipped;
+  - one-time-channel sides are dropped;
+  - the side's key is its highest-energy time channel and slab (plus region when P ≥ 2).
+
+  A side with no time channel in its maximum minimodule is a counted rejection; the reference aborts there. A group is calibrated as one side. A file stops once more than 10,000,000 events have passed, as the reference does.
+- **Regions (P ≥ 2):** y COG of the maximum minimodule normalized by the selected COG limits; outside [0, 1] excluded (T8 calibration convention, edge multiplier 1.8).
+- **Bounded exact fit:** `fit_peak_background` depends on the values only through their count and a 100-bin histogram over an anchor-dependent interval (0.55–1.5 × anchor). Pass 1 accumulates per key the count and the 150-bin 0–220 a.u. anchor histogram; pass 2 re-reads the same selection and fills each key's interval histogram with `np.histogram` bin edges. Storage is keys × 250 bins, never per event. The unchanged Inspector `fit_peak_background` then runs on stand-in values built from that histogram, one key at a time: each count at its bin centre, plus fillers beyond the interval to keep the count. These give it exactly the same histogram and count; the Inspector source is not modified.
+- **Outputs:** the `.encal` lists every mapped key (unfitted ones as `0\t0`, as the reference); P = 1 writes `ID(t_ch, slab)\tmu\tsigma` and P ≥ 2 `# Position-dependent energy calibration (P regions per slab)` + `ID(time_ch, slab, region)\tmu\tsigma`. A per-key status file, a JSON sidecar (layout, P, boundaries, cuts, limits, inputs, status counts) and the summary plot follow. Loaders treat `0\t0` rows as no factor.
+- **LM:** a per-slab factor is used for the whole slab (a one-region lookup); sides without COG limits are still rejected, since LM decompression needs them.
 
 ### Listmode
 
@@ -175,6 +194,7 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 | FR-18 | Deployment docs, checkout audit, retirement boundary | T18–T19 |
 | FR-19 | Bias-off after abnormal acquisition end, unknown-bias warning | T7, T14, T19 |
 | FR-20 | Growth/progress feedback, editable safety limits | T7, T14, T19 |
+| FR-21 | Compact/per-slab/position calibration, LM per-slab lookup | T20, T16, T19 |
 
 ## Alternatives rejected
 

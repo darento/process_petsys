@@ -233,8 +233,8 @@ class ManagerSession:
                     update_sink=lambda event: self.events.put(ShellEvent("workflow", event)), log_sink=self.log)
             return self._daqd, self._coordinator
 
-    def _settings(self, profile, action, options=None):
-        report = preflight(profile, action, options, repo_root=self.repo_root, probe=self.probe)
+    def _settings(self, profile, action, options=None, inputs=()):
+        report = preflight(profile, action, options, inputs, repo_root=self.repo_root, probe=self.probe)
         if not report.ready:
             raise Refused("; ".join(f"{issue.field}: {issue.message}" for issue in report.issues))
         return report.settings
@@ -281,10 +281,14 @@ class ManagerSession:
             self.events.put(ShellEvent("init_done", outcome))
         return self._spawn("initialize", run)
 
-    def start_workflow(self, profile, action, options=None):
-        """Request one foreground workflow; returns its token. The result arrives as "workflow_done"."""
+    def start_workflow(self, profile, action, options=None, inputs=()):
+        """Request one foreground workflow; returns its token. The result arrives as "workflow_done".
+
+        ``inputs`` are the exact ordered descriptors of a manual calibration, LM or offline QC.
+        """
         from .workflow import WorkflowBusy, WorkflowError, prepare
 
+        inputs = tuple(inputs)
         with self._lock:
             if self._active is not None:
                 raise RuntimeError("A foreground workflow is already requested")
@@ -297,7 +301,7 @@ class ManagerSession:
             try:
                 if self._shutdown.is_set():
                     raise Refused("The manager is closing")
-                settings = self._settings(profile, action, options)
+                settings = self._settings(profile, action, options, inputs)
                 plan = prepare(settings)
                 daqd, coordinator = self._services()
                 prerequisite = None

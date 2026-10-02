@@ -318,9 +318,10 @@ class ListmodeContext:
     def build(cls, config, calibration, cog_limits, doi_limits, pairs, regions, metadata):
         maps = CalibrationMaps.from_mapping(config.mapping)
         max_ch = maps.max_ch
-        num_regions = calibration.num_regions
+        num_regions = calibration.num_regions   # 1 for a per-slab calibration: one factor per slab
         cal_map = np.zeros((max_ch, MAX_SLABS, num_regions), dtype=np.float32)
-        for (t, s, r), (mu, _) in calibration.values.items():
+        for key, (mu, _) in calibration.values.items():
+            t, s, r = key if len(key) == 3 else (*key, 0)
             if t < max_ch and s < MAX_SLABS and r < num_regions:
                 cal_map[t, s, r] = mu
         cog_left, cog_right = _limit_array(cog_limits, max_ch)
@@ -760,7 +761,8 @@ def job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, 
                               "energy_range_kev": [float(v) for v in config.values["energy_range"]],
                               "en_min_ch_au": config.values.get("en_min_ch")},
         "map": source(config.mapping),
-        "calibration": {**source(calibration), "num_regions": calibration.num_regions,
+        "calibration": {**source(calibration), "layout": calibration.layout, "num_regions": calibration.num_regions,
+                        "keys_without_factor": calibration.unfitted,
                         "region_provenance": calibration.region_provenance},
         "cog_limits": source(cog_limits), "doi_limits": source(doi_limits),
         "pair_map": source(pairs), "region_map": source(regions),

@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T15 are complete; T16 calibration, LM, QC and pipeline UI is next. Live hardware and processing GUI wiring have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete; T17 integrated regressions is next. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -665,13 +665,106 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - Linux runs of real converters from the GUI (T17).
   - Installed-converter behaviour and operator review of the live UI (T19).
 
-- [ ] **T16 — Calibration, LM, QC and pipeline UI** (FR-1, FR-5, FR-11–FR-14, FR-16). Connect remaining tabs/manual actions/pipeline with actual artifacts, region/LM metadata fields, source/options and report destinations. Keep the reference layout recognizable; no Inspector embedding.
+- [x] **T20 — Compact input and per-slab/position energy calibration** (FR-10, FR-12, FR-15, FR-16, FR-21). Owner request 2026-10-01. Replace the T8 fit with the `cornell_slab_en_cal.py` algorithm for fixed coincidence, fixed group and compact coincidence inputs, with a positions-per-slab count P: P = 1 per-slab `cornell` `.encal`, P ≥ 2 `cornell_position` `.encal` with COG-limit regions. Two-pass bounded accumulation; status file and sidecar; `0\t0` rows read as no factor; LM accepts a per-slab calibration; CLI request/workflow/preflight/GUI positions field and compact calibration route.
 
-  **Depends on:** T8–T13, T15.
+  **Depends on:** T5, T8–T12, T15.
+
+  **Done when:** `python scripts/petsys_manager_calibration_check.py` proves:
+  - P = 1 `.encal` and status files are byte-identical to the reference `cornell_slab_en_cal.py` functions on seeded synthetic Cornell compact data, including borrowed, estimated, no-fit and higher-peak cases and the passing-event limit;
+  - fixed coincidence and compact encodings of the same events give byte-identical outputs for P = 1 and P = 5;
+  - P ≥ 2 matches a per-event oracle built from the same reference functions plus the T8 region rule;
+  - storage is bounded by keys, cancellation/changed inputs fail, outputs never overwrite;
+  - `KevConverter` `cornell`/`cornell_position` and `load_calibration` read the outputs, and LM runs with a per-slab and a position calibration;
+  - CLI, workflow, preflight and GUI accept compact calibration and the positions count, and refuse a missing COG-limits file only when P ≥ 2.
+
+  The Inspector source stays unchanged: the fit uses its existing `fit_peak_background` on histogram stand-in values. A representative Cornell run on the owner's January compact and fixed files is recorded.
+
+  **Verified 2026-10-01:**
+  - **`src/cornell/calibration.py`** rewritten (FR-21): one algorithm (`cornell_slab_en_cal.py`) for fixed coincidence, fixed group and compact coincidence, with `positions` P (1 per slab, ≥ 2 regions from COG limits). The T8 `fit_gaussian` port is superseded by the owner decision; shared `create_region_boundaries`/`region_ids`/`CalibrationMaps` stay for LM.
+    - **Readers:** fixed and compact batches are decoded into the same padded arrays and validated while read (T5 rules: hit limit/counts, truncation/remainder, mapped channels, finite energy); a numba scan indexes compact records. Pass 1 reads each whole file; a changed input or disagreeing passes fail.
+    - **Selection:** a numba row kernel mirrors the per-event reference, with hit-order sums and stable top-2 time channels; an exact minimodule-energy tie falls back to the reference `get_maxEnergy_sm_mM` (Python set order).
+    - **Fit, bounded and exact:** pass 1 keeps the count and the 150-bin anchor histogram per key, pass 2 the 100-bin fit histogram on each key's anchor-dependent interval (exact `np.histogram` bins). The unchanged Inspector `fit_peak_background` runs on stand-in values (counts at bin centres plus out-of-interval fillers) that reproduce its histogram and count exactly. Storage is keys × 250 bins.
+    - **Outputs** (exclusive): `.encal` with every mapped key (`0\t0` = no factor), `ID(t_ch, slab)` or `# Position-dependent … (P regions per slab)` + `ID(time_ch, slab, region)`; a status file; a sidecar (layout, P, boundaries, cuts incl. `en_min_ch`, fit/limit settings, inputs, rejection and status counts); the summary plot.
+  - **Readers/consumers:** `inputs.load_calibration` reads both layouts (`layout`, `unfitted`; `0\t0` rows are missing keys, other zero/negative factors still rejected); `calibration_layout` reads a header. LM builds a one-region lookup from a per-slab calibration and records the layout in provenance.
+  - **Routes:** `contracts.route_accepts` is the single format-route rule (calibration: fixed coincidence/group or compact coincidence, one shape per run).
+    - `settings.preflight`: COG limits only when P ≥ 2 (LM/pipeline always); `en_min_ch` required for every processing action; `ProcessingLimits.calibration_event_limit` = 10,000,000 replaces `calibration_side_limit`.
+    - CLI calibrate request: `positions`, `event_limit`, optional `cog_limits`, `status` output kind `calibration_status`.
+    - Workflow: `_resolved`/`_position_<P>regions` names; manual LM takes the region count from the calibration file.
+    - GUI: "Positions per Slab" (default 5) on the LDAT tab, compact declared calibration inputs accepted, compact conversion outputs also offered to calibration.
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_calibration_check.py` → **PASS 14/14** (replaces the T8 checks; the T8 script is backed up outside the repo):
+  - **Reference parity:**
+    - P = 1 `.encal` and status files are byte-identical to the reference `process_file` → `extract_photopeak_slab` → `borrow_outer_slabs` → `estimate_missing_slabs` → writers on seeded compact data. That data covers fitted, borrowed 1/14, neighbour and minimodule-median estimates, below-200, unsupported-peak and higher-peak statuses, multi-minimodule sides, an exact minimodule tie, `en_min_ch`-dropped hits and the min-channel/minimodule/unresolved/one-time-channel rejections.
+    - The passing-event limit matches a reference copy whose literal limit is 700: 701 passing events per file, at batch 64 and 5000.
+  - **Positions:** P = 3 matches a per-event oracle (reference helpers plus the region rule, fit/borrow/estimate per region), including missing-limit and out-of-range rejections; P ≥ 2 without COG limits is refused.
+  - **Fixed ≡ compact:** fixed and compact encodings give identical `.encal`/status/rejections for P = 1, 3 and 5 at batch 37 and 5000. Fixed group calibrates groups as one side; mixing is refused.
+  - **Safety:**
+    - `bin_index` equals `np.histogram`, edges and adjacent floats included;
+    - the stand-in fit equals the raw-value fit field by field;
+    - storage is the same for 1× and 4× the events;
+    - cancellation and an input changed during the run fail;
+    - fused validation rejects what T5 `validate_ldat` rejects;
+    - a side without a time channel (a reference `IndexError`) is rejected by the summed-map filters.
+  - **Consumers:**
+    - Outputs read back through `load_calibration` (sidecar) and `KevConverter` `cornell`/`cornell_position`, and never overwrite.
+    - The owner's reference per-slab file loads.
+    - LM with a per-slab `.encal` writes the same bytes as with the equivalent one-region position file; the 5-region LM is unchanged.
+    - The tracked module imports no local script.
+  - **Real data (`--real`, read-only):**
+    - The six January `…_coincCompact11s_0000000{3..8}.ldat` files with `configs/cornell_full_system.yaml`, P = 1, are **byte-identical to the owner's `encal_files/…_coincCompact11s_resolved.encal`**: 7,681 rows; 5,356 fitted, 114 higher-peak checks, 791 borrowed, 139 estimated, 1,280 without values.
+    - Each file has 2.47–2.49 M records and 2.09–2.10 M passing events, below the limit.
+    - The six `…_coincFixed11s_…` files give the identical file.
+    - Two passes take about 140 s compact and 90 s fixed on this PC; the files are unchanged.
+
+  **Updated expectations:** compact is now a valid calibration route, so the T2 settings, T5 formats and T15 GUI checks were changed to expect that. The CLI and workflow checks were changed for the new request schema and status output. LM/QC/workflow checks keep the restored T8 `Geometry`/`encode_fixed` helpers.
+
+  **Regressions:**
+  - manager modes plus `--cli --workflows` 175;
+  - numeric `--formats --calibration --listmode --qc` 80/80;
+  - GUI `--shell --acquisition --conversion --real` 20/20 (new positions/COG test);
+  - T1 reference 17/17;
+  - Inspector `--selftest` 59/59, slab 16/16, unpopulated 6/6, Inspector hidden GUI 29/29, with the Inspector source unchanged;
+  - compile PASS.
+
+  **Still pending:**
+  - The calibrate/LM/pipeline buttons and the pipeline's P (T16).
+  - Linux/real-converter runs (T17).
+  - Operator comparison with the installed reference workflow (T19).
+  - Very large P is bounded by the 100,000-row calibration table limit.
+
+- [x] **T16 — Calibration, LM, QC and pipeline UI** (FR-1, FR-5, FR-11–FR-14, FR-16). Connect remaining tabs/manual actions/pipeline with actual artifacts, region/LM metadata fields, source/options and report destinations. Keep the reference layout recognizable; no Inspector embedding.
+
+  **Depends on:** T8–T13, T15, T20.
 
   **Done when:** `python scripts/petsys_manager_gui_check.py --processing` proves actual calibration/results paths are displayed, next stages use recorded artifacts, incomplete metadata/options/prerequisites cannot start work, slabs require plots and both source presets dispatch correctly. Every injected stage failure/cancel remains failure/cancel, never pipeline success/QC PASS. Persistent settings and selected external files are unchanged after successful/failed pipelines.
 
-  **Verified:** pending.
+  **Verified 2026-10-01:**
+  - **GUI (`exe_programs/petsys_manager_gui.py`):** "Create Energy cal file", "Generate LM File", "Run Quality Control", the new "Analyze existing compact LDAT", "RUN COMPLETE PIPELINE" and the QC STOP are connected. Each starts the exact request its prerequisite line checked (options plus the ordered, confirmed input list). The action itself refuses when the newest check is not met; the session preflight is the backstop.
+    - **Results:** run directory, then each recorded stage with status and attempt directory; successful stages list their exact validated outputs (`.encal`/provenance/status/plot, LM file/provenance/job/debug plots, ordered conversion outputs, QC outputs). Calibration shows layout and fitted/borrowed/estimated counts; QC shows the actual results directory and its findings as observations of the coincidence sample, never a verdict. Failed stages show their message and that partial outputs are kept unvalidated.
+    - **Progress:** stage start/progress/finish lines with "Step k/n" for multi-stage runs, file index and records read/written.
+    - **Recorded artifacts:** the pipeline's calibration and LM consume the conversion's and calibration's recorded outputs (T12). A manual or pipeline calibration's `.encal` is only *offered* to LM ("Use this .encal as the LM System Energy cal file", an unsaved profile edit); nothing is applied by a run.
+    - **Options:** pipeline = Acq. Time, the RAWF tab's splits and hit limit, always fixed coincidence (the conversion tab's compact choice never reaches it), Positions per Slab and the LM debug choice; QC = source preset (60/180 s, shown), splits, hit limit, plots, slabs only with plots. LM metadata fields (11, saved in the profile, empty = unavailable) are on the LM tab; LM debug plots default on (reference `-d`).
+    - **Readiness:** "(control not connected yet)" removed. Live actions say "(start DAQD and initialize the system to enable)" / "(confirm the SiPM bias state to enable)" while settings are complete.
+    - **Responsiveness fix:** controls and labels are reconfigured only when their state/text changes. Reconfiguring every button on every 100 ms poll starved Tk once three windows were open (found by `test_profile_reload_and_save` stalling).
+  - **Session:** `start_workflow(..., inputs)` passes the exact ordered descriptors to preflight (manual calibration/LM/offline QC).
+
+  Environment interpreter `-X utf8 scripts/petsys_manager_gui_check.py --processing` → **PASS 5/5**. Withdrawn real windows drive the real session, `WorkflowCoordinator`, `CommandRunner` and `AcquisitionService` against the T12 tool backend; DAQD/init use the T14 fake hardware.
+  - **Manual calibration → LM (real CLI children on the seeded T9 fixture):** the operator order (2 then 1) reaches the request. The displayed `.encal`/provenance/status/plot paths are the recorded outputs inside `calibration_dir/<run>`. The LM field is unchanged until the offer is clicked; LM then uses that `.encal`, 5 regions from its header, debug off, profile metadata, and shows the LM file and records written. Positions 1 → no COG limits, `_resolved.encal`.
+  - **QC:** offline QC → `report_dir/<run>`, no source mode/duration, slabs set without plots are not requested, the results directory is shown, no "PASS". Live with/without source → `--time` 60/180, `qc_<mode>_source`, compact conversion, exact QC options. Injected QC failure → "Quality control failed" without findings; STOP → "Offline QC cancelled".
+  - **Pipeline:** buttons stay disabled until DAQD is initialized. The run is acquisition → fixed conversion (compact chosen on the RAWF tab is ignored) → calibration with the conversion's exact 2 outputs, 3 positions → LM with that run's `.encal`, 3 regions. Every artifact is displayed; UI fields, lists, profile file/object and the YAML/map/limits/calibration/input digests are unchanged; the new `.encal` is offered, not applied.
+  - **Failures/STOP:** conversion nonzero, calibration invalid/stale result, LM nonzero, STOP during acquisition (bias-off follows) and during calibration → failed/cancelled, the stage line shows it, no later stage launches, `last_calibration` only after a successful calibration, and controls return. A manual calibration failure shows no `.encal` and disables the offer. Settings and digests are unchanged.
+  - **Incomplete inputs:** missing isotope blocks LM and pipeline (not QC), and a direct call refuses. Invalid module number / pixels 200 / ring distance −1 give a profile reason everywhere. Positions 0, splits x, hit limit 300 and Acq. Time 0 block exactly their actions; unconfirmed inputs block LM. No launch and no run directory.
+
+  **Regressions:**
+  - GUI `--shell --acquisition --conversion --processing --real` → **25/25**, including T13–T15/T20 expectations unchanged;
+  - manager `--settings --commands --runner --artifacts --daqd --acquisition --cli --workflows` → **175/175**;
+  - compile and Inspector-unchanged checks inside `--shell` PASS.
+
+  **Still pending:**
+  - A person checks the actual UI on representative acquisitions.
+  - Linux/real tools (T17).
+  - Operator comparison with the installed reference (T19).
+  - LM header `acquisition_time_s`/`measurement_time_s` are the profile's values in the pipeline too, not the run's measured duration; this needs an owner decision.
 
 ## Acceptance and deployment
 

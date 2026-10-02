@@ -25,7 +25,7 @@ import yaml
 from src.fem_handler import get_FEM_instance
 from src.mapping_generator import ChannelType, _get_local_mapping
 from src.petsys_manager.contracts import (Action, DataFormat, FrozenMapping,
-    InputDescriptor, Population, freeze)
+    InputDescriptor, Population, freeze, route_accepts)
 
 
 MAX_METADATA_BYTES = 4 * 1024 * 1024
@@ -77,12 +77,24 @@ def describe_legacy(paths, *, format=None, population=None, confirmed=False):
     return tuple(InputDescriptor(path, format, population) for path in paths)
 
 
+def calibration_layout(path):
+    """("per_slab", 1) or ("position", regions) from a calibration header; full checks are load_calibration's."""
+    with open(path, "rb") as stream:
+        head = stream.read(4096).decode("utf-8", "replace").splitlines()
+    head = [line.strip() for line in head if line.strip()]
+    if head and head[0] == "ID(t_ch, slab)\tmu\tsigma":
+        return "per_slab", 1
+    match = re.fullmatch(r"# Position-dependent energy calibration \((\d+) regions per slab\)", head[0]) if head else None
+    if match is None:
+        raise InputError(f"Unsupported calibration header/key schema: {path}")
+    return "position", int(match[1])
+
+
 def select_inputs(descriptors, action, *, processing_root):
     """Resolve only the given ordered list. Report every missing/duplicate/wrong route."""
     action = Action(action)
     if action not in (Action.CALIBRATE, Action.LISTMODE, Action.QC_ANALYZE):
         raise InputError("Select inputs for calibration, listmode or offline QC")
-    wanted = DataFormat.COMPACT if action == Action.QC_ANALYZE else DataFormat.FIXED
     selected, issues, seen = [], [], set()
     for descriptor in descriptors:
         if len(selected) >= MAX_ENTRIES:
@@ -95,14 +107,13 @@ def select_inputs(descriptors, action, *, processing_root):
         if path in seen:
             issues.append(f"Duplicate selected input: {path}")
         seen.add(path)
-        if descriptor.format != wanted or (action != Action.CALIBRATE and
-                                           descriptor.population != Population.COINCIDENCE):
+        if not route_accepts(action, descriptor.format, descriptor.population):
             issues.append(f"Wrong format/population for {action.value}: {path}")
         selected.append(replace(descriptor, path=path, validated=False))
     if not selected:
         issues.append("Select the exact ordered input list")
-    if action == Action.CALIBRATE and len({d.population for d in selected}) > 1:
-        issues.append("Do not mix group/coincidence calibration inputs")
+    if action == Action.CALIBRATE and len({(d.format, d.population) for d in selected}) > 1:
+        issues.append("Do not mix formats or group/coincidence calibration inputs")
     if issues:
         raise InputError(*issues)
     return tuple(selected)
@@ -424,10 +435,12 @@ class Calibration:
     path: Path
     sha256: str
     num_regions: int
-    values: NumericTable
+    values: NumericTable            # factors only; "0\t0" rows are keys without a factor
     region_boundaries: tuple | None
     region_provenance: str
     metadata: FrozenMapping
+    layout: str = "position"        # "position": (time_ch, slab, region); "per_slab": (time_ch, slab)
+    unfitted: int = 0               # "0\t0" rows (the reference writes every mapped key)
 
 
 def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=None,
@@ -437,27 +450,43 @@ def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=
     if metadata_path is not None and not Path(metadata_path).is_absolute():
         raise InputError("Calibration sidecar requires an absolute selected path")
     rows, digest = _rows(path)
-    if len(rows) < 3:
-        raise InputError("Position calibration requires region header, columns and factors")
-    match = re.fullmatch(r"# Position-dependent energy calibration \((\d+) regions per slab\)", rows[0][1])
-    if not match or rows[1][1] != "ID(time_ch, slab, region)\tmu\tsigma":
-        raise InputError("Unsupported position calibration header/key schema")
-    regions = _integer(int(match[1]), "calibration regions", 1, 1000)
+    if rows and rows[0][1] == "ID(t_ch, slab)\tmu\tsigma":   # per-slab (KevConverter "cornell")
+        layout, regions, body, arity = "per_slab", 1, rows[1:], 2
+        if len(body) < 1:
+            raise InputError("Per-slab calibration requires factors")
+    else:
+        if len(rows) < 3:
+            raise InputError("Position calibration requires region header, columns and factors")
+        match = re.fullmatch(r"# Position-dependent energy calibration \((\d+) regions per slab\)", rows[0][1])
+        if not match or rows[1][1] != "ID(time_ch, slab, region)\tmu\tsigma":
+            raise InputError("Unsupported calibration header/key schema")
+        layout, regions, body, arity = "position", _integer(int(match[1]), "calibration regions", 1, 1000), rows[2:], 3
     if expected_regions is not None and _integer(expected_regions, "selected regions", 1, 1000) != regions:
         raise InputError("Selected region count differs from calibration")
-    entries = []
-    for number, line in rows[2:]:
+    entries, unfitted = [], 0
+    for number, line in body:
         fields = line.split("\t")
         if len(fields) != 3:
             raise InputError(f"Calibration row {number}: expected tuple/mu/sigma")
-        key = _key(fields[0], 3, mapping)
-        _integer(key[2], "calibration region", 0, regions - 1)
+        key = _key(fields[0], arity, mapping)
+        if arity == 3:
+            _integer(key[2], "calibration region", 0, regions - 1)
         try:
+            if float(fields[1]) == 0 and float(fields[2]) == 0:
+                unfitted += 1     # the reference's "no factor" row: a missing key, never a factor
+                entries.append((key, None))
+                continue
             mu = _number(float(fields[1]), "mu (a.u.)", positive=True)
             sigma = _number(float(fields[2]), "sigma (a.u.)", nonnegative=True)
         except ValueError as exc:
             raise InputError(f"Calibration row {number}: {exc}") from exc
         entries.append((key, (mu, sigma)))
+    seen = set()
+    for key, _ in entries:
+        if key in seen:
+            raise InputError(f"Duplicate calibration key: {key}")
+        seen.add(key)
+    entries = [(key, value) for key, value in entries if value is not None]
     boundaries = None if region_boundaries is None else _boundaries(region_boundaries, regions)
     provenance = "header only; region boundaries unavailable" if boundaries is None else "operator supplied"
     metadata = {}
@@ -472,6 +501,8 @@ def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=
             raise InputError("Unsupported calibration sidecar schema")
         if _integer(metadata.get("num_regions"), "sidecar region count", 1, 1000) != regions:
             raise InputError("Sidecar region count differs from calibration")
+        if metadata.get("layout", "position") != layout:
+            raise InputError("Sidecar layout differs from calibration")
         supplied = _boundaries(metadata.get("region_boundaries"), regions)
         if boundaries is not None and any(not math.isclose(a, b, rel_tol=0, abs_tol=1e-12)
                                            for a, b in zip(supplied, boundaries)):
@@ -480,7 +511,7 @@ def load_calibration(path, mapping, *, expected_regions=None, region_boundaries=
             raise InputError("Calibration sidecar fingerprint is missing/stale")
         boundaries, provenance = supplied, str(Path(metadata_path).resolve())
     return Calibration(Path(path).resolve(), digest, regions, NumericTable(tuple(entries)),
-                       boundaries, provenance, freeze(metadata))
+                       boundaries, provenance, freeze(metadata), layout, unfitted)
 
 
 @dataclass(frozen=True)

@@ -59,9 +59,9 @@ _COMMON = ("schema_version", "action", "processing_root", "processing_config", "
            "outputs")
 _SPEC = {
     "calibrate": {
-        "files": {"cog_limits": "file"},
-        "options": {"num_regions": "int", "side_limit": "int?", "batch_records": "int"},
-        "outputs": {"encal": "new_file", "sidecar": "new_file", "plot": "new_file?"},
+        "files": {"cog_limits": "file?"},
+        "options": {"positions": "int", "event_limit": "int?", "batch_records": "int"},
+        "outputs": {"encal": "new_file", "sidecar": "new_file", "status": "new_file", "plot": "new_file?"},
     },
     "listmode": {
         "files": {"calibration": "file", "calibration_sidecar": "file?", "cog_limits": "file",
@@ -356,35 +356,40 @@ def run_calibrate(request, events, cancelled):
 
     config = _config(request, "calibrate")
     descriptors = _descriptors(request)
-    limits = load_limits(request.files["cog_limits"], config.mapping, kind="cog")
-    paths = [str(d.path) for d in descriptors]
     options, outputs = request.options, request.outputs
-    result = cal.calibrate(descriptors, config, limits, num_regions=options["num_regions"],
-                           side_limit=options["side_limit"], batch_records=options["batch_records"],
+    if options["positions"] > 1 and request.files["cog_limits"] is None:
+        raise RequestError("files.cog_limits is required for a position calibration (positions >= 2)")
+    limits = (None if options["positions"] == 1 else
+              load_limits(request.files["cog_limits"], config.mapping, kind="cog"))
+    paths = [str(d.path) for d in descriptors]
+    result = cal.calibrate(descriptors, config, limits, positions=options["positions"],
+                           event_limit=options["event_limit"], batch_records=options["batch_records"],
                            cancelled=cancelled,
                            progress=lambda path, records: events.progress(paths.index(str(path)), len(paths), path,
                                                                           records))
     if cancelled():
         raise Cancelled("Calibration cancelled")
-    digest = cal.write_calibration(result, outputs["encal"], outputs["sidecar"])
+    digest = cal.write_calibration(result, outputs["encal"], outputs["sidecar"], outputs["status"])
     events.emit("output", output_kind="encal", path=str(outputs["encal"]))
-    written = [_output("encal", outputs["encal"], digest), _output("calibration_sidecar", outputs["sidecar"])]
+    written = [_output("encal", outputs["encal"], digest), _output("calibration_sidecar", outputs["sidecar"]),
+               _output("calibration_status", outputs["status"])]
     if outputs["plot"] is not None:
         cal.plot_summary(result, outputs["plot"])
         written.append(_output("calibration_plot", outputs["plot"]))
     # The written pair must be what the listmode stage will accept.
-    loaded = load_calibration(outputs["encal"], config.mapping, expected_regions=result.num_regions,
+    loaded = load_calibration(outputs["encal"], config.mapping, expected_regions=result.positions,
                               metadata_path=outputs["sidecar"])
-    if len(loaded.values) != len(result.written) or loaded.sha256 != digest:
+    if len(loaded.values) != len(result.factors) or loaded.sha256 != digest or loaded.layout != result.layout:
         raise InputError("Written calibration does not read back as produced")
     summary = {
-        "population": result.population.value, "num_regions": result.num_regions,
-        "region_boundaries": list(result.boundaries), "min_ch": result.min_ch,
-        "accepted_side_limit_per_file": result.side_limit, "batch_records": result.batch_records,
-        "inputs": [{"path": str(f.path), "validated_records": f.validated_records, "records_read": f.records_read,
-                    "sides_considered": f.sides_considered, "accepted_sides": f.accepted_sides,
+        "layout": result.layout, "positions": result.positions, "format": result.data_format.value,
+        "population": result.population.value, "region_boundaries": list(result.boundaries),
+        "min_ch": result.min_ch, "en_min_ch": result.en_min_ch,
+        "passing_event_limit_per_file": result.event_limit, "batch_records": result.batch_records,
+        "inputs": [{"path": str(f.path), "records_validated": f.records_validated, "records_read": f.records_read,
+                    "events_passed": f.events_passed, "accepted_sides": f.accepted_sides,
                     "stopped_at_limit": f.stopped_at_limit, "rejected": f.rejected} for f in result.files],
-        "status_counts": result.status_counts(), "written_entries": len(result.written),
+        "status_counts": result.status_counts(), "keys": len(result.keys), "factors": len(result.factors),
         "energy_units": "a.u.",
     }
     return written, summary
