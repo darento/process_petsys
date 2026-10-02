@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02); T18 deployment docs is next. Live hardware runs have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02). T18 deployment docs and the Windows checkout audit are done; its Linux run is pending a Linux conda environment. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -830,7 +830,29 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
   **Done when:** `python scripts/petsys_manager_checkout_check.py --tracked-runtime` audits intended tracked runtime files/dependencies without ignored-script references, writes an isolated runtime copy for headless imports/fixture CLI checks and proves no original private settings/data are needed for import/startup validation. Include new intended tracked files explicitly if not yet staged; do not stage automatically. Linux startup/offline fixture checks run from a different cwd using explicit external settings. README distinguishes supported fixed/compact/group routes and unavailable hardware/data. No build/release, sibling edits or shortcut changes occur.
 
-  **Verified:** pending.
+  **Partly verified 2026-10-02 (Windows); Linux pending, so not ticked:**
+  - **Docs:**
+    - New `docs/petsys_manager.md`:
+      - status table (what is checked and what is pending);
+      - Linux prerequisites (environment, display, `sw_daq_tofpet2` tools, `--writeBinaryFixed` confirmation, cards, default socket);
+      - launch with `--profile`;
+      - profile location, save rules and an annotated YAML generated from `MachineProfile()`;
+      - private input checklist;
+      - workflow and format-route table with output locations, plus the unavailable measurements (singles, keV QC, DOI depth, hardware off Linux);
+      - safety semantics (DAQD ownership, acquisition monitoring and retries, bias-off, STOP, exclusive retained outputs, calibration offer, QC observations, LM header);
+      - runtime module map.
+    - README links it from a short PETsys Manager section.
+    - Sibling repository, shortcuts and Inspector docs are unchanged.
+  - **Check:** environment interpreter `-X utf8 scripts/petsys_manager_checkout_check.py --tracked-runtime` → **PASS 5/5**:
+    - **Tracked closure:** the import closure from the launcher, GUI, `src/petsys_manager` and `src/cornell` is 34 modules plus the logo. All are tracked, unmodified against HEAD and not ignored. None imports the ignored scripts, `gui_cornell`, docopt, natsort, Qt or TensorFlow, or holds those names or private `C:\Users`/`/home`/`Desktop/data` paths outside docstrings.
+    - **Dependencies:** every third-party import is declared in `process_petsys.yml` or required by a declared distribution (Pillow via reportlab, llvmlite via numba).
+    - **Isolated copy:** `git archive HEAD` of exactly that closure goes to a private folder. Child interpreters run with `-E -s`, no PYTHONPATH, an empty HOME/USERPROFILE/APPDATA/LOCALAPPDATA/XDG_CONFIG_HOME, no MPLBACKEND/DISPLAY, and another cwd.
+      - Every module imports from the copy (none from the checkout) with no Tk root.
+      - `PETsysManager.py --help` shows the default profile under the empty home.
+      - `load_profile()` without a file is the empty profile, and nothing is saved.
+    - **Processing from the copy:** calibrate, listmode and QC run as `python -u -m src.cornell.cli` children with cwd = the copy, as `build_internal` launches them. The `.encal` and status bytes equal the working checkout's `calibrate()`.
+    - **Explicit external profile:** a profile saved outside the checkout drives preflight, `prepare` and the copy's `WorkflowCoordinator` for a manual LM run. The stage launches `-u -m src.cornell.cli listmode` with cwd = the copy, writes to the profile's `lm_dir`, leaves the profile byte-identical, and the `.lm` bytes equal the working checkout's in-process run. On Windows the coordinator uses check-only direct children, because the production backend refuses non-Linux by design.
+  - **Still pending (blocker for ticking T18):** the Linux run of `--tracked-runtime` (startup and offline fixtures with the production backend from another cwd). WSL Ubuntu-24.04 has only system Python 3.12.3 without numpy/PyYAML/matplotlib; a Linux `process_petsys` conda environment is needed (owner decision: install it in WSL, or run it on the Cornell machine at T19).
 
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 

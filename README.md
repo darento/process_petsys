@@ -44,6 +44,24 @@ You can configure the behavior of the script by modifying the YAML files in the 
 The idea behind it is for everyone to create their own `main.py` script with the desired functionalities taking the necessary functions from the module and defining the `config.yaml` file along with the
 matching `map.yaml`.
 
+### PETsys Manager (Cornell Linux)
+
+Acquisition, RAW conversion, energy calibration, list-mode and QC workflows for the Cornell system, as a separate application from LDAT Inspector:
+
+```bash
+python exe_programs/PETsysManager.py [--profile /path/to/petsys_manager.yaml]
+```
+
+- **Machine settings:** one YAML profile (default `~/.config/process_petsys/petsys_manager.yaml`).
+- **Format routes:**
+  - Calibration takes fixed coincidence, fixed group or compact coincidence files.
+  - LM takes fixed coincidence files.
+  - QC takes compact coincidence files.
+  - The complete pipeline always converts to fixed coincidence.
+- **Hardware actions:** they need the PETsys tools and DAQ cards and run only on the Cornell Linux machine. They have not yet been accepted there, and the sibling `gui_cornell` stays in use until they are.
+
+Prerequisites, the profile fields, the private input checklist, safety behaviour and the module map are in [`docs/petsys_manager.md`](docs/petsys_manager.md).
+
 ### LDAT Inspector (offline)
 
 Run the multi-file PETsys inspector with the `process_petsys` environment:
