@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete; T17 integrated regressions is next. Live hardware runs have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16); T17 integrated regressions is next. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -764,7 +764,14 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - A person checks the actual UI on representative acquisitions.
   - Linux/real tools (T17).
   - Operator comparison with the installed reference (T19).
-  - LM header `acquisition_time_s`/`measurement_time_s` are the profile's values in the pipeline too, not the run's measured duration; this needs an owner decision.
+  - Whether the reconstruction software reads `measurementTime` differently from `acqTime` (T19).
+
+  **Amendment (owner, 2026-10-02; FR-12):** the complete pipeline writes its own Acq. Time as both LM header `acquisition_time_s` and `measurement_time_s`; manual LM keeps the profile values.
+  - `settings.lm_header_metadata(profile, action, options)` gives the metadata a run writes. The settings validator, workflow preflight and pipeline LM request all use it, so empty profile times do not block the pipeline but still block manual LM.
+  - The LM stage manifest details record `lm_header_times` (both values and `source`: `pipeline Acq. Time` or `profile`).
+  - GUI: the pipeline plan line names the header times; the LM metadata note says the pipeline replaces them.
+  - Checks: workflow pipeline request = profile metadata with both times 10 s (profile 300.5/299.0 s), stage and manifest details record the source; manual LM keeps 300.5/299.0 s with source `profile`. Empty profile times leave pipeline preflight ready and give manual LM a preflight issue and a `WorkflowError`. GUI: the plan line, the pipeline LM request, and empty times disable LM with the missing-metadata reason but not the pipeline. With the helper reverted to profile values, the pipeline and preflight checks fail.
+  - **Verified 2026-10-02:** manager `--settings --commands --runner --artifacts --daqd --acquisition --cli --workflows` → **PASS 175/175**; GUI `--shell --acquisition --conversion --processing --real` → **PASS 25/25**; `py_compile` of the GUI/settings/workflow PASS.
 
 ## Acceptance and deployment
 

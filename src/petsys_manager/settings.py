@@ -242,6 +242,17 @@ class RunOptions:
             raise ProfileError("Only fixed group conversion is supported")
 
 
+PIPELINE_LM_TIME_FIELDS = ("acquisition_time_s", "measurement_time_s")
+
+
+def lm_header_metadata(profile, action, options):
+    """LM header metadata a run writes. The pipeline writes its own Acq. Time as both header times
+    (owner, 2026-10-02); manual LM uses the profile values as given."""
+    if Action(action) != Action.PIPELINE:
+        return profile.lm_metadata
+    return replace(profile.lm_metadata, **{name: options.duration_s for name in PIPELINE_LM_TIME_FIELDS})
+
+
 class _StrictLoader(yaml.SafeLoader):
     pass
 
@@ -504,7 +515,7 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
         need_output("report_dir")
     if action in (Action.LISTMODE, Action.PIPELINE):
         need_output("lm_dir")
-        for name in profile.lm_metadata.missing():
+        for name in lm_header_metadata(profile, action, options).missing():
             issue(f"lm_metadata.{name}", "Required LM profile/measurement metadata is unavailable")
     if action in (Action.LISTMODE, Action.PIPELINE) or (action == Action.CALIBRATE and options.regions > 1):
         need_file("cog_limits_file")   # per-slab calibration (positions 1) needs no COG limits

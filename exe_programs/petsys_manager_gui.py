@@ -733,8 +733,9 @@ class PETsysManager:
             entry = ctk.CTkEntry(metadata, textvariable=self.lm_vars[name], width=120)
             entry.grid(row=row, column=column + 1, sticky="w", padx=5, pady=2)
             self.entries[f"lm_metadata.{name}"] = [entry]
-        ctk.CTkLabel(metadata, text="Written as given into every LM header (manual and pipeline); never measured "
-                                    "or inferred by the manager.", **self._small()).grid(
+        ctk.CTkLabel(metadata, text="Written as given into every LM header; never measured or inferred by the "
+                                    "manager. The complete pipeline writes its Acq. Time as both times instead.",
+                     **self._small()).grid(
             row=7, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 5))
         status = self._frame(tab, "LM Result")
         self.lm_status = ctk.CTkLabel(status, text="No LM generation run in this session", **self._small())
@@ -1270,11 +1271,12 @@ class PETsysManager:
         self.split_plan.configure(text=text)
         conversion = (f"{self.splits.get().strip() or '?'} split(s), max {self.hit_limit.get().strip() or '?'} "
                       "hits per side (RAWF to LDAT tab)")
+        acq_time = self.acq_time.get().strip() or '?'
         self.pipeline_plan.configure(
-            text=f"This run: acquire {self.acq_time.get().strip() or '?'} s -> fixed coincidence conversion, "
+            text=f"This run: acquire {acq_time} s -> fixed coincidence conversion, "
                  f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
-                 "Processing tab) -> LM with the LM tab files and metadata. Every stage stays in a new run folder "
-                 "in the Output Data Folder.")
+                 f"Processing tab) -> LM with the LM tab files and metadata, header acquisition/measurement time "
+                 f"{acq_time} s (Acq. Time). Every stage stays in a new run folder in the Output Data Folder.")
         mode = SourceMode(self.qc_source.get())
         self.qc_plan.configure(
             text=f"This run: acquire {QC_PRESET_S[mode]:g} s {mode.value} source -> compact coincidence conversion, "

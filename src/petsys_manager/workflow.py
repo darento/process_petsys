@@ -48,7 +48,7 @@ from .commands import build_acquisition, build_bias_off, build_conversion, build
 from .contracts import (Action, Artifact, CommandResult, DataFormat, FrozenMapping, Identity, InputDescriptor,
                         OutputValidation, Population, ResultStatus, RunEvent, SourceMode, freeze, to_plain)
 from .runner import Clock, CommandRunner, RunnerPolicy
-from .settings import RunSettings
+from .settings import RunSettings, lm_header_metadata
 
 STAGES = {
     Action.ACQUIRE: ("acquisition",),
@@ -234,7 +234,7 @@ def prepare(settings):
             load_limits(paths.get("doi_limits_file"), config.mapping, kind="doi")
             load_pair_map(paths.get("pair_map_file"))
             load_region_map(paths.get("region_map_file"), config.mapping)
-            missing = profile.lm_metadata.missing()
+            missing = lm_header_metadata(profile, action, options).missing()
             if missing:
                 issues.append("LM metadata unavailable: " + ", ".join(missing))
         if action == Action.LISTMODE:   # per-slab or position; its own region count is used
@@ -286,7 +286,8 @@ def processing_request(settings, stage, inputs, directory, context):
                               "doi_limits": str(paths["doi_limits_file"]),
                               "pair_map": str(paths["pair_map_file"]), "region_map": str(paths["region_map_file"])},
                        options={"num_regions": regions, "region_boundaries": None,
-                                "metadata": to_plain(settings.profile.lm_metadata),
+                                "metadata": to_plain(lm_header_metadata(settings.profile, settings.action,
+                                                                        settings.options)),
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False},
                        outputs={"directory": str(directory / "listmode")})
     else:
@@ -623,6 +624,12 @@ class WorkflowCoordinator:
                    "summary": (value or {}).get("summary") if result.can_advance else None}
         if result.status != ResultStatus.SUCCEEDED and details["errors"]:
             result = replace(result, message=f"{result.message}: {'; '.join(details['errors'])}")
+        if stage == "listmode":
+            metadata = request["options"]["metadata"]
+            details["lm_header_times"] = {
+                "acquisition_time_s": metadata["acquisition_time_s"],
+                "measurement_time_s": metadata["measurement_time_s"],
+                "source": "pipeline Acq. Time" if settings.action == Action.PIPELINE else "profile"}
         if stage == "qc" and result.can_advance:
             summary = value["summary"]
             details.update(process="completed", findings=summary.get("findings"),
