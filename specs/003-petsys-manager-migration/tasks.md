@@ -1,6 +1,6 @@
 # Tasks 003 — PETsys Manager migration
 
-Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16); T17 integrated regressions is next. Live hardware runs have not started.
+Spec: [`spec.md`](spec.md). Architecture: [`plan.md`](plan.md). Owner requested plan/tasks and T1 on 2026-09-30, then continuation with additive migration and T3, continued spec003 work and explicitly T5. T1–T16 and T20 (compact and per-slab/position calibration, owner request 2026-10-01) are complete, plus the 2026-10-02 pipeline LM header time amendment (T16) and T17 integrated regressions (2026-10-02); T18 deployment docs is next. Live hardware runs have not started.
 
 **Resumed 2026-09-30** (owner request) after spec004 shipped, including its alias removal (Change 1). Revalidated before T6: T2–T4 → 107 selected pass (the Linux-only case passes under WSL), T5 → 38/38, WSL `--process-groups` → 5/5, WSL artifacts → 37/37; T1 reference/helper fingerprints unchanged 24/24.
 
@@ -775,13 +775,54 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
 
 ## Acceptance and deployment
 
-- [ ] **T17 — Integrated deterministic and Inspector regressions** (FR-1, FR-7, FR-9, FR-13, FR-15–FR-16). Run the complete manager fixture/mock/hidden-GUI checks and compile checks; exercise bounded storage and failures end-to-end. Run existing Inspector checks without quietly changing their expected output.
+- [x] **T17 — Integrated deterministic and Inspector regressions** (FR-1, FR-7, FR-9, FR-13, FR-15–FR-16). Run the complete manager fixture/mock/hidden-GUI checks and compile checks; exercise bounded storage and failures end-to-end. Run existing Inspector checks without quietly changing their expected output.
 
   **Depends on:** T1–T16.
 
   **Done when:** manager check scripts' `--all` modes pass, Linux dummy process-group results are recorded, numerical fixture outputs have exact/manual expectations and large repeated fixtures demonstrate bounded accumulation/debug storage. Run `scripts/ldat_inspector_check.py`, `scripts/ldat_revision_check.py`, `scripts/ldat_issue_check.py`, `scripts/ldat_scale_check.py --selftest`, `scripts/ldat_views_check.py`, `scripts/ldat_unpopulated_check.py`, `scripts/ldat_pair_choices_check.py`, `scripts/ldat_ports_check.py`, `scripts/cornell_slab_convention_check.py`, `scripts/ldat_processing_check.py` and `scripts/ldat_gui_check.py` with the named environment. Record unavailable scripts/data/display checks as pending blockers, not passes. Shared fixes/deviations have explicit regression evidence.
 
-  **Verified:** pending.
+  **Verified 2026-10-02** (environment interpreter, `-X utf8`, on the T16 amendment commit `378fef0`; no runtime source changed in T17):
+  - **New `--all` modes** in `petsys_manager_check.py`, `petsys_manager_numeric_check.py`, `petsys_manager_gui_check.py` and `petsys_manager_linux_check.py` select every mode. New `petsys_manager_numeric_check.py --bounded` (`scripts/petsys_manager_bounded_check.py`) is included in `--all`.
+  - **Manager** `--all` → **PASS 175/175**. The one Linux-only symlink skip is covered by WSL below.
+  - **Numeric** `--all` → **PASS 83/83** (formats, calibration, listmode, QC, bounded).
+  - **Reference** `--synthetic --confirm-local-scripts --confirm-modified-converter` → **PASS 17/17**.
+  - **GUI** `--all` → **PASS 25/25**, including the compile and Inspector-unchanged checks inside `--shell`, and `--real` read-only structure probes on the Cornell January/September files.
+  - **Compile:** `py_compile` of the manager GUI and every `src/petsys_manager` and `src/cornell` module PASS.
+  - **Linux (WSL Ubuntu-24.04, `/usr/bin/python3` 3.12.3, standard library only):** `petsys_manager_linux_check.py --all` → **PASS 16/16** (process groups, DAQD, acquisition dummies). `petsys_manager_artifact_check.py` → **PASS 37/37, no skips**.
+  - **Bounded storage, end to end:** each CLI action runs in-process through `cli.main` (validation, processing, plots/debug, published result) under `tracemalloc`, on 2 and then 8 byte-identical copies of one fixture.
+    - Limits were fixed before the first run: peak growth ≤ 2 MiB, while the 6 added copies hold ≥ 8 MiB of input.
+    - Per-file counts are equal and totals scale exactly ×4. LM file size = header + records.
+
+    | Action | Added input | Peak, 2 → 8 files | Growth | Peak, 1 file |
+    |---|---|---|---|---|
+    | Position calibration, plot | +18.5 MiB | 58.98 → 59.12 MiB | 150 KiB | 52.16 MiB |
+    | LM, debug plots | +8.8 MiB | 232.08 MiB, flat | −4 KiB | 232.10 MiB |
+    | QC, plots and slabs | +9.0 MiB | 101.33 → 87.22 MiB | negative | 100.05 MiB |
+
+    - **Deviation (recorded, budget unchanged):** the first run compared 1 file with 8, and calibration failed it (+7.0 MiB). Measured after warm-up, calibration peaks are deterministic: 1 file 51.65 MiB, 2 files 58.46, 3 files 58.59, 8 files 58.61, 16 files 58.63. That is a one-time step at the second file, not accumulation. The fit's per-key stand-in values add only 0.2–0.3 MiB. The baseline became 2 files; the 1-file peak is still printed.
+  - **Inspector, 412/412, the same total as the spec004 baseline:**
+
+    | Script | Result |
+    |---|---|
+    | `ldat_inspector_check.py --selftest` | 59/59 |
+    | `ldat_revision_check.py` | 14/14 |
+    | `ldat_issue_check.py` | 8/8 |
+    | `ldat_scale_check.py --selftest` | 65/65 |
+    | `ldat_views_check.py` | 171/171 |
+    | `ldat_unpopulated_check.py` | 6/6 |
+    | `ldat_pair_choices_check.py` | 15/15 |
+    | `ldat_ports_check.py` | 12/12 |
+    | `cornell_slab_convention_check.py` | 16/16 |
+    | `ldat_processing_check.py` | 17/17 |
+    | `ldat_gui_check.py` | 29/29 |
+
+    No Inspector script or expectation was edited.
+
+  **Still pending (blockers, not passes):**
+  - No Linux conda environment: numeric, CLI, workflow and GUI checks have run on Windows only.
+  - Inspector `--real`/`--whole`/`--visible` modes were not run.
+  - A person checks the actual GUI on a display.
+  - Installed Cornell tools and hardware (T19).
 
 - [ ] **T18 — Deployment docs and clean-runtime-checkout audit** (FR-2, FR-16, FR-18). Update README/add repo deployment documentation with Linux launch/prerequisites/profile/format routes, external input checklist, runtime module map and safety semantics. Preserve original repository and external shortcuts.
 
