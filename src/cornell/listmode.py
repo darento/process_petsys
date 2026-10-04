@@ -1153,7 +1153,7 @@ def debug_plots(summary, directory, stem):
         ax.set_xticks([])
         ax.set_yticks([0, 10, 20, 30, 40, 50])
     if image is not None:
-        figure.colorbar(image, ax=axes.tolist(), label="Counts", pad=0.01)
+        figure.colorbar(image, ax=axes.ravel().tolist(), label="Counts", pad=0.01)  # flat: 3.8 rejects nested lists
     figure.suptitle("Floodmaps for all regions (0-99)", fontsize=16)
     save(figure, "floodmap_all_regions", dpi=100, bbox_inches="tight")
     return tuple(paths)
