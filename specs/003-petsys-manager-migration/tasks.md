@@ -934,6 +934,8 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - **Regressions:** numeric `--all` 90/90 plus `--scope`; manager `--all` 178/178; GUI 25/25; artifacts 37/37 (1 Windows skip); calibration 14/14.
   - **Still pending:** the Cornell run (T19 steps 5–8) on large files.
 
+- [ ] **T25 — Faster energy calibration (planned, owner decisions 2026-10-04)** (FR-15, FR-21). A 34-file Cornell calibration (~95 M records) was slow after reading. Profile on six January compact files (14.9 M records): P = 1 157 s = pass 1 50 s + pass 2 53 s (no GUI progress) + fits 54 s (one core, ~10 ms/key); P = 5 395 s, fits 281 s (27,772 keys). Decisions: (1) default limit **10 M passing events in total, shared equally** (`ceil(10 M / n)` per file), per-file reference mode selectable; library default stays per-file so reference checks pin it; (2) **decode the files once** when the total limit bounds memory (keep the selected (key, energy) pairs, ≈320 MB for 10 M; feed the existing `first`/`prepare_fit`/`second`), two decodings in per-file mode; (3) parallel file reading and parallel fits (`ProcessingLimits.workers`, 0 = auto), identical results for any worker count; (4) GUI progress for pass 2 and fits. Spec FR-21/FR-15 to be amended first. Full plan: owner's local plan `~/.claude/plans/atomic-mapping-backus.md`.
+
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 
   **Depends on:** T1 installed-version/metadata/real-data confirmation, T17–T18.
