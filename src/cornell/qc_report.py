@@ -493,18 +493,24 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def write_report(result, destination):
+def write_report(result, destination, *, in_place=False, title=None):
     """Create ``destination`` exclusively and write the reference output types, summary last.
 
+    ``in_place`` (T29): ``destination`` is the caller's existing folder; every file is still created
+    exclusively, so a name collision fails. ``title``: the PDF title (default: the directory name).
     Returns the written paths; the last one is the summary.
     """
     destination = Path(destination)
-    if not destination.parent.is_dir():
-        raise InputError(f"QC results parent does not exist: {destination.parent}")
-    destination.mkdir()                 # never reuses an existing results directory
+    if in_place:
+        if destination.is_symlink() or not destination.is_dir():
+            raise InputError(f"QC results folder is not a plain directory: {destination}")
+    else:
+        if not destination.parent.is_dir():
+            raise InputError(f"QC results parent does not exist: {destination.parent}")
+        destination.mkdir()                 # never reuses an existing results directory
     written = []
     with open(destination / PDF, "xb") as stream:
-        write_pdf(result, stream, destination.name)
+        write_pdf(result, stream, title or destination.name)
     written.append(destination / PDF)
     if result.plots:
         edges = np.histogram(np.zeros(0), bins=PHOTOPEAK_BINS, range=PHOTOPEAK_RANGE)[1]

@@ -798,15 +798,30 @@ def _differences(previous, current):
     return [key for key in keys if previous.get(key) != current.get(key)]
 
 
-def _prepare(destination, job, resume):
-    """New job: create ``destination`` exclusively. Resume: accept only this job's own files."""
+def _prepare(destination, job, resume, in_place=False):
+    """New job: create ``destination`` exclusively. Resume: accept only this job's own files.
+
+    ``in_place`` (T29): ``destination`` is the caller's existing folder, created exclusively for this job; the
+    job file, ``segments/`` and every output are still created exclusively. Entries not named like this job's
+    files (job file, segments, the merged output's stem) belong to the caller and are ignored on resume.
+    """
     destination = Path(destination)
     if not destination.is_absolute():
         raise InputError("Listmode destination must be absolute")
     segments = destination / SEGMENTS
+    expected = {segment_name(item["path"]) for item in job["inputs"]}
+    output = merged_name(sorted(expected, key=natural_key)[0])
     if not resume:
-        _plain_dir(destination.parent)
-        destination.mkdir()            # exclusive; never adopt an existing directory
+        if in_place:
+            _plain_dir(destination)
+            taken = [name for name in os.listdir(destination)
+                     if name in (JOB_FILE, SEGMENTS) or name.startswith(output[:-3])]
+            if taken:
+                raise InputError("Listmode outputs already exist in the destination (never replaced): "
+                                 + ", ".join(sorted(taken)))
+        else:
+            _plain_dir(destination.parent)
+            destination.mkdir()            # exclusive; never adopt an existing directory
         _write_json_exclusive(destination / JOB_FILE, {"schema_version": 1, "job": job, "job_sha256": _digest(job)})
         segments.mkdir()
         return {}, ()
@@ -820,8 +835,6 @@ def _prepare(destination, job, resume):
     differing = _differences(record["job"], job)
     if differing:
         raise InputError("Resume refused: settings/inputs differ from the previous job: " + ", ".join(differing))
-    expected = {segment_name(item["path"]) for item in job["inputs"]}
-    output = merged_name(sorted(expected, key=natural_key)[0])
     completed, ignored, unexpected = {}, [], []
     for entry in sorted(os.listdir(segments)):
         if entry.endswith(".json") and entry[:-5] in expected:
@@ -833,6 +846,8 @@ def _prepare(destination, job, resume):
     for entry in sorted(os.listdir(destination)):
         if entry in (JOB_FILE, SEGMENTS):
             continue
+        if in_place and not entry.startswith(output[:-3]):
+            continue                       # the caller's own files (request, result, run record)
         if entry == output:
             raise InputError(f"Resume refused: merged listmode already exists: {destination / entry}")
         if re.fullmatch(re.escape(output) + r"-[0-9a-f]{32}\.part", entry):
@@ -1083,7 +1098,7 @@ def sidecar(output, sha256, records, files, job, header_fields, *, resumed, igno
 
 def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
                       destination, *, resume=False, debug=False, batch_records=DEFAULT_BATCH_RECORDS,
-                      cancelled=None, progress=None, hit_limit=None, lm_seed=None, workers=1):
+                      cancelled=None, progress=None, hit_limit=None, lm_seed=None, workers=1, in_place=False):
     """Validate, stream one segment per input, merge with the supplied header and write provenance.
 
     ``hit_limit``: the conversion hit limit, required for compact input only (FR-22).
@@ -1091,6 +1106,7 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
     ``file_seed(lm_seed, index)``, so the .lm is the same on every run and for any ``workers`` count; None
     keeps the reference's one stream continuing across files (one worker only). ``workers`` > 1 processes
     files in spawned worker processes (``src.cornell.parallel``); segments are merged in the same order.
+    ``in_place`` (T29): write into the caller's existing ``destination`` instead of creating it.
     """
     descriptors = _check_request(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions,
                                  metadata, batch_records, hit_limit)
@@ -1107,7 +1123,7 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
     if lm_seed is not None:            # part of the job digest: resume reuses only segments of the same seed
         job["random_streams"] = {"lm_seed": lm_seed, "file_seeds": seeds}
     job_sha256 = _digest(job)
-    completed, ignored = _prepare(destination, job, resume)
+    completed, ignored = _prepare(destination, job, resume, in_place)
     destination = Path(destination)
     segments = destination / SEGMENTS
     files, total_debug = [None] * len(descriptors), DebugSummary() if debug else None

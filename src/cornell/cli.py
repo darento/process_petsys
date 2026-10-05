@@ -70,13 +70,13 @@ _SPEC = {
                   "doi_limits": "file", "pair_map": "file", "region_map": "file"},
         "options": {"num_regions": "int", "region_boundaries": "numbers?", "metadata": "metadata",
                     "batch_records": "int", "debug": "bool", "resume": "bool", "hit_limit": "int?",
-                    "lm_seed": "seed?", "workers": "int"},
+                    "lm_seed": "seed?", "workers": "int", "in_place": "bool"},
         "outputs": {"directory": "job_dir"},
     },
     "qc": {
         "files": {},
         "options": {"plots": "bool", "slabs": "bool", "source_mode": "source?", "acquisition_time_s": "number?",
-                    "pair_limit": "int"},
+                    "pair_limit": "int", "in_place": "bool", "report_title": "text?"},
         "outputs": {"directory": "new_dir"},
     },
 }
@@ -172,6 +172,9 @@ def _value(kind, value, label):
     elif kind == "seed":
         if type(value) is not int or not 0 <= value < 2 ** 63:
             raise RequestError(f"{label} must be a non-negative integer or null")
+    elif kind == "text":
+        if not isinstance(value, str) or not value.strip() or len(value) > 200 or not value.isprintable():
+            raise RequestError(f"{label} must be a printable text of at most 200 characters, or null")
     elif kind == "limit_mode":
         if value not in ("reference", "target"):
             raise RequestError(f"{label} must be 'reference' or 'target'")
@@ -201,6 +204,10 @@ def _check_outputs(outputs, options, result_path, request_path):
             raise RequestError(f"outputs.{name} repeats another output, the request or the result path")
         seen.add(key)
         resume = options.get("resume") is True
+        if name == "directory" and options.get("in_place") is True:   # T29: the caller's existing folder
+            if path.is_symlink() or not path.is_dir():
+                raise RequestError(f"outputs.directory must be an existing plain directory (in_place): {path}")
+            continue
         if not (resume and name == "directory") and os.path.lexists(path):
             raise RequestError(f"outputs.{name} already exists (outputs are never replaced): {path}")
         if not path.parent.is_dir():
@@ -431,7 +438,8 @@ def run_listmode(request, events, cancelled):
         descriptors, config, calibration, cog, doi, lm.load_pair_map(files["pair_map"]),
         lm.load_region_map(files["region_map"], mapping), options["metadata"], request.outputs["directory"],
         resume=options["resume"], debug=options["debug"], batch_records=options["batch_records"],
-        hit_limit=options["hit_limit"], lm_seed=options["lm_seed"], workers=options["workers"], cancelled=cancelled,
+        hit_limit=options["hit_limit"], lm_seed=options["lm_seed"], workers=options["workers"],
+        in_place=options["in_place"], cancelled=cancelled,
         progress=lambda index, path, records, written: events.progress(index, len(paths), path, records,
                                                                        records_written=written))
     if cancelled():
@@ -472,7 +480,8 @@ def run_qc(request, events, cancelled):
                                                                       records))
     if cancelled():
         raise Cancelled("QC cancelled")
-    report = qc_report.write_report(result, request.outputs["directory"])
+    report = qc_report.write_report(result, request.outputs["directory"], in_place=options["in_place"],
+                                    title=options["report_title"])
     events.emit("output", output_kind="qc_report", path=str(request.outputs["directory"]))
     content, _ = _read_json(report[-1], "QC summary", error=InputError)
     recorded = {item["path"]: item["sha256"] for item in content["outputs"]}

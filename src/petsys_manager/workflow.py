@@ -307,7 +307,8 @@ def processing_request(settings, stage, inputs, directory, context):
                                                                         settings.options)),
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False,
                                 "hit_limit": options.hit_limit,       # compact LM decodes at this width (FR-22)
-                                "lm_seed": limits.lm_seed, "workers": resolve_workers(limits.workers)},
+                                "lm_seed": limits.lm_seed, "workers": resolve_workers(limits.workers),
+                                "in_place": False},
                        outputs={"directory": str(directory / "listmode")})
     else:
         live = settings.action == Action.QC      # offline files: source mode/duration not recorded
@@ -315,7 +316,7 @@ def processing_request(settings, stage, inputs, directory, context):
                        options={"plots": options.plots, "slabs": options.slabs,
                                 "source_mode": options.source_mode.value if live else None,
                                 "acquisition_time_s": options.duration_s if live else None,
-                                "pair_limit": limits.qc_pair_limit},
+                                "pair_limit": limits.qc_pair_limit, "in_place": False, "report_title": None},
                        outputs={"directory": str(directory / datetime.now().strftime("%Y%m%d-%H%M%S"))})
     return request
 
