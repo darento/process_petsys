@@ -354,9 +354,8 @@ class RunStore:
         if descriptor is not None and _absolute(descriptor.path) != path:
             raise ArtifactError("Artifact descriptor path does not match its file")
         # A successful LDAT may be structure-checked only (FR-24): its descriptor says whether it was read whole.
-        if artifact.disposable and (artifact.kind != "ldat" or path.suffix != ".ldat"
-                                    or info.st_size != 0):
-            raise ArtifactError("Only explicitly empty LDAT may be disposable")
+        if artifact.disposable and not _disposable(artifact.kind, path, info):
+            raise ArtifactError("Only an explicitly empty LDAT or a converter index may be disposable")
         if validated:
             _sync_file(path, _file_token(info))
             _sync_directory(path.parent)
@@ -483,12 +482,21 @@ class RunStore:
         Requires its pre-command directory inventory. A pre-existing matching
         file is a collision, never a successful output. No legacy input discovery.
         """
+        return tuple(Artifact(path, "ldat", InputDescriptor(path, format, population))
+                     for path in self._discover(attempt, prefix, ".ldat", before))
+
+    def discover_index(self, attempt, prefix, *, before):
+        """The converter's ``.lidx`` index files, matched as ``discover_ldat``: disposable (T34)."""
+        return tuple(Artifact(path, "index", disposable=True)
+                     for path in self._discover(attempt, prefix, ".lidx", before))
+
+    def _discover(self, attempt, prefix, suffix, before):
         with self._lock:
             self._active()
             prefix = self._path(attempt, prefix)
             if prefix.parent != attempt.directory:
                 raise ArtifactError("Converter prefix must be in the attempt directory")
-            pattern = re.compile(re.escape(prefix.name) + r"(?:_(\d+))?\.ldat\Z")
+            pattern = re.compile(re.escape(prefix.name) + r"(?:_(\d+))?" + re.escape(suffix) + r"\Z")
             old = {_absolute(path) for path in before}
             paths = []
             with os.scandir(attempt.directory) as entries:
@@ -503,8 +511,7 @@ class RunStore:
                     paths.append(path)
                     if len(paths) > self.artifact_limit:
                         raise ArtifactError("Converter inventory exceeds its bound")
-            return tuple(Artifact(path, "ldat", InputDescriptor(path, format, population))
-                         for path in sorted(paths, key=_natural))
+            return sorted(paths, key=_natural)
 
     def inventory(self, attempt):
         with self._lock:
@@ -520,10 +527,10 @@ class RunStore:
                         raise ArtifactError("Attempt inventory exceeds its bound")
             return tuple(sorted(paths, key=_natural))
 
-    def remove_empty_ldat(self, attempt, path):
-        """Only a recorded, unchanged, disposable, zero-byte LDAT is eligible.
+    def remove_disposable(self, attempt, path):
+        """Only a recorded, unchanged, disposable zero-byte LDAT or converter ``.lidx`` index is eligible.
 
-        No other data/index/RAW file cleanup is implemented. Linux uses a no-follow
+        No other data/RAW file cleanup is implemented. Linux uses a no-follow
         directory handle for the final ownership/size check and unlink operation.
         """
         with self._lock:
@@ -533,11 +540,10 @@ class RunStore:
             record = self._record(attempt, data)
             item = next((a for a in record["artifacts"] if a["path"] == str(path)), None)
             info = _stat(path)
-            if (item is None or not item["disposable"] or item["kind"] != "ldat"
-                    or path.suffix != ".ldat" or info.st_size != 0 or info.st_nlink != 1
-                    or list(_file_token(info)) != item["file_token"]
+            if (item is None or not item["disposable"] or not _disposable(item["kind"], path, info)
+                    or info.st_nlink != 1 or list(_file_token(info)) != item["file_token"]
                     or item["cleanup"] != "retained"):
-                raise ArtifactError("Cleanup refused: not an unchanged recorded empty disposable LDAT")
+                raise ArtifactError("Cleanup refused: not an unchanged recorded disposable file")
             item["cleanup"] = "pending"
             self._commit(data)  # Persist intent before removal; a crash never invents success.
             self._path(attempt, path)
@@ -562,6 +568,12 @@ class RunStore:
             record = self._record(attempt, data)
             next(a for a in record["artifacts"] if a["path"] == str(path))["cleanup"] = "removed"
             self._commit(data)
+
+
+def _disposable(kind, path, info):
+    """A zero-byte LDAT, or the converter's ``.lidx`` index (T34, any size)."""
+    return ((kind == "ldat" and path.suffix == ".ldat" and info.st_size == 0)
+            or (kind == "index" and path.suffix == ".lidx"))
 
 
 def read_manifest(root):
