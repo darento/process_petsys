@@ -34,12 +34,14 @@ class RunnerPolicy:
     terminate_grace_s: float = 3.0
     reap_timeout_s: float = 5.0
     drain_timeout_s: float = 1.0
+    descendant_grace_s: float = 2.0   # helpers (e.g. multiprocessing's resource tracker) exit just after the child
 
     def __post_init__(self):
         for name in ("log_tail_lines", "chunk_bytes", "queue_chunks", "line_chars"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("poll_interval_s", "terminate_grace_s", "reap_timeout_s", "drain_timeout_s"):
+        for name in ("poll_interval_s", "terminate_grace_s", "reap_timeout_s", "drain_timeout_s",
+                     "descendant_grace_s"):
             value = getattr(self, name)
             try:
                 finite = type(value) in (int, float) and math.isfinite(value)
@@ -263,7 +265,9 @@ class CommandRunner:
                 if code is not None and exited_at is None:
                     exited_at = now
                     emit("exited", payload={"exit_code": code})  # Monitors stop judging a finished child.
-                if code is not None and stopping_at is None and child.group_alive():
+                # A descendant still alive after the grace is a leftover (FR-7); within it, keep polling.
+                lingering = code is not None and stopping_at is None and child.group_alive()
+                if lingering and now - exited_at >= policy.descendant_grace_s:
                     fail("Child exited while owned descendants remained; terminating the group")
                 if (stopping_at is None and not cancel.is_set() and exited_at is not None and
                         len(ended) < 2 and now - exited_at >= policy.drain_timeout_s):
@@ -280,7 +284,7 @@ class CommandRunner:
                 # After KILL, zombies can keep a PGID present until init reaps
                 # them; wait for our child and EOF, not forever for killpg(0).
                 stopped = stopping_at is None or killed_at is not None or not child.group_alive()
-                if code is not None and len(ended) == 2 and stopped:
+                if code is not None and len(ended) == 2 and stopped and not lingering:
                     break
                 if killed_at is not None and now - killed_at >= policy.reap_timeout_s:
                     fail("Owned child/output cleanup timed out after KILL")
