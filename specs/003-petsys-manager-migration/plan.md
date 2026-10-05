@@ -97,11 +97,10 @@ SiPM bias (FR-19): `acquire_sipm_data` switches bias off only at the end of a no
 
 | Workflow | Input | Output/consumer |
 | --- | --- | --- |
-| Manual coincidence conversion | RAW acquisition + selected INI | Explicit fixed or compact coincidence descriptor |
-| Manual group conversion | RAW acquisition + selected INI | Fixed group descriptor |
-| Energy calibration (FR-21) | Selected fixed group, fixed coincidence or compact coincidence files, positions P, processing config; COG limits when P ≥ 2 | Per-slab (P = 1) or position (P ≥ 2) `.encal`, per-key status file, sidecar provenance, summary plot |
-| Manual LM generation | Fixed or compact coincidence files (FR-22; compact with its hit limit), per-slab or position calibration, COG/DOI limits, pair/region maps, metadata | Compatible LM header/records plus provenance/debug summaries |
-| Complete pipeline | Acquire → fixed or compact coincidence conversion (FR-22) → position calibration → LM | Actual artifacts from each successful predecessor |
+| Manual coincidence conversion | RAW acquisition + selected INI | Compact coincidence descriptor (FR-10, 2026-10-05: fixed and group conversion no longer offered) |
+| Energy calibration (FR-21) | Selected compact coincidence files (the library still reads fixed coincidence/group for existing files and checks), positions P, processing config; COG limits when P ≥ 2 | Per-slab (P = 1) or position (P ≥ 2) `.encal`, per-key status file, sidecar provenance, summary plot |
+| Manual LM generation | Compact coincidence files with their hit limit (FR-22; fixed only in the library), per-slab or position calibration, COG/DOI limits, pair/region maps, metadata | Compatible LM header/records plus provenance/debug summaries |
+| Complete pipeline | Acquire → compact coincidence conversion (FR-22) → position calibration → LM | Actual artifacts from each successful predecessor |
 | QC | 60 s with-source or 180 s without-source acquisition → compact coincidence conversion → legacy QC | Existing QC output types with actual results directory |
 
 Full structural validation is fused with bounded reading and occurs before publishing final numerical output. Fixed validation checks the hit-limit header, supported record layout, remainder length, hit counts and mapped IDs; compact validation detects incomplete headers/hits and invalid/missing mapping. Group versus coincidence and arbitrary legacy format cannot always be inferred from bytes: explicit descriptors remain mandatory. Invalid files never yield an apparently successful partial result; retain owned partial artifacts as failed.
@@ -204,7 +203,7 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 
 - Copy the manager unchanged: retains missing ignored scripts, deletion hazards and false-success callbacks.
 - Merge it into Inspector: explicitly outside owner intent and increases hardware/analysis coupling.
-- Compact-only conversion: breaks fixed-position workflows and adds unwanted reader/algorithm changes.
+- Compact-only conversion: rejected 2026-09-30 (fixed-position workflows); adopted for the manager on 2026-10-05 (owner decision, FR-10: fixed is a discontinued fork feature). The library keeps the fixed readers, so no reader/algorithm change.
 - Shell command strings: unsafe quoting and unnecessary dependency on machine-specific conda setup.
 - Glob guessed split/calibration names: can include unrelated acquisitions and advance using stale output.
 - Broad package reorganization or new fit/LM models: unnecessary scope and risks Inspector regression.
