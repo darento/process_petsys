@@ -943,6 +943,13 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   - **Checks:** scratch reproduction (`DebugSummary` with flood counts → `debug_plots`) raised the same AttributeError; after the fix it writes the 3 plots. New `test_listmode_debug_floodmap_with_counts` in `scripts/petsys_manager_listmode_check.py`: fails (error) with the old line, passes with the fix; `petsys_manager_listmode_check.py` **19/19**.
   - **Cornell 2026-10-04:** T19 step 7 repeated after the pull: succeeded with the 3 debug plots, floodmap as expected (`listmode-20261004-093632-1aab7fd8`).
 
+- [x] **T27 — Bug fix: close during a workflow needed a second request** (FR-6, FR-7). Found 2026-10-05 at T19 step 13 (partial) on the Cornell machine: closing the window during a compact conversion stopped the conversion (manifest `cancelled`, child reaped) but the window stayed open until a second close. `ManagerSession.shutdown` waited for the workflow outcome, then read `_handle`, which the request thread clears only just after that outcome; seeing it still set, it reported "A workflow started during shutdown; close again to retry." Its no-handle wait loop also never slept (`self._shutdown.wait(0.05)` on an event it had just set). Bug fix, no spec change.
+
+  **Verified 2026-10-05:**
+  - **`src/petsys_manager/session.py`:** after the outcome, wait (bounded by the shutdown timeout, `time.sleep(0.05)`) until the request thread has released its token; report a new workflow only when a different handle is registered.
+  - **Checks:** new `test_close_during_conversion_closes_on_the_first_request` in `scripts/petsys_manager_gui_check.py` (blocking fake converter; the request thread clears the handle 0.5 s late): with the old `session.py` it logs "Close incomplete: A workflow started during shutdown" and the window stays open; with the fix it closes on the first request. Regressions: GUI `--shell --acquisition --conversion --processing` **25/25**; manager `--all` **178 passed / 1 existing Linux-only skip**.
+  - **Still pending:** repeat on the Cornell machine (close during a conversion closes in one request).
+
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 
   **Depends on:** T1 installed-version/metadata/real-data confirmation, T17–T18.

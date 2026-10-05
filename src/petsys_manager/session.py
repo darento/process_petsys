@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import queue
 import threading
+import time
 
 from .contracts import Action
 from .settings import (MachineProfile, PrerequisiteIssue, SystemProbe, default_profile_path,
@@ -355,17 +356,18 @@ class ManagerSession:
                 if handle.wait(timeout) is None:
                     return self._shut(False, f"The workflow is still finishing after {timeout:g} s (bias-off "
                                              "included); DAQD left running. Close again to retry.")
-            elif active is not None:
-                for _ in range(int(timeout / 0.05) + 1):
+            if active is not None:  # its request thread clears _active/_handle just after the outcome
+                end = time.monotonic() + timeout
+                while time.monotonic() < end:
                     with self._lock:
-                        if self._active is None:
+                        if self._active != active:
                             break
-                    self._shutdown.wait(0.05)
+                    time.sleep(0.05)
             for thread in threads:  # initialization/DAQD requests see the shutdown flag
                 thread.join(timeout)
             with self._lock:
-                handle, daqd = self._handle, self._daqd
-            if handle is not None:
+                current, daqd = self._handle, self._daqd
+            if current is not None and current is not handle:
                 return self._shut(False, "A workflow started during shutdown; close again to retry.")
             if daqd is None:
                 return self._shut(True, "Nothing to stop")
