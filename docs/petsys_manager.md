@@ -119,13 +119,13 @@ These files are machine- and system-specific, are not in the repository, and are
 | Action | Input | Output (location) |
 |---|---|---|
 | Start DAQD / Initialize | profile tools, cards, INI | owned `daqd`; initialization valid for this daemon, INI and cards |
-| Acquire | Acq. Time, optional hardware trigger | `.rawf`/`.idxf` (`data_dir`) |
+| Acquire | Acq. Time, Acquisition Name, optional hardware trigger | `<name>.rawf`/`.idxf` (`data_dir`) |
 | Convert, coincidence | `.rawf` | compact coincidence `.ldat` (`data_dir`) |
 | Create energy cal file | compact coincidence `.ldat`; positions per slab P; event limit (target T per histogram, or the reference 10 M per file) | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
 | Generate LM file | compact coincidence `.ldat` (read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
-| Run quality control (live) | 60 s with source or 180 s without (fixed presets) | compact coincidence conversion, then QC report (run folder in `data_dir`) |
+| Run quality control (live) | 60 s with source or 180 s without (fixed presets), Acquisition Name | compact coincidence conversion, then QC report (run folder in `data_dir`) |
 | Analyze existing compact LDAT | **compact coincidence** `.ldat` | QC report (`report_dir/<run>`) |
-| Run complete pipeline | Acq. Time, splits, max hits, positions per slab | acquire → compact coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
+| Run complete pipeline | Acq. Time, Acquisition Name, splits, max hits, positions per slab | acquire → compact coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
 
 `.ldat` files carry no reliable format marker, so every input list must be confirmed as compact coincidence before use. Each stage checks the records it reads (hit counts, truncation, channels of the selected map, finite energies) in the same pass, before publishing anything from them, and never reads a file only to check it (FR-24): conversion checks the first 10,000 records of each output and records them as structure-checked; LM reads and checks whole files once; calibration stops at its passing-event limit; QC checks its sample. Records a stage does not read are not checked, and its provenance says so (QC: records in the file are known only when the whole file was read). A defect after the first 10,000 records fails the first stage that reads it.
 
@@ -145,9 +145,15 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
 - **PETsys Python tools:** with `petsys_python` set, `init_system`, `acquire_sipm_data` and `set_bias` run as `<petsys_python> <tool>` without the manager's conda/Python activation (`CONDA_*`, `PYTHONHOME`, `PYTHONPATH`, `VIRTUAL_ENV` removed; the interpreter's folder first on `PATH`), as when the env was deactivated by hand. `daqd`, the converters and processing are unaffected. Changing it invalidates initialization.
 - **STOP:** stops the running stage, and no later stage of that run starts.
 - **Outputs:**
-  - Every run, stage and attempt gets a new folder, created exclusively; existing files are never overwritten.
+  - Every run gets one new folder in its destination, created exclusively, named `<data>_<action>[-<options>]_<YYYY-MM-DD>_<HHMM>`; a second run with the same name in the same minute gets `_2`, `_3` …. Existing files and folders are never overwritten or reused.
+    - Data: the RAW name (conversion), the Acquisition Name (Acquire, pipeline, live QC; default `acquisition`), otherwise the common start of the input file names without the `_coincCompact` and split suffix.
+    - Action and options: `acq`, `conv`, `cal-P<n>-<target|reference>`, `lm-P<n>`, `qc` (offline), `qc-<with|without>-source` (live), `pipeline-P<n>`.
+    - Examples: `run_0024_lm-P5_2026-10-04_0936`, `20260930_F18_950uCi_Run1_60s_cal-P5-target_2026-10-05_0533`, `F18_Run1_pipeline-P5_2026-10-05_0533`.
+  - Single-stage runs write their outputs directly in the run folder. The pipeline and live QC use one numbered folder per stage: `1_acquisition/`, `2_conversion/`, `3_calibration/`, `4_listmode/` (QC: `3_qc/`). Only acquisition has `attempt-N/` folders, one per attempt.
+  - `run.json` in each run folder is the run's record: the settings snapshot, the exact inputs, every attempt and every output with its hash; it is replaced by each update. `.history/` keeps every earlier version. Later stages use only the outputs recorded for this run, never similarly named files.
+  - `runs.tsv` in each destination gets one line per finished run (also failed and stopped ones): finish time, run folder, action, inputs, status, main output. It is only appended to.
   - Failed or partial outputs are kept and marked unvalidated.
-  - A run manifest records the settings snapshot, the exact inputs and every output with its hash. Later stages use only the outputs recorded for this run, never similarly named files.
+  - Run folders from before 2026-10-05 (`<action>-<stamp>-<id>/<stage>/attempt-1/`, `manifest-NNNNNN.json`) stay as they are and remain readable.
 - **Calibration:** a new `.encal` is never applied automatically. The GUI offers it for LM as an unsaved profile edit.
   - **Event limit:** *target* (default) keeps S = K × P × T sides in total, ⌈S / n⌉ from each of the n files; a file stops once its kept sides (sides that enter a key's histogram) exceed its share (K = time-channel × slab keys of the selected map, T = target sides per histogram, saved in the profile). The LDAT Processing tab shows S and the share before the run. *Reference* stops each file after 10,000,000, as `cornell_slab_en_cal.py`; use it to compare with the reference script. The result and sidecar record the limit used and the sides each key received (minimum, median, keys below T and below the 200-event fit minimum); T is an average, so low-occupancy keys can stay below it.
   - **Reading once:** in target mode each file is read once when the selected events (at most (share + 2) sides per file × 16 bytes) fit `calibration_memory_mb`; otherwise, and in reference mode, each file is read twice, as the reference does. Both give identical files; the result says which was used.
@@ -171,8 +177,8 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
 | `src/petsys_manager/commands.py` | Literal argv/cwd for PETsys tools and the internal CLI (no shell) |
 | `src/petsys_manager/runner.py` | Owned child processes: bounded logs, cancellation, process-group TERM/KILL (Linux) |
 | `src/petsys_manager/acquisition.py` | DAQD ownership/readiness, initialization, monitored acquisition attempts, bias-off |
-| `src/petsys_manager/artifacts.py` | Exclusive run/stage/attempt folders, manifests, retained outputs |
-| `src/petsys_manager/workflow.py` | Fail-closed stage graphs (manual actions, QC, pipeline) |
+| `src/petsys_manager/artifacts.py` | Exclusive run/stage/attempt folders, `run.json` and `.history/` records, retained outputs |
+| `src/petsys_manager/workflow.py` | Fail-closed stage graphs (manual actions, QC, pipeline), run-folder names, `runs.tsv` |
 | `src/petsys_manager/session.py` | GUI-facing session: event queue, background preflight, shutdown |
 | `src/cornell/cli.py` | Headless processing CLI: request/result JSON, progress events, exit codes |
 | `src/cornell/inputs.py` | Processing config/map/limits/calibration loading, bounded LDAT validation |

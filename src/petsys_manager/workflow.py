@@ -18,8 +18,13 @@ Action             Stages (each consumes only its predecessor's recorded outputs
 ``pipeline``       acquisition -> compact coincidence conversion -> calibration -> listmode
 =================  ==============================================================
 
+Each run gets one new readable folder (T29, FR-9/FR-13): ``run_name`` gives
+``<data>_<action>[-<options>]_<YYYY-MM-DD>_<HHMM>``; a single-stage run writes in
+it, a multi-stage run uses ``1_acquisition/``, ``2_conversion/`` ... (see
+``RunStore``), and every finished run adds one line to ``<destination>/runs.tsv``.
+
 A stage succeeds only with a validated exact output set: conversion outputs
-are discovered by their exact new prefix in a fresh attempt directory and
+are discovered by their exact new prefix in a fresh stage directory and
 fully validated against the selected map; processing outputs come from the
 ``src.cornell.cli`` result manifest, checked against this stage's request and
 attempt directory. Any failure, launch error or STOP ends the workflow: no
@@ -39,8 +44,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from threading import Event, RLock, Thread
-from uuid import uuid4
 
 from .acquisition import AcquisitionService
 from .artifacts import RunStore
@@ -73,6 +78,14 @@ REQUIRED_KINDS = {"calibrate": {"encal", "calibration_sidecar", "calibration_sta
 LM_BATCH_RECORDS = 1000      # reference LM reader batch (src.cornell.listmode.DEFAULT_BATCH_RECORDS)
 REQUEST = "request.json"
 RESULT = "result.json"
+RUNS = "runs.tsv"                       # per-destination overview, one appended line per finished run (T29)
+RUNS_HEADER = ("finished", "run_folder", "action", "inputs", "status", "main_output")
+ACTION_CODES = {Action.ACQUIRE: "acq", Action.CONVERT: "conv", Action.CALIBRATE: "cal", Action.LISTMODE: "lm",
+                Action.QC: "qc", Action.QC_ANALYZE: "qc", Action.PIPELINE: "pipeline"}
+CONVERTER_SUFFIXES = ("_coincCompact", "_coincFixed", "_groupCompact", "_groupFixed")
+DATA_NAME_LIMIT = 56                    # the whole name, with a _99 suffix, stays a 96-character component
+MAIN_OUTPUT = {"acquisition": "rawf", "conversion": "ldat", "calibration": "encal", "listmode": "listmode",
+               "qc": "qc_report"}
 
 
 def format_elapsed(seconds):
@@ -171,14 +184,109 @@ class WorkflowHandle:
 
 # Preflight -------------------------------------------------------------------
 
+def _raw_name(settings):
+    name = Path(settings.paths["raw_input"]).name
+    return name[:-len(".rawf")] if name.endswith(".rawf") else name
+
+
 def _basename(settings):
+    """File basename of the stage outputs: the RAW name (conversion) or the acquisition name."""
+    name = settings.options.acquisition_name
     if settings.action == Action.QC:
-        return f"qc_{settings.options.source_mode.value}_source"
-    raw = settings.paths.get("raw_input")
-    if settings.action == Action.CONVERT and raw is not None:
-        name = Path(raw).name
-        return name[:-len(".rawf")] if name.endswith(".rawf") else name
-    return "acquisition"
+        return f"{name}_qc_{settings.options.source_mode.value}_source"
+    if settings.action == Action.CONVERT and settings.paths.get("raw_input") is not None:
+        return _raw_name(settings)
+    return name
+
+
+def portable_name(text):
+    text = re.sub(r"[^A-Za-z0-9_-]+", "-", text).lstrip("_-")[:DATA_NAME_LIMIT].rstrip("_-")
+    return text or "data"
+
+
+def common_base(paths):
+    """Readable data name of input files: their common stem prefix, cut back to a ``_``/``-`` boundary when the
+    stems differ, without a converter suffix (``run_coincCompact_0..33`` -> ``run``)."""
+    stems = [Path(path).stem for path in paths]
+    base = os.path.commonprefix(stems)
+    if len(set(stems)) > 1:
+        cut = max(base.rfind("_"), base.rfind("-"))
+        base = base[:cut] if cut > 0 else ""
+    base = base.rstrip("_-")
+    for suffix in CONVERTER_SUFFIXES:
+        if base.endswith(suffix) and len(base) > len(suffix):
+            base = base[:-len(suffix)]
+            break
+    return portable_name(base)
+
+
+def run_name(settings, now=None):
+    """``<data>_<action>[-<options>]_<YYYY-MM-DD>_<HHMM>`` (FR-9, T29); ``RunStore`` adds ``_2`` ... on a clash."""
+    action, options = settings.action, settings.options
+    if action == Action.CONVERT:
+        data = _raw_name(settings)
+    elif action in (Action.ACQUIRE, Action.PIPELINE, Action.QC):
+        data = options.acquisition_name
+    else:
+        data = common_base(item.path for item in settings.inputs)
+    extra = None
+    if action == Action.CALIBRATE:
+        extra = f"P{options.regions}-{options.calibration_limit_mode}"
+    elif action == Action.PIPELINE:
+        extra = f"P{options.regions}"
+    elif action == Action.LISTMODE:
+        from src.cornell.inputs import calibration_layout
+        extra = f"P{calibration_layout(settings.paths['calibration_file'])[1]}"
+    elif action == Action.QC:
+        extra = f"{options.source_mode.value}-source"
+    code = ACTION_CODES[action] + (f"-{extra}" if extra else "")
+    return f"{portable_name(data)}_{code}_{(now or datetime.now()).strftime('%Y-%m-%d_%H%M')}"
+
+
+def _cell(value):
+    return " ".join(str(value).split()) or "-"
+
+
+def overview_row(outcome, settings, finished):
+    """One ``runs.tsv`` line: finished, run folder, action, inputs, status, main output (relative)."""
+    root = outcome.run_root
+    if settings.action == Action.CONVERT:
+        inputs = Path(settings.paths["raw_input"]).name
+    elif settings.inputs:
+        inputs = f"{len(settings.inputs)} file(s): {Path(settings.inputs[0].path).name}"
+    else:
+        inputs = "-"
+    main = "-"
+    if outcome.succeeded and outcome.stages:
+        stage = outcome.stages[-1]
+        kind = MAIN_OUTPUT.get(stage.stage_id)
+        found = [a.path for a in stage.artifacts if a.kind == kind]
+        if found:
+            main = Path(found[0]).relative_to(root).as_posix()
+            if len(found) > 1:
+                main += f" (+{len(found) - 1} more)"
+    return tuple(_cell(value) for value in (finished.strftime("%Y-%m-%d %H:%M:%S"), root.name,
+                                            settings.action.value, inputs, outcome.status.value, main))
+
+
+def append_overview(destination, row):
+    """Append one line to ``<destination>/runs.tsv`` (header when created); never rewrites or follows a link."""
+    path = Path(destination) / RUNS
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    content = ("\t".join(row) + "\n").encode("utf-8")
+    if os.path.islink(path):
+        raise OSError(f"Not a plain file: {path}")
+    try:
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
+        content = ("\t".join(RUNS_HEADER) + "\n").encode("utf-8") + content
+    except FileExistsError:
+        fd = os.open(path, flags)
+    try:
+        os.write(fd, content)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return path
 
 
 def _conversion_prefix(plan):
@@ -308,16 +416,17 @@ def processing_request(settings, stage, inputs, directory, context):
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False,
                                 "hit_limit": options.hit_limit,       # compact LM decodes at this width (FR-22)
                                 "lm_seed": limits.lm_seed, "workers": resolve_workers(limits.workers),
-                                "in_place": False},
-                       outputs={"directory": str(directory / "listmode")})
+                                "in_place": True},                    # the stage folder itself (T29)
+                       outputs={"directory": str(directory)})
     else:
         live = settings.action == Action.QC      # offline files: source mode/duration not recorded
         request.update(files={},
                        options={"plots": options.plots, "slabs": options.slabs,
                                 "source_mode": options.source_mode.value if live else None,
                                 "acquisition_time_s": options.duration_s if live else None,
-                                "pair_limit": limits.qc_pair_limit, "in_place": False, "report_title": None},
-                       outputs={"directory": str(directory / datetime.now().strftime("%Y%m%d-%H%M%S"))})
+                                "pair_limit": limits.qc_pair_limit, "in_place": True,
+                                "report_title": context.get("run_name")},
+                       outputs={"directory": str(directory)})
     return request
 
 
@@ -413,14 +522,13 @@ class WorkflowCoordinator:
         stages, store, findings = [], None, None
         status, message = ResultStatus.FAILED, "Workflow did not start"
         try:
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             manual = action in (Action.CALIBRATE, Action.LISTMODE, Action.QC_ANALYZE)
             store = RunStore.reserve(plan.destination, settings, settings.inputs if manual else (),
-                                     run_id=f"{action.value}-{stamp}-{uuid4().hex[:8]}")
+                                     name=run_name(settings), stages=plan.stages)
             run_identity = Identity(store.run_id, "workflow", "run")
             self._emit(run_identity, "workflow_started", f"{action.value}: {' -> '.join(plan.stages)}",
                        {"run_root": str(store.root), "stages": list(plan.stages)})
-            context = {"inputs": settings.inputs}
+            context = {"inputs": settings.inputs, "run_name": store.run_id}
             for stage in plan.stages:
                 if handle.cancelled:
                     status, message = ResultStatus.CANCELLED, f"Stopped before the {stage} stage"
@@ -456,6 +564,11 @@ class WorkflowCoordinator:
             findings = None
         outcome = WorkflowOutcome(action, status, message, store.root if store else None, tuple(stages),
                                   None if findings is None else freeze(findings))
+        if store is not None:
+            try:
+                append_overview(plan.destination, overview_row(outcome, settings, datetime.now()))
+            except Exception as exc:     # an index line never changes the run's verdict
+                self._log(f"[workflow] {RUNS} not updated in {plan.destination}: {exc}")
         try:
             self._emit(run_identity, "workflow_finished", message,
                        {"status": status.value, "run_root": str(store.root) if store else None,

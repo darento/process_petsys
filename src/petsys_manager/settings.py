@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields, replace
 import math
 import os
+import re
 from pathlib import Path, PurePosixPath
 import sys
 import tempfile
@@ -210,6 +211,9 @@ class MachineProfile:
                 raise ProfileError(f"{name} must be {cls.__name__}")
 
 
+ACQUISITION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}")
+
+
 @dataclass(frozen=True)
 class RunOptions:
     duration_s: float = 10.0
@@ -226,6 +230,7 @@ class RunOptions:
     regions: int = 5
     calibration_limit_mode: str = "target"      # FR-21: "target" (from T per key) or "reference" (10 M per file)
     raw_input: str | None = None
+    acquisition_name: str = "acquisition"   # RAW basename and run-folder data name of acquire/pipeline/QC (T29)
 
     def __post_init__(self):
         _number(self.duration_s, "duration_s")
@@ -242,6 +247,8 @@ class RunOptions:
         if self.slabs and not self.plots:
             raise ProfileError("Slab analysis requires plots")
         _text(self.raw_input, "raw_input", optional=True)
+        if not isinstance(self.acquisition_name, str) or not ACQUISITION_NAME.fullmatch(self.acquisition_name):
+            raise ProfileError("Acquisition name: 1-48 letters, digits, '_' or '-', starting with a letter or digit")
         try:
             object.__setattr__(self, "output_format", DataFormat(self.output_format))
             object.__setattr__(self, "population", Population(self.population))

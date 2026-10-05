@@ -39,7 +39,7 @@ from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, P
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
                                          RunOptions, default_profile_path)
-from src.petsys_manager.workflow import format_elapsed
+from src.petsys_manager.workflow import format_elapsed, portable_name
 
 
 __version__ = "0.1.0"
@@ -529,6 +529,7 @@ class PETsysManager:
         self.vars = {name: tk.StringVar(root) for name in (*PROFILE_FIELDS, *DAQ_FIELDS)}
         self.profile_path = tk.StringVar(root)
         self.acq_time = tk.StringVar(root, "10")
+        self.acq_name = tk.StringVar(root, "acquisition")    # RAW basename and run-folder name (T29)
         self.hw_trigger = tk.BooleanVar(root, False)
         self.raw_input = tk.StringVar(root)
         self.splits = tk.StringVar(root, "1")
@@ -546,7 +547,7 @@ class PETsysManager:
         self.safety_vars = {name: tk.StringVar(root) for name in SAFETY_FIELDS}
         self.lm_vars = {name: tk.StringVar(root) for name in LM_FIELDS}
         self._build()
-        for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time,
+        for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time, self.acq_name,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
                          self.positions, self.qc_source, self.limit_mode, self.target_per_key, self.workers,
                          self.qc_plots, self.qc_slabs, self.lm_debug):
@@ -646,6 +647,10 @@ class PETsysManager:
         for row, (name, label) in enumerate(DAQ_FIELDS.items(), 5):
             self.entries[name] = [self._row(settings, row, label, self.vars[name])]
         self._row(settings, 8, "Acq. Time (s):", self.acq_time, width=100)
+        self._row(settings, 9, "Acquisition Name:", self.acq_name, width=240)
+        ctk.CTkLabel(settings, text="Names the RAW file and the run folder of Acquire, the pipeline and live QC "
+                                    "(letters, digits, '_' or '-'; up to 48)", **self._small()).grid(
+            row=10, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         safety = self._frame(tab, "Acquisition Safety Limits")
         safety.grid_columnconfigure(3, weight=1)
         for index, (name, (label, _)) in enumerate(SAFETY_FIELDS.items()):
@@ -821,8 +826,9 @@ class PETsysManager:
         offline = self._frame(tab, "Offline QC of the listed files")
         self._button(offline, "qc_analyze", "Analyze existing compact LDAT", command=self.analyze_qc).grid(
             row=1, column=0, padx=20, pady=10, sticky="w")
-        ctk.CTkLabel(offline, text="Uses the plot/slab options above; results go to a new run folder in the Report "
-                                   "Destination. Source mode and duration are not recorded for existing files.",
+        ctk.CTkLabel(offline, text="Uses the plot/slab options above; results go to a new run folder "
+                                   "<data>_qc_<date>_<time> in the Report Destination. Source mode and duration are "
+                                   "not recorded for existing files.",
                      **self._small()).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 5))
         self._readiness(tab, ("qc", "qc_analyze"))
 
@@ -1226,9 +1232,16 @@ class PETsysManager:
     def acquire(self):
         profile = self._profile_or_log()
         try:
-            options = RunOptions(duration_s=float(self.acq_time.get().strip()), hardware_trigger=self.hw_trigger.get())
-        except (ValueError, ProfileError) as exc:
+            duration = float(self.acq_time.get().strip())
+        except ValueError as exc:
             self.log(f"Acquisition not started: Acq. Time (s): {exc}")
+            duration = None
+        try:
+            options = None if duration is None else RunOptions(
+                duration_s=duration, hardware_trigger=self.hw_trigger.get(),
+                acquisition_name=self.acq_name.get().strip())
+        except ProfileError as exc:
+            self.log(f"Acquisition not started: {exc}")
             options = None
         if profile is not None and options is not None:
             self._start(profile, Action.ACQUIRE, options, self.acq_status, "Starting acquisition...")
@@ -1329,8 +1342,9 @@ class PETsysManager:
             text = f"Converter input (-i): {prefix}  (reads {prefix.name}.rawf and its .idxf index)"
             if path.suffix != ".rawf":
                 text += "\nWARNING: select the acquisition's .rawf file"
-            text += (f"\nOutputs: a new run folder in the Output Data Folder, conversion/attempt-1/"
-                     f"{prefix.name}_coincCompact[_<n>].ldat")
+            text += (f"\nOutputs: a new run folder {portable_name(prefix.name)}_conv_<date>_<time> in the Output "
+                     "Data Folder, "
+                     f"with {prefix.name}_coincCompact[_<n>].ldat")
         else:
             text = "Select the RAW acquisition (.rawf); any file name is accepted"
         self.raw_plan.configure(text=text)
@@ -1349,16 +1363,19 @@ class PETsysManager:
         conversion = (f"{self.splits.get().strip() or '?'} split(s), max {self.hit_limit.get().strip() or '?'} "
                       "hits per side (RAWF to LDAT tab)")
         acq_time = self.acq_time.get().strip() or '?'
+        name = self.acq_name.get().strip() or '?'
         self.pipeline_plan.configure(
             text=f"This run: acquire {acq_time} s -> compact coincidence conversion, "
                  f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
                  f"Processing tab) -> LM with the LM tab files and metadata, header acquisition/measurement time "
-                 f"{acq_time} s (Acq. Time). Every stage stays in a new run folder in the Output Data Folder.")
+                 f"{acq_time} s (Acq. Time). One new run folder {name}_pipeline-P{self.positions.get().strip() or '?'}"
+                 "_<date>_<time> in the Output Data Folder, a numbered folder per stage.")
         self._show_limit_plans()
         mode = SourceMode(self.qc_source.get())
         self.qc_plan.configure(
             text=f"This run: acquire {QC_PRESET_S[mode]:g} s {mode.value} source -> compact coincidence conversion, "
-                 f"{conversion} -> QC; a new run folder in the Output Data Folder.")
+                 f"{conversion} -> QC; one new run folder {name}_qc-{mode.value}-source_<date>_<time> in the "
+                 "Output Data Folder.")
 
     # Profile and options ------------------------------------------------------------------------
 
@@ -1453,6 +1470,7 @@ class PETsysManager:
                     reason(key, "options", f"{label} must be {'a positive integer' if kind is int else 'a positive number'}")
 
         duration = number(self.acq_time, float, "Acq. Time (s)", ("acquire", "pipeline"))
+        name = self.acq_name.get().strip()     # checked by RunOptions (T29)
         conversions = ("convert_coincidence",)
         splits = number(self.splits, int, "Number of Split Files", (*conversions, "pipeline", "qc"))
         raw_duration = number(self.convert_duration, float, "RAW Acquisition Duration (s)", conversions)
@@ -1479,9 +1497,10 @@ class PETsysManager:
             if problem:
                 reason(key, "inputs", problem)
         if duration is not None:
-            add("acquire", duration_s=duration, hardware_trigger=self.hw_trigger.get())
+            add("acquire", duration_s=duration, hardware_trigger=self.hw_trigger.get(), acquisition_name=name)
             if None not in (splits, hits, positions):   # compact coincidence conversion (FR-10)
                 add("pipeline", duration_s=duration, hardware_trigger=self.hw_trigger.get(), splits=splits,
+                    acquisition_name=name,
                     hit_limit=hits, regions=positions, debug=self.lm_debug.get(),
                     calibration_limit_mode=self.limit_mode.get())
         if None not in (splits, raw_duration, hits):
@@ -1489,7 +1508,8 @@ class PETsysManager:
                           raw_input=self.raw_input.get().strip() or None)
             add("convert_coincidence", **common)
         if None not in (splits, hits):   # duration and compact format: the preflight's source preset
-            add("qc", source_mode=SourceMode(self.qc_source.get()), splits=splits, hit_limit=hits, **qc)
+            add("qc", source_mode=SourceMode(self.qc_source.get()), splits=splits, hit_limit=hits,
+                acquisition_name=name, **qc)
         return requests, issues
 
     def _edited(self, *_):
