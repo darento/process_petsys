@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import datetime
 import os
 from pathlib import Path
 import queue
@@ -38,6 +39,7 @@ from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, P
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
                                          RunOptions, default_profile_path)
+from src.petsys_manager.workflow import format_elapsed
 
 
 __version__ = "0.1.0"
@@ -836,9 +838,10 @@ class PETsysManager:
             self._poll_id = self.root.after(POLL_MS, self._poll)
 
     def log(self, *messages):
-        """Append lines in one widget update, keeping the profile's bounded tail."""
+        """Append lines in one widget update, each starting with the local time (FR-1); bounded tail."""
+        stamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", "".join(f"{message}\n" for message in messages))
+        self.log_text.insert("end", "".join(f"{stamp} {message}\n" for message in messages))
         limit = self.session.profile.limits.log_tail_lines
         lines = int(self.log_text.index("end-1c").split(".")[0]) - 1
         if lines > limit:
@@ -980,6 +983,8 @@ class PETsysManager:
             text += f"\n{name}: {stage.status.value}"
             if stage.directory is not None:
                 text += f" in {stage.directory}"
+            if isinstance(stage.details.get("elapsed_s"), (int, float)):
+                text += f"\n  Elapsed: {format_elapsed(stage.details['elapsed_s'])}"
             if stage.status != ResultStatus.SUCCEEDED:
                 text += f"\n  {stage.message}"
                 if stage.directory is not None:

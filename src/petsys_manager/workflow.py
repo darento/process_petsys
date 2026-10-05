@@ -75,6 +75,18 @@ REQUEST = "request.json"
 RESULT = "result.json"
 
 
+def format_elapsed(seconds):
+    """Operator text for a stage's elapsed time (FR-1): 42.3 s, 12 min 04 s, 1 h 02 min."""
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    minutes, rest = divmod(int(round(seconds)), 60)
+    if minutes < 60:
+        return f"{minutes} min {rest:02d} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes:02d} min"
+
+
 class WorkflowError(ValueError):
     def __init__(self, *issues):
         self.issues = tuple(str(issue) for issue in issues)
@@ -320,6 +332,7 @@ class WorkflowCoordinator:
                  log_sink=None, checkout_root=None):
         self._backend = backend
         self._clock = Clock() if clock is None else clock
+        self._stage_started = self._clock.monotonic()
         self._policy = policy
         self._acquisition_factory = acquisition_factory
         self._update_sink = update_sink
@@ -438,6 +451,13 @@ class WorkflowCoordinator:
             handle._finish(outcome)
 
     def _stage(self, stage, handle, plan, store, context, prerequisite):
+        """Run one stage and record its elapsed time in its details (FR-1)."""
+        self._stage_started = self._clock.monotonic()      # one foreground workflow, one stage at a time
+        outcome = self._run_stage(stage, handle, plan, store, context, prerequisite)
+        elapsed = round(self._clock.monotonic() - self._stage_started, 1)
+        return replace(outcome, details=freeze({**to_plain(outcome.details), "elapsed_s": elapsed}))
+
+    def _run_stage(self, stage, handle, plan, store, context, prerequisite):
         context.pop("attempt", None)
         try:
             if stage == "acquisition":
@@ -564,9 +584,12 @@ class WorkflowCoordinator:
             result = CommandResult(attempt.identity, status, exit_code, message, tuple(partial), result.log_tail)
         else:
             result = replace(result, artifacts=tuple(result.artifacts) + tuple(extra))
+        elapsed = round(self._clock.monotonic() - self._stage_started, 1)
+        details = {**(details or {}), "elapsed_s": elapsed}
         store.finish_attempt(attempt, result, details=details)
         self._emit(attempt.identity, "stage_finished", f"{attempt.identity.stage_id} {result.status.value}: "
-                   f"{result.message}", {"status": result.status.value, "directory": str(attempt.directory)})
+                   f"{result.message} (in {format_elapsed(elapsed)})",
+                   {"status": result.status.value, "directory": str(attempt.directory), "elapsed_s": elapsed})
         return result
 
     # Processing (src.cornell.cli) -------------------------------------------------
