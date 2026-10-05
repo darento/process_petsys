@@ -3,6 +3,14 @@
 One worker owns each store. No existing run can be reopened for writing. Recovery
 is read-only until a workflow-specific resume contract exists. Records are file
 metadata, never acquisition records. Numerical validation belongs to T5 onward.
+
+T29 layout (FR-9/FR-13): a run folder holds ``run.json`` (the latest complete
+record) and ``.history/manifest-NNNNNN.json`` (every revision, authoritative).
+With ``stages``, one stage writes in the run folder itself and several use
+``<i>_<stage>/``; only ``ATTEMPT_FOLDER_STAGES`` get ``attempt-N/`` folders, every
+other stage has one folderless attempt. Without ``stages`` the T4 layout
+``<stage>/<attempt>/`` is kept. Pre-T29 runs (revisions in the run folder) stay
+readable.
 """
 
 from __future__ import annotations
@@ -18,6 +26,12 @@ from uuid import uuid4
 
 from .contracts import (Artifact, CommandResult, Identity, InputDescriptor,
                         ResultStatus, freeze, to_plain)
+
+RECORD = "run.json"
+HISTORY = ".history"
+RESERVED = frozenset({RECORD, HISTORY})       # run-folder names no output, inventory or partial may use
+ATTEMPT_FOLDER_STAGES = frozenset({"acquisition"})   # the only stage that retries (FR-8)
+MAX_NAME_SUFFIX = 99
 
 
 class ArtifactError(ValueError):
@@ -122,10 +136,19 @@ class RunStore:
         raise TypeError("Use RunStore.reserve()")
 
     @classmethod
-    def reserve(cls, destination, settings, inputs=(), *, run_id=None):
+    def reserve(cls, destination, settings, inputs=(), *, run_id=None, name=None, stages=None):
+        """``run_id``: exact folder name. ``name``: readable base, ``_2`` … ``_99`` on a collision (T29).
+        ``stages``: the run's ordered stage ids, which fix its folder layout."""
         destination = _absolute(destination)
         _parents(destination)  # Destination is operator-selected, never auto-created.
-        run_id = _name(run_id or f"run-{uuid4().hex}")
+        if run_id is not None and name is not None:
+            raise ArtifactError("Give a run id or a run name, not both")
+        candidates = ([_name(name)] + [_name(f"{name}_{n}") for n in range(2, MAX_NAME_SUFFIX + 1)]
+                      if name is not None else [_name(run_id or f"run-{uuid4().hex}")])
+        if stages is not None:
+            stages = tuple(_name(stage) for stage in stages)
+            if not stages or len(set(stages)) != len(stages):
+                raise ArtifactError("Stages must be distinct and nonempty")
         plain_settings = to_plain(settings)
         if not isinstance(plain_settings, dict):
             raise ArtifactError("Settings must be a mapping or typed settings snapshot")
@@ -144,17 +167,32 @@ class RunStore:
                             "mtime_ns": info.st_mtime_ns})
             if len(records) > cls.artifact_limit:
                 raise ArtifactError("Input inventory exceeds its bound")
-        data = {"schema_version": 1, "run_id": run_id, "status": "partial",
+        data = {"schema_version": 1, "run_id": candidates[-1], "status": "partial",
                 "message": "Reserved; unfinished work is partial", "settings": plain_settings,
                 "inputs": records, "attempts": []}
+        if stages is not None:
+            data["stages"] = list(stages)
         cls._encode(data)  # Reject nonfinite/unsupported settings before creating anything.
-        root = destination / run_id
-        root.mkdir()  # Exclusive. Never adopt a pre-existing run, even an empty one.
+        for run_id in candidates:
+            root = destination / run_id
+            try:
+                root.mkdir()  # Exclusive. Never adopt a pre-existing run, even an empty one.
+                break
+            except FileExistsError:
+                if len(candidates) == 1:
+                    raise
+        else:
+            raise ArtifactError(f"No free run folder name: {candidates[0]} to {candidates[-1]} exist")
+        data["run_id"] = run_id
+        (root / HISTORY).mkdir()
         _sync_directory(destination)
+        _sync_directory(root)
         store = object.__new__(cls)
         store._root = root
         store._run_id = run_id
-        store._directories = {root: _token(_stat(root, directory=True))}
+        store._stages = stages
+        store._directories = {root: _token(_stat(root, directory=True)),
+                              root / HISTORY: _token(_stat(root / HISTORY, directory=True))}
         store._attempts = {}
         store._lock = RLock()
         store._revision = 0
@@ -199,26 +237,43 @@ class RunStore:
 
     @property
     def manifest_path(self):
-        return self.root / f"manifest-{self._revision:06d}.json"
+        """The latest revision in ``.history/`` (authoritative)."""
+        return self.root / HISTORY / f"manifest-{self._revision:06d}.json"
+
+    @property
+    def record_path(self):
+        """``run.json``: the same content as the latest revision, for reading."""
+        return self.root / RECORD
+
+    @staticmethod
+    def _write_flushed(path, content):
+        with path.open("xb") as out:
+            out.write(content)
+            out.flush()
+            os.fsync(out.fileno())
 
     def _commit(self, data):
         self._guard()
         revision = self._revision + 1
         data = {**data, "revision": revision}
         content = self._encode(data)
-        temporary = self.root / f".manifest-{uuid4().hex}.partial"
-        target = self.root / f"manifest-{revision:06d}.json"
+        history = self.root / HISTORY
+        temporary = history / f".manifest-{uuid4().hex[:12]}.partial"   # exclusive; short for Windows paths
+        target = history / f"manifest-{revision:06d}.json"
         linked = False
-        with temporary.open("xb") as out:
-            out.write(content)
-            out.flush()
-            os.fsync(out.fileno())
+        self._write_flushed(temporary, content)
         token = _token(_stat(temporary))
         try:
             self._guard()
             _link(temporary, target)
             linked = True
             temporary.unlink()
+            _sync_directory(history)
+            # run.json is replaced whole; a failure fails the commit and drops the new revision.
+            record = history / f".run-{uuid4().hex[:12]}.partial"
+            self._write_flushed(record, content)
+            self._guard()
+            os.replace(record, self.record_path)
             _sync_directory(self.root)
         except BaseException:
             # Remove only our just-linked metadata revision on failed durability.
@@ -236,7 +291,16 @@ class RunStore:
                 raise ArtifactError("Attempt inventory exceeds its bound")
             stage_id = _name(stage_id)
             attempt_id = _name(attempt_id or f"attempt-{uuid4().hex}")
-            stage = self.root / stage_id
+            if self._stages is None:
+                stage, folder = self.root / stage_id, True
+            elif stage_id not in self._stages:
+                raise ArtifactError(f"Stage {stage_id} is not part of this run")
+            else:
+                stage = (self.root if len(self._stages) == 1
+                         else self.root / f"{self._stages.index(stage_id) + 1}_{stage_id}")
+                folder = stage_id in ATTEMPT_FOLDER_STAGES
+                if not folder and any(record["stage_id"] == stage_id for record in self._data["attempts"]):
+                    raise ArtifactError(f"Stage {stage_id} has one attempt; its outputs share one folder")
             if stage not in self._directories:
                 stage.mkdir()  # No adoption of existing stage directories.
                 self._directories[stage] = _token(_stat(stage, directory=True))
@@ -244,10 +308,12 @@ class RunStore:
             if any(record["stage_id"] == stage_id and record["status"] == "partial"
                    for record in self._data["attempts"]):
                 raise ArtifactError("Finish the previous stage attempt before retrying")
-            directory = stage / attempt_id
-            directory.mkdir()
-            self._directories[directory] = _token(_stat(directory, directory=True))
-            _sync_directory(stage)
+            directory = stage
+            if folder:
+                directory = stage / attempt_id
+                directory.mkdir()
+                self._directories[directory] = _token(_stat(directory, directory=True))
+                _sync_directory(stage)
             attempt = Attempt(Identity(self.run_id, stage_id, attempt_id), directory)
             data = self._copy()
             data["attempts"].append({"stage_id": stage_id, "attempt_id": attempt_id,
@@ -272,6 +338,8 @@ class RunStore:
         path = _absolute(path)
         if not path.is_relative_to(attempt.directory) or path == attempt.directory:
             raise ArtifactError("Output is outside its reserved attempt")
+        if path.relative_to(self.root).parts[0] in RESERVED:
+            raise ArtifactError(f"Reserved run record name: {path}")
         _parents(path.parent)
         return path
 
@@ -445,6 +513,8 @@ class RunStore:
             paths = []
             with os.scandir(attempt.directory) as entries:
                 for entry in entries:
+                    if attempt.directory == self.root and entry.name in RESERVED:
+                        continue     # the run record: never an output or a partial
                     paths.append(Path(entry.path))
                     if len(paths) > self.artifact_limit:
                         raise ArtifactError("Attempt inventory exceeds its bound")
@@ -495,12 +565,19 @@ class RunStore:
 
 
 def read_manifest(root):
-    """Read the latest bounded complete revision. Never reopen it for writing."""
+    """Read the latest bounded complete revision. Never reopen it for writing.
+
+    T29 runs: ``.history/`` (authoritative, not ``run.json``); pre-T29 runs: the run folder.
+    """
     root = _absolute(root)
     _parents(root)
     path = None
     revision = 0
-    with os.scandir(root) as entries:
+    folder = root
+    if os.path.lexists(root / HISTORY):
+        folder = root / HISTORY
+        _stat(folder, directory=True)
+    with os.scandir(folder) as entries:
         for entry in entries:
             if re.fullmatch(r"manifest-\d{6,}\.json", entry.name):
                 candidate = int(Path(entry.name).stem.split("-")[-1])
