@@ -941,7 +941,7 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   **Verified 2026-10-04:**
   - **`src/cornell/listmode.py`:** `ax=axes.ravel().tolist()` (flat list of the same axes).
   - **Checks:** scratch reproduction (`DebugSummary` with flood counts → `debug_plots`) raised the same AttributeError; after the fix it writes the 3 plots. New `test_listmode_debug_floodmap_with_counts` in `scripts/petsys_manager_listmode_check.py`: fails (error) with the old line, passes with the fix; `petsys_manager_listmode_check.py` **19/19**.
-  - **Still pending:** repeat T19 step 7 on the Cornell machine.
+  - **Cornell 2026-10-04:** T19 step 7 repeated after the pull: succeeded with the 3 debug plots, floodmap as expected (`listmode-20261004-093632-1aab7fd8`).
 
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 
