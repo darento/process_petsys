@@ -61,7 +61,8 @@ from src.petsys_manager.contracts import DataFormat, InputDescriptor, Population
 from src.petsys_manager.settings import LMMetadata
 from .calibration import HIT_DTYPE, CalibrationMaps, _Reader, create_region_boundaries
 from .inputs import (Calibration, ChannelMap, InputError, Limits, NumericTable, ProcessingConfig,
-                     _metadata_bytes, _rows, check_fixed_records, fixed_layout, mapped_channels)
+                     _metadata_bytes, _rows, check_fixed_records, file_seed, fixed_layout, mapped_channels)
+# file_seed: the NumPy seed of one file's stream (FR-22, T25.5), fixed by the LM seed and the merge position.
 
 GENERATOR = "src.cornell.listmode (spec 003 T9; reference cornell_listmode_cog_fixed_position.py)"
 RTP_Y_VAL = 2
@@ -932,11 +933,6 @@ def _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
     mapped = np.zeros(ctx.maps.max_ch, dtype=bool)
     mapped[[ch for ch in mapping.modules if ch < ctx.maps.max_ch]] = True
     return compact_chunks(descriptor, mapped, hit_limit, batch_records)
-
-
-def file_seed(lm_seed, index):
-    """The NumPy seed of one file's stream (FR-22, T25.5): fixed by the LM seed and the merge position."""
-    return int(np.random.SeedSequence([lm_seed, index]).generate_state(1)[0])
 
 
 def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, batch_records, debug,

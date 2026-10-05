@@ -24,6 +24,12 @@ the same photopeak histogram/fit call. Not a new QC model. Changes:
   computed only to report the difference.
 
 The reference x-COG profile (computed, never used) is not computed.
+
+Parallel QC (FR-15, T33): with a ``qc_seed`` every file is sampled into its own
+accumulators after seeding Python ``random`` with ``file_seed(qc_seed, index)``,
+and the parent merges them in input order, in-process for one worker or in
+``src.cornell.parallel`` workers; results do not depend on the worker count.
+Without a seed the reference's single continuing stream and accumulator remain.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 import math
 import os
+import random
 import struct
 
 import numpy as np
@@ -43,7 +50,7 @@ from src.mapping_generator import ChannelType
 from src.utils import get_max_num_ch, get_maxEnergy_sm_mM, get_slab_cornell
 
 from src.petsys_manager.contracts import DataFormat, InputDescriptor, Population, SourceMode
-from .inputs import InputError, ProcessingConfig
+from .inputs import InputError, ProcessingConfig, file_seed
 
 GENERATOR = "src.cornell.qc (spec 003 T10; reference cornell_system_validation.py)"
 PAIR_LIMIT = 1_000_001              # reference breaks once accepted pairs exceed 1,000,000
@@ -92,17 +99,20 @@ class EnergyHistograms:
             self.keys.append(key)
         return row
 
-    def add(self, keys, energies):
-        if not keys:
-            return
-        energies = np.asarray(energies, dtype=np.float64)
-        target = np.fromiter((self._row(key) for key in keys), dtype=np.int64, count=len(keys))
+    def _grow(self):
         extra = len(self.keys) - len(self.counts)
         if extra > 0:
             self.histograms = np.vstack((self.histograms, np.zeros((extra, PHOTOPEAK_BINS), np.int64)))
             self.counts = np.concatenate((self.counts, np.zeros(extra, np.int64)))
             self.means = np.concatenate((self.means, np.zeros(extra)))
             self.m2 = np.concatenate((self.m2, np.zeros(extra)))
+
+    def add(self, keys, energies):
+        if not keys:
+            return
+        energies = np.asarray(energies, dtype=np.float64)
+        target = np.fromiter((self._row(key) for key in keys), dtype=np.int64, count=len(keys))
+        self._grow()
         # Same inclusion/edges as np.histogram(values, 150, (0, 250)); last bin closed.
         keep = (energies >= PHOTOPEAK_RANGE[0]) & (energies <= PHOTOPEAK_RANGE[1])
         bins = np.searchsorted(self.edges, energies[keep], side="right") - 1
@@ -117,6 +127,20 @@ class EnergyHistograms:
         self.means[rows] += delta * count / total
         self.m2[rows] += m2 + delta ** 2 * self.counts[rows] * count / total
         self.counts[rows] = total
+
+    def merge(self, other):
+        """Add another file's histograms: integer bins and counts exactly, mean/M2 by the pairwise formula."""
+        if not other.keys:
+            return
+        rows = np.fromiter((self._row(key) for key in other.keys), dtype=np.int64, count=len(other.keys))
+        self._grow()
+        before, count = self.counts[rows], other.counts
+        total = before + count
+        delta = other.means - self.means[rows]
+        self.means[rows] += delta * count / total
+        self.m2[rows] += other.m2 + delta ** 2 * before * count / total
+        self.counts[rows] = total
+        self.histograms[rows] += other.histograms
 
     def row(self, key):
         return self._rows[key]
@@ -147,6 +171,12 @@ class FloodHistograms:
                 self.histograms[module] = np.zeros((FLOOD_BINS, FLOOD_BINS), dtype=np.int64)
             self.histograms[module] += counts.astype(np.int64)
 
+    def merge(self, other):
+        for module, counts in other.histograms.items():
+            if module not in self.histograms:
+                self.histograms[module] = np.zeros((FLOOD_BINS, FLOOD_BINS), dtype=np.int64)
+            self.histograms[module] += counts
+
     @property
     def nbytes(self):
         return sum(h.nbytes for h in self.histograms.values())
@@ -165,6 +195,18 @@ class Accumulators:
     @property
     def nbytes(self):
         return self.minimodules.nbytes + self.slab_energy.nbytes + self.floods.nbytes
+
+    def merge(self, other):
+        """Add one file's accumulators (T33); called in input order."""
+        self.minimodules.merge(other.minimodules)
+        self.slab_energy.merge(other.slab_energy)
+        self.floods.merge(other.floods)
+        for key, count in other.slab_counts.items():
+            self.slab_counts[key] += count
+        for sm, channels in other.occupancy.items():
+            present = self.occupancy.setdefault(sm, defaultdict(int))
+            for channel, hits in channels.items():
+                present[channel] += hits
 
 
 def read_pairs(path, en_min_ch, channels=None):
@@ -440,6 +482,9 @@ class QCResult:
     flood_edges: np.ndarray
     sources: dict
     storage_bytes: int
+    random_streams: dict = field(default_factory=lambda: {
+        "qc_seed": None, "rule": "reference: one unseeded Python random stream continuing across files"})
+    workers: int = 1
 
     def totals(self):
         names = ("validated_records", "records_read", "pairs_processed", "occupancy_pairs", "occupancy_hits",
@@ -474,25 +519,95 @@ def _check_options(descriptors, config, plots, slabs, source_mode, acquisition_t
         raise InputError("QC requires en_min_ch (a.u.)")
 
 
+def _sample_checked(path, config, acc, *, pair_limit, flush_sides, cancelled, progress):
+    before = os.stat(path)
+    if before.st_size == 0:
+        raise InputError(f"Empty LDAT: {path}")
+    sample = sample_file(path, config, acc, pair_limit=pair_limit, flush_sides=flush_sides, cancelled=cancelled,
+                         progress=progress)
+    info = os.stat(path)
+    if (info.st_size, info.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+        raise InputError(f"Input changed while reading: {path}")
+    return sample
+
+
+def _sample_one(path, config, seed, *, plots, slabs, pair_limit, flush_sides, cancelled, progress):
+    """One file into its own accumulators from its own random stream (T33)."""
+    random.seed(seed)
+    acc = Accumulators(plots, slabs)
+    sample = _sample_checked(path, config, acc, pair_limit=pair_limit, flush_sides=flush_sides,
+                             cancelled=cancelled, progress=progress)
+    return sample, acc
+
+
+_QC_WORKER = {}
+
+
+def _qc_worker_init(event, config, options):
+    """Per QC worker process: the processing config (sent once), the sampling options, the cancellation event."""
+    _QC_WORKER.clear()
+    _QC_WORKER.update(config=config, options=options, cancelled=event.is_set)
+
+
+def _qc_task(path, seed):
+    w = _QC_WORKER
+    return _sample_one(path, w["config"], seed, cancelled=w["cancelled"], progress=None, **w["options"])
+
+
 def run_qc(descriptors, config, *, plots=False, slabs=False, source_mode=None, acquisition_time_s=None,
-           pair_limit=PAIR_LIMIT, flush_sides=DEFAULT_FLUSH_SIDES, cancelled=None, progress=None):
-    """Sample each file in the given order, validating the records read (FR-24), then fit. Writes nothing."""
+           pair_limit=PAIR_LIMIT, flush_sides=DEFAULT_FLUSH_SIDES, cancelled=None, progress=None, qc_seed=None,
+           workers=1):
+    """Sample each file in the given order, validating the records read (FR-24), then fit. Writes nothing.
+
+    ``qc_seed`` (FR-15, T33): one Python ``random`` stream per file, ``file_seed(qc_seed, index)``, and per-file
+    accumulators merged in input order, so results are the same for any ``workers``; None keeps the reference's
+    continuing stream (one worker only). ``workers`` > 1 samples files in spawned worker processes.
+    """
     descriptors = tuple(descriptors)
     _check_options(descriptors, config, plots, slabs, source_mode, acquisition_time_s, pair_limit)
+    if qc_seed is not None and (type(qc_seed) is not int or not 0 <= qc_seed < 2 ** 63):
+        raise InputError("qc_seed must be a non-negative integer or None")
+    if type(workers) is not int or workers < 1:
+        raise InputError("workers must be a positive integer (resolve 0 = automatic before QC)")
+    if workers > 1 and qc_seed is None:
+        raise InputError("Parallel QC needs qc_seed: one random stream per file, independent of the workers")
     mapping = config.mapping
     acc = Accumulators(plots, slabs)
     files = []
-    for descriptor in descriptors:
-        if cancelled is not None and cancelled():
-            raise QCCancelled("QC cancelled")
-        before = os.stat(descriptor.path)
-        if before.st_size == 0:
-            raise InputError(f"Empty LDAT: {descriptor.path}")
-        files.append(sample_file(descriptor.path, config, acc, pair_limit=pair_limit, flush_sides=flush_sides,
-                                 cancelled=cancelled, progress=progress))
-        info = os.stat(descriptor.path)
-        if (info.st_size, info.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
-            raise InputError(f"Input changed while reading: {descriptor.path}")
+    seeds = None if qc_seed is None else [file_seed(qc_seed, index) for index in range(len(descriptors))]
+    options = dict(plots=plots, slabs=slabs, pair_limit=pair_limit, flush_sides=flush_sides)
+    used = 1
+    if seeds is None:
+        for descriptor in descriptors:
+            if cancelled is not None and cancelled():
+                raise QCCancelled("QC cancelled")
+            files.append(_sample_checked(descriptor.path, config, acc, pair_limit=pair_limit,
+                                         flush_sides=flush_sides, cancelled=cancelled, progress=progress))
+    elif workers == 1:
+        for descriptor, seed in zip(descriptors, seeds):
+            if cancelled is not None and cancelled():
+                raise QCCancelled("QC cancelled")
+            sample, part = _sample_one(descriptor.path, config, seed, cancelled=cancelled, progress=progress,
+                                       **options)
+            files.append(sample)
+            acc.merge(part)
+    else:
+        from .parallel import OrderedPool, PoolCancelled
+
+        def done(index, value):
+            sample, part = value
+            files.append(sample)
+            acc.merge(part)              # in input order: the same floats as one worker
+            if progress is not None:
+                progress(descriptors[index].path, sample.records_read)
+        used = min(workers, len(descriptors))
+        try:
+            with OrderedPool(used, _qc_worker_init, (config, options), cancelled) as pool:
+                pool.run(_qc_task, [(d.path, seed) for d, seed in zip(descriptors, seeds)], done)
+        except PoolCancelled:
+            raise QCCancelled("QC cancelled") from None
+    streams = None if seeds is None else {"qc_seed": qc_seed, "file_seeds": seeds,
+                                          "rule": "one Python random stream per file, file_seed(qc_seed, index)"}
     absent = unpopulated(config)
     expected = expected_channels(mapping, absent)
     occupancy = {sm: dict(sorted(channels.items())) for sm, channels in sorted(acc.occupancy.items())}
@@ -505,4 +620,5 @@ def run_qc(descriptors, config, *, plots=False, slabs=False, source_mode=None, a
         occupancy_findings(occupancy, expected, mapping),
         fit_photopeaks(acc.minimodules, MINIMODULE_CB) if plots else (),
         fit_photopeaks(acc.slab_energy, SLAB_CB) if slabs else (),
-        dict(sorted(acc.floods.histograms.items())), acc.floods.edges, sources, acc.nbytes)
+        dict(sorted(acc.floods.histograms.items())), acc.floods.edges, sources, acc.nbytes,
+        **({} if streams is None else {"random_streams": streams}), workers=used)

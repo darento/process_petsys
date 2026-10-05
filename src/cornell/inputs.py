@@ -641,6 +641,11 @@ def _raise_record_error(path, kind, record, side, channel, fmt):
     raise InputError(f"Truncated compact hits at record {record}, side {side}")
 
 
+def file_seed(seed, index):
+    """One file's random-stream seed (FR-15/FR-22): fixed by the stage seed and the file's position."""
+    return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
+
+
 def mapped_channels(channels):
     """Channel lookup for :func:`check_fixed_records` (the selected map's channel IDs)."""
     if not isinstance(channels, Mapping) or not channels:

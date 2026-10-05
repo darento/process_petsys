@@ -78,12 +78,13 @@ safety:                                      # acquisition monitoring (editable 
   retry_delay_s: 2.0
   terminate_grace_s: 3.0
 limits:
-  workers: 0                                 # worker processes for calibration; 0 = CPU count - 2
+  workers: 0                                 # worker processes for calibration, LM and QC; 0 = CPU count - 2
   batch_records: 5000
   calibration_event_limit: 10000000          # reference mode: passing coincidences per file
   calibration_target_per_key: 3000           # target mode: T kept sides per histogram
   calibration_memory_mb: 8192                # target mode: read each file once if its selected events fit
   lm_seed: 0                                 # LM: seed of the per-file random streams (ambiguous slabs)
+  qc_seed: 0                                 # QC: seed of the per-file random streams (single-time-channel slabs)
   qc_pair_limit: 1000001                     # accepted pairs per file (reference)
   log_tail_lines: 1000
 capabilities:
@@ -162,6 +163,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.
 - **Parallel LM and seed:** LM processes its files in `workers` processes and merges them in the same order. The random slab choice for ambiguous sides uses one stream per file, derived from the profile's `lm_seed` and the file's position, so the same inputs and seed give the same `.lm` on every run and for any worker count; the provenance records the seeds. (The reference used one unseeded stream, so its reruns differed slightly.)
+- **Parallel QC and seed:** QC samples its files in `workers` processes (the same profile setting) and merges them in the input order. The random slab choice for sides with one time channel uses one stream per file, derived from the profile's `qc_seed` (default 0) and the file's position, so the same inputs and seed give the same QC results on every run and for any worker count; `qc_summary.json` records the seeds and workers. (The reference used one unseeded stream continuing across files.) Live QC has one file per split, so it gains only with several splits.
 - **Compact LM:** compact input is decoded at the Max Hits per Side of its conversion (a side with more hits refuses the file) and gives the same `.lm` file as the reference's fixed input of the same events (checked in the library).
 - **LM header:** the 11 metadata fields come from the profile. Empty fields block LM; there are no hardcoded values. The pipeline writes its own Acq. Time as the acquisition and measurement time.
 

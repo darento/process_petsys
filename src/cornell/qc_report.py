@@ -107,7 +107,8 @@ def summary(result, outputs):
         "sampling": {"pair_limit_per_file": result.pair_limit,
                      "limit_semantics": "stop once accepted pairs reach the limit (reference: break when > 1,000,000); "
                                         "a whole-file result only when stopped_at_limit is false",
-                     "input_order": [f.path for f in result.files]},
+                     "input_order": [f.path for f in result.files],
+                     "random_streams": result.random_streams, "workers": result.workers},   # FR-15 (T33)
         "populations": {
             "records_read": "pairs yielded by the reader (one extra pair is read before a limit stop)",
             "validated_records": "records read; each was validated as read (FR-24); records not read are not",

@@ -76,7 +76,8 @@ _SPEC = {
     "qc": {
         "files": {},
         "options": {"plots": "bool", "slabs": "bool", "source_mode": "source?", "acquisition_time_s": "number?",
-                    "pair_limit": "int", "in_place": "bool", "report_title": "text?"},
+                    "pair_limit": "int", "in_place": "bool", "report_title": "text?", "qc_seed": "seed?",
+                    "workers": "int"},
         "outputs": {"directory": "new_dir"},
     },
 }
@@ -475,7 +476,8 @@ def run_qc(request, events, cancelled):
     paths = [str(d.path) for d in descriptors]
     result = qc.run_qc(descriptors, config, plots=options["plots"], slabs=options["slabs"],
                        source_mode=options["source_mode"], acquisition_time_s=options["acquisition_time_s"],
-                       pair_limit=options["pair_limit"], cancelled=cancelled,
+                       pair_limit=options["pair_limit"], qc_seed=options["qc_seed"], workers=options["workers"],
+                       cancelled=cancelled,
                        progress=lambda path, records: events.progress(paths.index(str(path)), len(paths), path,
                                                                       records))
     if cancelled():

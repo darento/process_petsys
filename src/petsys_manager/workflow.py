@@ -433,7 +433,8 @@ def processing_request(settings, stage, inputs, directory, context):
                                 "source_mode": options.source_mode.value if live else None,
                                 "acquisition_time_s": options.duration_s if live else None,
                                 "pair_limit": limits.qc_pair_limit, "in_place": True,
-                                "report_title": context.get("run_name")},
+                                "report_title": context.get("run_name"), "qc_seed": limits.qc_seed,
+                                "workers": resolve_workers(limits.workers)},   # FR-15: parallel QC (T33)
                        outputs={"directory": str(directory)})
     return request
 

@@ -828,7 +828,8 @@ class PETsysManager:
             row=1, column=0, padx=20, pady=10, sticky="w")
         ctk.CTkLabel(offline, text="Uses the plot/slab options above; results go to a new run folder "
                                    "<data>_qc_<date>_<time> in the Report Destination. Source mode and duration are "
-                                   "not recorded for existing files.",
+                                   "not recorded for existing files. Files are read in parallel with the Workers "
+                                   "setting (LDAT Processing tab).",
                      **self._small()).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 5))
         self._readiness(tab, ("qc", "qc_analyze"))
 
