@@ -433,6 +433,12 @@ class WorkflowCoordinator:
             else:
                 status = ResultStatus.SUCCEEDED
                 message = "All stages completed with validated outputs"
+                if action == Action.CONVERT:     # FR-24: what was checked, not more
+                    message = (f"Outputs structure-checked (first {CONVERSION_CHECK_RECORDS:,} records of each "
+                               "file); each processing stage validates the records it reads")
+                elif action == Action.PIPELINE:
+                    message = ("All stages completed; conversion outputs structure-checked, calibration and LM "
+                               "validated the records they read")
                 if action in (Action.QC, Action.QC_ANALYZE):
                     findings = stages[-1].details.get("findings")
                     message = ("QC processing completed; findings are observations of the coincidence "

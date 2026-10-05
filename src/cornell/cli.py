@@ -548,7 +548,8 @@ def main(argv=None, *, cancel_event=None, stdout=None, stderr=None):
     try:
         request = load_request(args.request, args.action, result_path=result_path)
         record["request"]["sha256"] = request.sha256
-        events.emit("started", request=str(request.path), inputs=[str(d.path) for d in request.inputs])
+        # The inputs are in the request; a long path list would exceed the runner's line bound and be split.
+        events.emit("started", request=str(request.path), inputs=len(request.inputs))
         if cancelled():
             raise Cancelled("Cancelled before processing")
         outputs, summary = RUNNERS[args.action](request, events, cancelled)
