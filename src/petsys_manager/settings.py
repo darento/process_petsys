@@ -16,8 +16,8 @@ import tempfile
 
 import yaml
 
-from .contracts import (Action, DataFormat, FrozenMapping, InputDescriptor, route_accepts,
-                        Population, SourceMode, freeze, to_plain)
+from .contracts import (MANAGER_ROUTE, Action, DataFormat, FrozenMapping, InputDescriptor, Population,
+                        SourceMode, freeze, to_plain)
 
 
 SCHEMA_VERSION = 1
@@ -104,12 +104,10 @@ class ProcessingLimits:
 
 @dataclass(frozen=True)
 class ToolCapabilities:
-    fixed_output_confirmed: bool = False
     custom_socket_confirmed: bool = False
     installed_version: str | None = None
 
     def __post_init__(self):
-        _bool(self.fixed_output_confirmed, "fixed_output_confirmed")
         _bool(self.custom_socket_confirmed, "custom_socket_confirmed")
         _text(self.installed_version, "installed_version", optional=True)
 
@@ -216,7 +214,7 @@ class RunOptions:
     hardware_trigger: bool = False
     splits: int = 1
     hit_limit: int = 16
-    output_format: DataFormat = DataFormat.FIXED
+    output_format: DataFormat = DataFormat.COMPACT     # the only manager route (FR-10)
     population: Population = Population.COINCIDENCE
     source_mode: SourceMode = SourceMode.WITH
     plots: bool = False
@@ -244,8 +242,9 @@ class RunOptions:
             object.__setattr__(self, "source_mode", SourceMode(self.source_mode))
         except ValueError as exc:
             raise ProfileError(str(exc)) from exc
-        if self.population == Population.GROUP and self.output_format != DataFormat.FIXED:
-            raise ProfileError("Only fixed group conversion is supported")
+        if (self.output_format, self.population) != MANAGER_ROUTE:
+            raise ProfileError("The manager converts and processes compact coincidence only (FR-10); "
+                               f"{self.output_format.value} {self.population.value} is not offered")
 
 
 PIPELINE_LM_TIME_FIELDS = ("acquisition_time_s", "measurement_time_s")
@@ -302,10 +301,16 @@ def _construct(cls, value, label):
         raise ProfileError(f"Invalid {label}: {exc}") from exc
 
 
+RETIRED_CAPABILITIES = ("fixed_output_confirmed",)   # FR-10 (2026-10-05): read from old profiles, ignored
+
+
 def profile_from_mapping(value):
     if not isinstance(value, dict) or "schema_version" not in value:
         raise ProfileError("Profile requires an explicit schema_version")
     data = dict(value)
+    if isinstance(data.get("capabilities"), dict):
+        data["capabilities"] = {key: item for key, item in data["capabilities"].items()
+                                if key not in RETIRED_CAPABILITIES}
     for name, cls in (("safety", AcquisitionSafety), ("limits", ProcessingLimits),
                       ("capabilities", ToolCapabilities), ("lm_metadata", LMMetadata)):
         if name in data:
@@ -495,12 +500,8 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
     if action in (Action.ACQUIRE, Action.QC, Action.PIPELINE):
         tool_names.update(("acquire_sipm_data", "set_bias"))  # set_bias: FR-19 bias-off after an abort
     if conversion:
-        tool_names.add("convert_raw_to_group" if action == Action.CONVERT and
-                       options.population == Population.GROUP else "convert_raw_to_coincidence")
+        tool_names.add("convert_raw_to_coincidence")   # compact coincidence only (FR-10)
         need_file("ini_file")
-        effective_format = DataFormat.COMPACT if action == Action.QC else options.output_format
-        if effective_format == DataFormat.FIXED and not profile.capabilities.fixed_output_confirmed:
-            issue("capabilities.fixed_output_confirmed", "Installed converter fixed-output support is unconfirmed")
     if action == Action.CONVERT and need_file("raw_input"):
         # PETsys RawReader opens <prefix>.rawf plus <prefix>.tmpf or <prefix>.idxf.
         raw = paths["raw_input"]
@@ -534,8 +535,6 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             need_file(name)
     if action == Action.LISTMODE:
         need_file("calibration_file")
-    if action == Action.PIPELINE and options.population != Population.COINCIDENCE:
-        issue("output_format", "Complete pipeline requires coincidence conversion (fixed or compact)")
 
     config = FrozenMapping()
     if processing and need_file("yaml_file"):
@@ -575,17 +574,12 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             if path in seen:
                 issue("inputs", f"Duplicate selected input: {path}")
             seen.add(path)
-            if not route_accepts(action, item.format, item.population):
+            if (item.format, item.population) != MANAGER_ROUTE:   # FR-10: the library still reads fixed
                 issue("inputs", f"Unsupported format/population for {action.value}: {path}")
             resolved.append(replace(item, path=path))
         inputs = tuple(resolved)
-        if action == Action.CALIBRATE and len({(item.format, item.population) for item in inputs}) > 1:
-            issue("inputs", "Do not mix formats or group and coincidence files in one calibration")
-        if action == Action.LISTMODE and len({item.format for item in inputs}) > 1:
-            issue("inputs", "Do not mix fixed and compact files in one LM job")
     if action == Action.QC:
-        options = replace(options, duration_s=60.0 if options.source_mode == SourceMode.WITH else 180.0,
-                          output_format=DataFormat.COMPACT, population=Population.COINCIDENCE)
+        options = replace(options, duration_s=60.0 if options.source_mode == SourceMode.WITH else 180.0)
     issues = list(dict.fromkeys(issues))
     frozen_paths = freeze(paths)
     settings = None if issues else RunSettings(action, profile, options, root, frozen_paths, inputs, config)

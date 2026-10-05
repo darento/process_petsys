@@ -10,12 +10,12 @@ worker thread under a single run store:
 Action             Stages (each consumes only its predecessor's recorded outputs)
 =================  ==============================================================
 ``acquire``        acquisition
-``convert``        conversion (fixed/compact coincidence or fixed group)
-``calibrate``      calibration of the selected fixed group/coincidence files
-``listmode``       listmode of the selected fixed or compact coincidence files
+``convert``        conversion to compact coincidence (the only manager route, FR-10)
+``calibrate``      calibration of the selected compact coincidence files
+``listmode``       listmode of the selected compact coincidence files
 ``qc_analyze``     QC of the selected compact coincidence files
 ``qc``             acquisition (60/180 s preset) -> compact coincidence conversion -> QC
-``pipeline``       acquisition -> fixed or compact coincidence conversion -> calibration -> listmode
+``pipeline``       acquisition -> compact coincidence conversion -> calibration -> listmode
 =================  ==============================================================
 
 A stage succeeds only with a validated exact output set: conversion outputs
@@ -45,8 +45,9 @@ from uuid import uuid4
 from .acquisition import AcquisitionService
 from .artifacts import RunStore
 from .commands import build_acquisition, build_bias_off, build_conversion, build_internal
-from .contracts import (Action, Artifact, CommandResult, DataFormat, FrozenMapping, Identity, InputDescriptor,
-                        OutputValidation, Population, ResultStatus, RunEvent, SourceMode, freeze, to_plain)
+from .contracts import (MANAGER_ROUTE, Action, Artifact, CommandResult, DataFormat, FrozenMapping, Identity,
+                        InputDescriptor, OutputValidation, Population, ResultStatus, RunEvent, SourceMode, freeze,
+                        to_plain)
 from .runner import Clock, CommandRunner, RunnerPolicy
 from .settings import RunSettings, lm_header_metadata
 
@@ -169,9 +170,7 @@ def _basename(settings):
 
 
 def _conversion_prefix(plan):
-    if plan.conversion_population == Population.GROUP:
-        return f"{plan.basename}_group"
-    return f"{plan.basename}_coinc{'Fixed' if plan.conversion_format == DataFormat.FIXED else 'Compact'}"
+    return f"{plan.basename}_coincCompact"
 
 
 def _processing_config(settings, action):
@@ -200,10 +199,10 @@ def prepare(settings):
     fmt = population = None
     if "conversion" in stages:
         fmt, population = options.output_format, options.population
-        if action == Action.QC and (fmt, population) != (DataFormat.COMPACT, Population.COINCIDENCE):
-            issues.append("QC requires compact coincidence conversion")
-        if action == Action.PIPELINE and population != Population.COINCIDENCE:
-            issues.append("The complete pipeline requires coincidence conversion (fixed or compact)")
+        if (fmt, population) != MANAGER_ROUTE:
+            issues.append("The manager converts to compact coincidence only (FR-10)")
+    if any((item.format, item.population) != MANAGER_ROUTE for item in settings.inputs):
+        issues.append("The manager processes compact coincidence inputs only (FR-10)")
     if action == Action.QC and options.duration_s != (60.0 if options.source_mode == SourceMode.WITH else 180.0):
         issues.append("QC acquisition must use the 60 s with-source / 180 s without-source preset")
     plan = WorkflowPlan(settings, stages, Path(destination) if destination else Path("/"), _basename(settings),
@@ -224,8 +223,8 @@ def prepare(settings):
         issues.append(f"Command contract: {exc}")
     if stages[-1] in STAGE_ACTIONS:
         config_action = STAGE_ACTIONS[stages[-1]]
-    else:   # conversion output is validated against the selected map
-        config_action = Action.QC_ANALYZE if fmt == DataFormat.COMPACT else Action.CALIBRATE
+    else:   # compact conversion output is validated against the selected map
+        config_action = Action.QC_ANALYZE
     try:
         config = _processing_config(settings, config_action) if stages != ("acquisition",) else None
         if "listmode" in stages or ("calibration" in stages and options.regions > 1):
@@ -290,7 +289,7 @@ def processing_request(settings, stage, inputs, directory, context):
                                 "metadata": to_plain(lm_header_metadata(settings.profile, settings.action,
                                                                         settings.options)),
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False,
-                                "hit_limit": options.hit_limit if inputs[0].format == DataFormat.COMPACT else None},
+                                "hit_limit": options.hit_limit},      # compact LM decodes at this width (FR-22)
                        outputs={"directory": str(directory / "listmode")})
     else:
         live = settings.action == Action.QC      # offline files: source mode/duration not recorded
@@ -496,8 +495,7 @@ class WorkflowCoordinator:
 
         settings = plan.settings
         options = settings.options
-        mapping = _processing_config(settings, Action.CALIBRATE if (plan.conversion_format == DataFormat.FIXED
-                                                                   or settings.action == Action.PIPELINE)
+        mapping = _processing_config(settings, Action.CALIBRATE if settings.action == Action.PIPELINE
                                      else Action.QC_ANALYZE).mapping
         attempt = context["attempt"] = store.reserve_attempt("conversion", attempt_id="attempt-1")
         identity = attempt.identity
@@ -540,8 +538,8 @@ class WorkflowCoordinator:
                                             log_sink=self._log)
         details = {"ldat": counts, "empty_ldat": [str(a.path) for a in empty],
                    "format": plan.conversion_format.value, "population": plan.conversion_population.value,
-                   "output_check": f"structure: first {CONVERSION_CHECK_RECORDS:,} records of each file (fixed: "
-                                   "plus size arithmetic); each later stage validates the records it reads (FR-24)"}
+                   "output_check": f"structure: first {CONVERSION_CHECK_RECORDS:,} records of each file; "
+                                   "each later stage validates the records it reads (FR-24)"}
         result = self._finish(store, attempt, result, details, exclude={str(a.path) for a in empty})
         if result.status == ResultStatus.SUCCEEDED:
             context["inputs"] = tuple(a.input_descriptor for a in result.artifacts)

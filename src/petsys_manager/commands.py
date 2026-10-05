@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import sys
 
-from .contracts import Action, CommandSpec, DataFormat, Identity, Population
+from .contracts import MANAGER_ROUTE, Action, CommandSpec, Identity
 from .settings import PETSYS_PYTHON_TOOLS, RunSettings
 
 # Activation of the manager's own Python environment, removed for the PETsys Python tools (FR-23).
@@ -109,16 +109,14 @@ def build_conversion(settings: RunSettings, identity: Identity, output_prefix, *
     # PETsys expects a prefix. Only its known .rawf suffix is stripped; arbitrary
     # dotted basenames and acquisition time are not parsed for metadata.
     prefix = raw.with_suffix("") if raw.suffix == ".rawf" else raw
-    if options.output_format == DataFormat.FIXED and not settings.profile.capabilities.fixed_output_confirmed:
-        raise ValueError("Installed converter fixed-output support is unconfirmed")
-    tool = "convert_raw_to_group" if options.population == Population.GROUP else "convert_raw_to_coincidence"
-    flag = "--writeBinaryFixed" if options.output_format == DataFormat.FIXED else "--writeBinaryCompact"
+    if (options.output_format, options.population) != MANAGER_ROUTE:
+        raise ValueError("The manager converts to compact coincidence only (FR-10)")
     arguments = ["--config", str(_path(settings, "ini_file")), "-i", str(prefix), "-o",
-                 str(_absolute(output_prefix, "output prefix")), flag, "--writeMultipleHits",
+                 str(_absolute(output_prefix, "output prefix")), "--writeBinaryCompact", "--writeMultipleHits",
                  str(options.hit_limit)]
     if options.splits > 1:
         arguments.extend(("--splitTime", str(options.duration_s / options.splits + 0.1)))
-    return _external(settings, identity, tool, tuple(arguments), environment)
+    return _external(settings, identity, "convert_raw_to_coincidence", tuple(arguments), environment)
 
 
 def build_internal(settings: RunSettings, identity: Identity, processing_action, request_path, result_path,

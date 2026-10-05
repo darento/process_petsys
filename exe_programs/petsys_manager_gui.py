@@ -12,8 +12,9 @@ complete pipeline actions (T16). Each result shows the recorded run directory
 and the exact validated outputs; a later stage only ever consumes its
 predecessor's recorded outputs, and nothing here edits a field or the profile
 on behalf of a run. Conversion duration, splits and hit limit are explicit
-settings, never read from a file name; an LDAT's format and population are
-declared and confirmed by the operator, never guessed from its extension.
+settings, never read from a file name. The manager converts and processes
+compact coincidence only (FR-10); the operator confirms that listed LDAT files
+are compact coincidence, since an extension cannot tell.
 Nothing launches at startup. Closing stops the workflow, waits for its bias-off,
 then stops the owned DAQD, while the window keeps polling.
 """
@@ -78,7 +79,7 @@ ISSUE_LABELS.update({name: label.rstrip(":") for name, label in DAQ_FIELDS.items
 ISSUE_LABELS.update({
     "platform": "Platform", "raw_input": "RAW Data File", "inputs": "Input LDAT files",
     "map_file": "Map file named by the processing YAML", "output_format": "Conversion format",
-    "capabilities.fixed_output_confirmed": "Converter fixed output", "options": "Run options",
+    "options": "Run options",
     "settings": "Settings", "profile": "Profile",
 })
 # LM header metadata, saved in the profile (FR-12): name -> (label, type). Empty means unavailable.
@@ -106,21 +107,18 @@ HIDDEN_ARTIFACTS = {"processing_request", "processing_result"}
 QC_PRESET_S = {SourceMode.WITH: 60.0, SourceMode.WITHOUT: 180.0}   # display of the preflight preset
 SPLIT_TIME_OFFSET_S = 0.1  # display of commands.build_conversion's --splitTime rule
 # Declared LDAT content: key -> (label, format, population). Bytes/extension cannot prove it.
+# The manager's only route is compact coincidence (FR-10, 2026-10-05).
 DECLARED = {
-    "fixed_coincidence": ("Fixed coincidence", DataFormat.FIXED, Population.COINCIDENCE),
-    "fixed_group": ("Fixed group", DataFormat.FIXED, Population.GROUP),
     "compact_coincidence": ("Compact coincidence", DataFormat.COMPACT, Population.COINCIDENCE),
 }
 # Processing input lists: check key -> (frame title, default declaration).
 SELECTIONS = {
-    "calibrate": ("Input LDAT Files (fixed coincidence, fixed group or compact coincidence)", "fixed_coincidence"),
-    "listmode": ("Input LDAT Files (fixed or compact coincidence)", "fixed_coincidence"),
+    "calibrate": ("Input LDAT Files (compact coincidence)", "compact_coincidence"),
+    "listmode": ("Input LDAT Files (compact coincidence)", "compact_coincidence"),
     "qc_analyze": ("Existing LDAT Files for Offline QC (compact coincidence)", "compact_coincidence"),
 }
 # Which processing lists may take a conversion's validated outputs.
-OUTPUT_TARGETS = {(DataFormat.FIXED, Population.COINCIDENCE): ("calibrate", "listmode"),
-                  (DataFormat.FIXED, Population.GROUP): ("calibrate",),
-                  (DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "listmode", "qc_analyze")}
+OUTPUT_TARGETS = {(DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "listmode", "qc_analyze")}
 SPLIT_NAME = re.compile(r"(.+)_(\d+)\.ldat\Z")
 MAX_FOLDER_ENTRIES = 20000  # bound for the split-sibling folder scan
 PROBE_RECORDS = 10000
@@ -135,7 +133,6 @@ CHECKS = {
     "acquire": (Action.ACQUIRE, "Acquire Data", 0),
     "pipeline": (Action.PIPELINE, "Complete Pipeline", 0),
     "convert_coincidence": (Action.CONVERT, "Convert Raw to Coincidence", 1),
-    "convert_group": (Action.CONVERT, "Convert Raw to Group", 1),
     "calibrate": (Action.CALIBRATE, "Create Energy cal file", 2),
     "listmode": (Action.LISTMODE, "Generate LM File", 3),
     "qc": (Action.QC, "Run Quality Control", 4),
@@ -147,9 +144,9 @@ ctk.set_default_color_theme("blue")
 
 
 ROUTE_NEEDS = {  # what each processing action consumes (plan route table)
-    "calibrate": "Energy calibration takes fixed coincidence, fixed group or compact coincidence files",
-    "listmode": "LM generation takes fixed or compact coincidence files, not group files",
-    "qc_analyze": "Offline QC takes compact coincidence files (convert with Compact output)",
+    "calibrate": "Energy calibration takes compact coincidence files",
+    "listmode": "LM generation takes compact coincidence files",
+    "qc_analyze": "Offline QC takes compact coincidence files",
 }
 WRONG_ROUTE = re.compile(r"Unsupported format/population for (\w+): ")
 
@@ -208,7 +205,7 @@ def megabytes(size):
 
 
 class InputSelection:
-    """A processing tab's exact ordered LDAT list and its declared, confirmed format/population (FR-10/FR-11).
+    """A processing tab's exact ordered LDAT list, confirmed as compact coincidence (FR-10/FR-11).
 
     Main thread only. Nothing is matched by wildcard: picking one split file offers
     the other splits of exactly that prefix for confirmation. Structure checks run
@@ -244,14 +241,9 @@ class InputSelection:
                                     ("clear", "Clear", self.clear), ("check", "Check structure", self.check)):
             self.buttons[name] = ctk.CTkButton(row, text=text, width=90, command=command)
             self.buttons[name].pack(side="left", padx=(0, 6))
-        declared = ctk.CTkFrame(frame, fg_color="transparent")
-        declared.grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=2)
-        ctk.CTkLabel(declared, text="Declared content:").pack(side="left", padx=(0, 6))
-        for value, (label, _, _) in DECLARED.items():
-            ctk.CTkRadioButton(declared, text=label, variable=self.declared, value=value).pack(side="left", padx=4)
         self.confirm_check = ctk.CTkCheckBox(
             frame, variable=self.confirmed,
-            text="I confirm the listed files have this format and population (an .ldat name cannot tell)")
+            text="I confirm the listed files are compact coincidence (an .ldat name cannot tell)")
         self.confirm_check.grid(row=4, column=0, columnspan=4, sticky="w", padx=10, pady=2)
         self.summary = ctk.CTkLabel(frame, text="", justify="left", anchor="w", wraplength=780)
         self.summary.grid(row=5, column=0, columnspan=4, sticky="w", padx=10, pady=(2, 0))
@@ -275,7 +267,7 @@ class InputSelection:
 
     def confirmation_issue(self):
         if self.paths and not self.confirmed.get():
-            return "Confirm the declared format and population of the listed files (legacy .ldat is ambiguous)"
+            return "Confirm that the listed files are compact coincidence (an .ldat name cannot tell)"
         return None
 
     def _declared_changed(self, *_):
@@ -493,9 +485,6 @@ class PETsysManager:
         self.convert_duration = tk.StringVar(root, "10")  # explicit; never parsed from the RAW name
         self.positions = tk.StringVar(root, "5")          # calibration positions per slab (FR-21)
         self.hit_limit = tk.StringVar(root, "16")
-        self.coincidence_format = tk.StringVar(root, DataFormat.FIXED.value)
-        self.pipeline_format = tk.StringVar(root, DataFormat.FIXED.value)   # FR-22: compact without the fork
-        self.fixed_confirmed = tk.BooleanVar(root, False)  # profile capability
         self.qc_source = tk.StringVar(root, SourceMode.WITH.value)
         self.qc_plots = tk.BooleanVar(root, False)
         self.qc_slabs = tk.BooleanVar(root, False)
@@ -505,8 +494,7 @@ class PETsysManager:
         self._build()
         for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
-                         self.positions, self.coincidence_format, self.pipeline_format, self.fixed_confirmed,
-                         self.qc_source,
+                         self.positions, self.qc_source,
                          self.qc_plots, self.qc_slabs, self.lm_debug):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
@@ -648,12 +636,6 @@ class PETsysManager:
         pipeline = self._frame(right, "Complete Automated Pipeline")
         ctk.CTkLabel(pipeline, text="Execute complete workflow:\nAcquire → Convert → Calibrate → Generate LM",
                      font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=20, pady=10)
-        formats = ctk.CTkFrame(pipeline, fg_color="transparent")
-        formats.grid(row=6, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
-        ctk.CTkLabel(formats, text="Conversion:").pack(side="left", padx=(0, 6))
-        for text, value in (("Fixed", DataFormat.FIXED), ("Compact", DataFormat.COMPACT)):
-            ctk.CTkRadioButton(formats, text=text, variable=self.pipeline_format, value=value.value).pack(
-                side="left", padx=4)
         big = {"font": ctk.CTkFont(size=16, weight="bold"), "height": 50}
         self._button(pipeline, "pipeline", "> RUN COMPLETE PIPELINE", fg_color=GREEN, hover_color=GREEN_HOVER,
                      command=self.run_pipeline, **big).grid(row=2, column=0, columnspan=2, padx=20, pady=10,
@@ -682,20 +664,10 @@ class PETsysManager:
         self.split_plan = ctk.CTkLabel(settings, text="", **small)
         self.split_plan.grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         options = self._frame(tab, "Conversion Options")
-        formats = ctk.CTkFrame(options, fg_color="transparent")
-        formats.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
-        ctk.CTkLabel(formats, text="Coincidence output:").pack(side="left", padx=(0, 6))
-        for text, value in (("Fixed (calibration / LM)", DataFormat.FIXED),
-                            ("Compact (calibration / LM / QC)", DataFormat.COMPACT)):
-            ctk.CTkRadioButton(formats, text=text, variable=self.coincidence_format, value=value.value).pack(
-                side="left", padx=4)
-        ctk.CTkCheckBox(options, variable=self.fixed_confirmed,
-                        text="Installed converters support fixed output (--writeBinaryFixed); saved in the profile"
-                        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(options, text="Output: compact coincidence (--writeBinaryCompact), for calibration, LM and QC",
+                     **small).grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
         self._button(options, "convert_coincidence", "Convert Raw to Coincidence",
-                     command=lambda: self.convert(group=False)).grid(row=3, column=0, padx=20, pady=10)
-        self._button(options, "convert_group", "Convert Raw to Group (fixed)",
-                     command=lambda: self.convert(group=True)).grid(row=3, column=1, padx=20, pady=10)
+                     command=self.convert).grid(row=3, column=0, padx=20, pady=10)
         self._button(options, "convert_stop", "STOP", width=100, fg_color=RED, hover_color=RED_HOVER,
                      command=self.stop).grid(row=3, column=2, padx=20, pady=10)
         status = self._frame(tab, "Conversion Result")
@@ -703,7 +675,7 @@ class PETsysManager:
         self.convert_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
         self._button(status, "use_outputs", "Use these outputs as processing inputs",
                      command=self.use_conversion_outputs).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
-        self._readiness(tab, ("convert_coincidence", "convert_group"))
+        self._readiness(tab, ("convert_coincidence",))
 
     def _ldat_tab(self, tab):
         self._selection(tab, "calibrate")
@@ -1113,7 +1085,7 @@ class PETsysManager:
         }
         for key in LIVE_KEYS:
             enable[key] = not busy and system and self._ready.get(key, False)
-        for key in ("convert_coincidence", "convert_group", *PROCESSING_KEYS):
+        for key in ("convert_coincidence", *PROCESSING_KEYS):
             enable[key] = not busy and self._ready.get(key, False)
         for key in STOP_KEYS:
             enable[key] = self._token is not None and not self._stop_requested and not self._shutting_down
@@ -1177,17 +1149,16 @@ class PETsysManager:
             self._start(profile, Action.ACQUIRE, options, self.acq_status, "Starting acquisition...")
         self._refresh_controls()
 
-    def convert(self, group=False):
-        """Manual conversion of the selected RAW with the explicit duration/split/hit settings shown."""
-        key = "convert_group" if group else "convert_coincidence"
+    def convert(self):
+        """Manual compact coincidence conversion of the selected RAW with the explicit duration/split/hit settings."""
+        key = "convert_coincidence"
         profile = self._profile_or_log()
         requests, issues = self.requests()
         if key in issues:
             self.log(f"{CHECKS[key][1]} not started: " + "; ".join(issue.message for issue in issues[key]))
         elif profile is not None:
-            options = requests[key][1]
-            what = "fixed group" if group else f"{options.output_format.value} coincidence"
-            self._start(profile, Action.CONVERT, options, self.convert_status, f"Starting {what} conversion...")
+            self._start(profile, Action.CONVERT, requests[key][1], self.convert_status,
+                        "Starting compact coincidence conversion...")
         self._refresh_controls()
 
     def _start(self, profile, action, options, label, text, inputs=()):
@@ -1267,8 +1238,6 @@ class PETsysManager:
     def _update_conversion_plan(self):
         """Exact converter input/output naming and split time for the current fields (display only)."""
         raw = self.raw_input.get().strip()
-        group = "_group"
-        coincidence = "_coincFixed" if self.coincidence_format.get() == DataFormat.FIXED.value else "_coincCompact"
         if raw:
             path = Path(raw)
             prefix = path.with_suffix("") if path.suffix == ".rawf" else path
@@ -1276,7 +1245,7 @@ class PETsysManager:
             if path.suffix != ".rawf":
                 text += "\nWARNING: select the acquisition's .rawf file"
             text += (f"\nOutputs: a new run folder in the Output Data Folder, conversion/attempt-1/"
-                     f"{prefix.name}{coincidence}[_<n>].ldat (group: {prefix.name}{group}[_<n>].ldat)")
+                     f"{prefix.name}_coincCompact[_<n>].ldat")
         else:
             text = "Select the RAW acquisition (.rawf); any file name is accepted"
         self.raw_plan.configure(text=text)
@@ -1296,7 +1265,7 @@ class PETsysManager:
                       "hits per side (RAWF to LDAT tab)")
         acq_time = self.acq_time.get().strip() or '?'
         self.pipeline_plan.configure(
-            text=f"This run: acquire {acq_time} s -> {self.pipeline_format.get()} coincidence conversion, "
+            text=f"This run: acquire {acq_time} s -> compact coincidence conversion, "
                  f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
                  f"Processing tab) -> LM with the LM tab files and metadata, header acquisition/measurement time "
                  f"{acq_time} s (Acq. Time). Every stage stays in a new run folder in the Output Data Folder.")
@@ -1325,7 +1294,6 @@ class PETsysManager:
                 value = getattr(profile.lm_metadata, name)
                 self.lm_vars[name].set("" if value is None else format(value, ".15g") if type(value) is float
                                        else str(value))
-            self.fixed_confirmed.set(profile.capabilities.fixed_output_confirmed)
         finally:
             self._loading = False
         self._update_profile_status()
@@ -1340,8 +1308,6 @@ class PETsysManager:
         values["cards"] = tuple(card.strip() for card in self.vars["cards"].get().split(",") if card.strip())
         values["safety"] = self.safety_from_ui()
         values["lm_metadata"] = self.lm_metadata_from_ui()
-        values["capabilities"] = replace(self.session.profile.capabilities,
-                                         fixed_output_confirmed=self.fixed_confirmed.get())
         return replace(self.session.profile, **values)
 
     def lm_metadata_from_ui(self):
@@ -1390,7 +1356,7 @@ class PETsysManager:
                     reason(key, "options", f"{label} must be {'a positive integer' if kind is int else 'a positive number'}")
 
         duration = number(self.acq_time, float, "Acq. Time (s)", ("acquire", "pipeline"))
-        conversions = ("convert_coincidence", "convert_group")
+        conversions = ("convert_coincidence",)
         splits = number(self.splits, int, "Number of Split Files", (*conversions, "pipeline", "qc"))
         raw_duration = number(self.convert_duration, float, "RAW Acquisition Duration (s)", conversions)
         hits = number(self.hit_limit, int, "Max Hits per Side", (*conversions, "pipeline", "qc"))
@@ -1403,16 +1369,12 @@ class PETsysManager:
             if key == "calibrate":
                 if positions is not None:
                     add(key, selection.descriptors(), regions=positions)
-            elif key == "listmode":
-                descriptors = selection.descriptors()
-                if any(d.format == DataFormat.COMPACT for d in descriptors):   # FR-22: decoded at this width
-                    if hits is None:
-                        reason(key, "options", "Max Hits per Side (RAWF to LDAT tab) must be a positive integer: "
-                                               "compact LM decodes at the conversion hit limit")
-                    else:
-                        add(key, descriptors, debug=self.lm_debug.get(), hit_limit=hits)
+            elif key == "listmode":   # compact LM decodes at the conversion hit limit (FR-22)
+                if hits is None:
+                    reason(key, "options", "Max Hits per Side (RAWF to LDAT tab) must be a positive integer: "
+                                           "compact LM decodes at the conversion hit limit")
                 else:
-                    add(key, descriptors, debug=self.lm_debug.get())
+                    add(key, selection.descriptors(), debug=self.lm_debug.get(), hit_limit=hits)
             else:
                 add(key, selection.descriptors(), **qc)
             problem = selection.confirmation_issue()
@@ -1420,16 +1382,13 @@ class PETsysManager:
                 reason(key, "inputs", problem)
         if duration is not None:
             add("acquire", duration_s=duration, hardware_trigger=self.hw_trigger.get())
-            if None not in (splits, hits, positions):   # fixed or compact coincidence (FR-22)
+            if None not in (splits, hits, positions):   # compact coincidence conversion (FR-10)
                 add("pipeline", duration_s=duration, hardware_trigger=self.hw_trigger.get(), splits=splits,
-                    hit_limit=hits, output_format=DataFormat(self.pipeline_format.get()),
-                    population=Population.COINCIDENCE,
-                    regions=positions, debug=self.lm_debug.get())
+                    hit_limit=hits, regions=positions, debug=self.lm_debug.get())
         if None not in (splits, raw_duration, hits):
             common = dict(splits=splits, duration_s=raw_duration, hit_limit=hits,
                           raw_input=self.raw_input.get().strip() or None)
-            add("convert_coincidence", output_format=DataFormat(self.coincidence_format.get()), **common)
-            add("convert_group", population=Population.GROUP, **common)
+            add("convert_coincidence", **common)
         if None not in (splits, hits):   # duration and compact format: the preflight's source preset
             add("qc", source_mode=SourceMode(self.qc_source.get()), splits=splits, hit_limit=hits, **qc)
         return requests, issues

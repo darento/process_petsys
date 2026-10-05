@@ -20,7 +20,7 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
 - **Smooth fonts on Linux:** conda-forge's default `tk` is built without Xft, so Tk shows only bitmap fonts (pixelated text; on the Cornell machine 47 font families against 336 for the system Python). Install the Xft build: `conda install -n process_petsys -c conda-forge "tk=8.6.13=xft*"`; check with `conda run -n process_petsys python -c "import tkinter; r=tkinter.Tk(); print(len(r.tk.call('font','families')))"`. Linux only, so it is not in the shared `process_petsys.yml`.
 - **Legacy editable install:** an old `event-petsys` editable install (from the package's former name) makes `conda list`/`conda install` fail with `Expected exactly one egg-info directory`. Replace it: `pip uninstall -y event-petsys`, move `event_petsys.egg-info` out of the checkout, then `python -s -m pip install --no-deps -e .`.
 - **A desktop session** for the Tk window. Processing runs in background child processes and does not need the display.
-- **The PETsys `sw_daq_tofpet2` tools folder**, containing `daqd`, `init_system`, `acquire_sipm_data`, `set_bias`, `convert_raw_to_coincidence` and `convert_raw_to_group`. Fixed output needs a converter build with `--writeBinaryFixed` (not in stock PETsys; check with `strings <tools>/convert_raw_to_coincidence | grep -i fixed`) and confirmation in the profile (`capabilities.fixed_output_confirmed`). Without it, use compact: calibration, LM and the pipeline all accept compact coincidence.
+- **The PETsys `sw_daq_tofpet2` tools folder**, containing `daqd`, `init_system`, `acquire_sipm_data`, `set_bias` and `convert_raw_to_coincidence`. The manager converts to compact coincidence only (`--writeBinaryCompact`, stock PETsys); calibration, LM, QC and the pipeline all use it.
 - **The Python PETsys was installed for.** `init_system`, `acquire_sipm_data` and `set_bias` are Python scripts (`#!/usr/bin/env python3`) that need that interpreter's packages (`bitarray`, `pandas`). On the Cornell machine this is the system `/usr/bin/python3`; the `process_petsys` env lacks `bitarray`. Set `petsys_python` in the profile so the manager runs them with it (FR-23); check with `/usr/bin/python3 -c "import bitarray, pandas"`.
 - **DAQ character devices** for `PFP_KX7` (one or two; the default is `/dev/psdaq1`, `/dev/psdaq0`).
 - **The default DAQD socket `/tmp/d.sock`.** A custom socket stays refused unless `capabilities.custom_socket_confirmed` is set after checking that every tool honours it.
@@ -84,7 +84,6 @@ limits:
   qc_pair_limit: 1000001                     # accepted pairs per file (reference)
   log_tail_lines: 1000
 capabilities:
-  fixed_output_confirmed: false              # set true only after checking the converter
   custom_socket_confirmed: false
   installed_version: null
 lm_metadata:                                 # written into every LM header; all required
@@ -118,15 +117,14 @@ These files are machine- and system-specific, are not in the repository, and are
 |---|---|---|
 | Start DAQD / Initialize | profile tools, cards, INI | owned `daqd`; initialization valid for this daemon, INI and cards |
 | Acquire | Acq. Time, optional hardware trigger | `.rawf`/`.idxf` (`data_dir`) |
-| Convert, coincidence | `.rawf` | fixed **or** compact coincidence `.ldat`, chosen explicitly (`data_dir`) |
-| Convert, group | `.rawf` | fixed group `.ldat` (`data_dir`) |
-| Create energy cal file | fixed coincidence, fixed group or compact coincidence `.ldat`; positions per slab P | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
-| Generate LM file | fixed **or** compact coincidence `.ldat` (compact is read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
+| Convert, coincidence | `.rawf` | compact coincidence `.ldat` (`data_dir`) |
+| Create energy cal file | compact coincidence `.ldat`; positions per slab P | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
+| Generate LM file | compact coincidence `.ldat` (read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
 | Run quality control (live) | 60 s with source or 180 s without (fixed presets) | compact coincidence conversion, then QC report (run folder in `data_dir`) |
 | Analyze existing compact LDAT | **compact coincidence** `.ldat` | QC report (`report_dir/<run>`) |
-| Run complete pipeline | Acq. Time, splits, max hits, positions per slab, Fixed/Compact conversion | acquire → fixed or compact coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
+| Run complete pipeline | Acq. Time, splits, max hits, positions per slab | acquire → compact coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
 
-`.ldat` files carry no reliable format marker, so every input list states its format and population and must be confirmed before use. Each stage checks the records it reads (hit counts, truncation, channels of the selected map, finite energies) in the same pass, before publishing anything from them, and never reads a file only to check it (FR-24): conversion checks the first 10,000 records of each output (fixed: plus the size arithmetic) and records them as structure-checked; LM reads and checks whole files once; calibration stops at its passing-event limit; QC checks its sample. Records a stage does not read are not checked, and its provenance says so (QC: records in the file are known only when the whole file was read). A defect after the first 10,000 records fails the first stage that reads it.
+`.ldat` files carry no reliable format marker, so every input list must be confirmed as compact coincidence before use. Each stage checks the records it reads (hit counts, truncation, channels of the selected map, finite energies) in the same pass, before publishing anything from them, and never reads a file only to check it (FR-24): conversion checks the first 10,000 records of each output and records them as structure-checked; LM reads and checks whole files once; calibration stops at its passing-event limit; QC checks its sample. Records a stage does not read are not checked, and its provenance says so (QC: records in the file are known only when the whole file was read). A defect after the first 10,000 records fails the first stage that reads it.
 
 Not available: singles counts (LDAT coincidence records contain two detectors, not a singles population), keV energies in QC (QC reports raw a.u.), calibrated DOI depth (the DOI value is a light-sharing ratio), and hardware actions off the Cornell Linux machine.
 
@@ -151,7 +149,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - An existing `.encal` row with μ ≤ 0 (a failed legacy fit) is read as "no factor", as the reference LM does: its pairs are rejected as missing calibration, and the keys are listed in the LM provenance and as a warning in the log. Nothing is estimated in their place; to fill them from neighbours, make a new calibration, whose status file labels borrowed and estimated keys.
   - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.
-- **Compact LM:** compact input is decoded at the Max Hits per Side of its conversion (a side with more hits refuses the file) and gives the same `.lm` file as fixed input of the same events. Do not mix fixed and compact files in one LM job.
+- **Compact LM:** compact input is decoded at the Max Hits per Side of its conversion (a side with more hits refuses the file) and gives the same `.lm` file as the reference's fixed input of the same events (checked in the library).
 - **LM header:** the 11 metadata fields come from the profile. Empty fields block LM; there are no hardcoded values. The pipeline writes its own Acq. Time as the acquisition and measurement time.
 
 ## Runtime module map

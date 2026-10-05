@@ -36,9 +36,14 @@ class SourceMode(str, Enum):
     WITHOUT = "without"
 
 
+MANAGER_ROUTE = (DataFormat.COMPACT, Population.COINCIDENCE)
+"""The only content the manager converts and processes (FR-10, owner decision 2026-10-05)."""
+
+
 def route_accepts(action, data_format, population):
-    """Format routes: calibration takes fixed coincidence/group or compact coincidence (FR-21);
-    LM and the pipeline fixed or compact coincidence (FR-22); offline QC compact coincidence."""
+    """Library format routes: calibration takes fixed coincidence/group or compact coincidence (FR-21);
+    LM and the pipeline fixed or compact coincidence (FR-22); offline QC compact coincidence.
+    The manager narrows every route to ``MANAGER_ROUTE``; the library keeps fixed for existing files."""
     action, data_format, population = Action(action), DataFormat(data_format), Population(population)
     if action == Action.CALIBRATE:
         return data_format == DataFormat.FIXED or population == Population.COINCIDENCE
