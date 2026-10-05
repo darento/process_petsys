@@ -306,7 +306,8 @@ def processing_request(settings, stage, inputs, directory, context):
                                 "metadata": to_plain(lm_header_metadata(settings.profile, settings.action,
                                                                         settings.options)),
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False,
-                                "hit_limit": options.hit_limit},      # compact LM decodes at this width (FR-22)
+                                "hit_limit": options.hit_limit,       # compact LM decodes at this width (FR-22)
+                                "lm_seed": limits.lm_seed, "workers": resolve_workers(limits.workers)},
                        outputs={"directory": str(directory / "listmode")})
     else:
         live = settings.action == Action.QC      # offline files: source mode/duration not recorded

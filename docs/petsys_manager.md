@@ -83,6 +83,7 @@ limits:
   calibration_event_limit: 10000000          # reference mode: passing coincidences per file
   calibration_target_per_key: 3000           # target mode: T kept sides per histogram
   calibration_memory_mb: 8192                # target mode: read each file once if its selected events fit
+  lm_seed: 0                                 # LM: seed of the per-file random streams (ambiguous slabs)
   qc_pair_limit: 1000001                     # accepted pairs per file (reference)
   log_tail_lines: 1000
 capabilities:
@@ -154,6 +155,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - An existing `.encal` row with μ ≤ 0 (a failed legacy fit) is read as "no factor", as the reference LM does: its pairs are rejected as missing calibration, and the keys are listed in the LM provenance and as a warning in the log. Nothing is estimated in their place; to fill them from neighbours, make a new calibration, whose status file labels borrowed and estimated keys.
   - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.
+- **Parallel LM and seed:** LM processes its files in `workers` processes and merges them in the same order. The random slab choice for ambiguous sides uses one stream per file, derived from the profile's `lm_seed` and the file's position, so the same inputs and seed give the same `.lm` on every run and for any worker count; the provenance records the seeds. (The reference used one unseeded stream, so its reruns differed slightly.)
 - **Compact LM:** compact input is decoded at the Max Hits per Side of its conversion (a side with more hits refuses the file) and gives the same `.lm` file as the reference's fixed input of the same events (checked in the library).
 - **LM header:** the 11 metadata fields come from the profile. Empty fields block LM; there are no hardcoded values. The pipeline writes its own Acq. Time as the acquisition and measurement time.
 

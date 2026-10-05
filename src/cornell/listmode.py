@@ -919,9 +919,16 @@ def _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
     return compact_chunks(descriptor, mapped, hit_limit, batch_records)
 
 
+def file_seed(lm_seed, index):
+    """The NumPy seed of one file's stream (FR-22, T25.5): fixed by the LM seed and the merge position."""
+    return int(np.random.SeedSequence([lm_seed, index]).generate_state(1)[0])
+
+
 def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, batch_records, debug,
-                  cancelled, progress, index, hit_limit=None):
+                  cancelled, progress, index, hit_limit=None, seed=None):
     # FR-24: one pass; each record is validated as it is read, before the merged LM exists.
+    if seed is not None:
+        np.random.seed(seed)      # this file's own stream; the slab rule keeps its reference call order inside
     before = os.stat(descriptor.path)
     fixed = descriptor.format == DataFormat.FIXED
     if fixed:
@@ -976,6 +983,22 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
     item = FileListmode(Path(descriptor.path), records, records, written, rejected, observations,
                         slab_flags, segment, digest.hexdigest(), record["segment"]["bytes"])
     return item, file_debug
+
+
+_LM_WORKER = {}
+
+
+def _lm_worker_init(event, ctx, mapping, segments, job_sha256, options):
+    """Per LM worker process: the shared context (sent once), the job and the cancellation event."""
+    _LM_WORKER.clear()
+    _LM_WORKER.update(ctx=ctx, mapping=mapping, segments=segments, job_sha256=job_sha256, options=options,
+                      cancelled=event.is_set)
+
+
+def _lm_task(descriptor, job_input, index, seed):
+    w = _LM_WORKER
+    return _process_file(descriptor, w["ctx"], w["mapping"], w["segments"], w["job_sha256"], job_input,
+                         cancelled=w["cancelled"], progress=None, index=index, seed=seed, **w["options"])
 
 
 def _merge(destination, name, header, files):
@@ -1042,6 +1065,8 @@ def sidecar(output, sha256, records, files, job, header_fields, *, resumed, igno
         "sources": {key: job[key] for key in ("processing_config", "map", "calibration", "cog_limits",
                                               "doi_limits", "pair_map", "region_map")},
         "merge_order": "natural basename order (reference natsorted)",
+        "random_streams": job.get("random_streams") or {
+            "lm_seed": None, "rule": "reference: one unseeded NumPy stream continuing across files"},
         "inputs": [{"path": str(f.path), "validated_records": f.validated_records, "records_read": f.records_read,
                     "records_written": f.records_written, "rejected": f.rejected, "observations": f.observations,
                     "slab_flags": {str(k): v for k, v in sorted(f.slab_flags.items())},
@@ -1058,32 +1083,67 @@ def sidecar(output, sha256, records, files, job, header_fields, *, resumed, igno
 
 def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
                       destination, *, resume=False, debug=False, batch_records=DEFAULT_BATCH_RECORDS,
-                      cancelled=None, progress=None, hit_limit=None):
+                      cancelled=None, progress=None, hit_limit=None, lm_seed=None, workers=1):
     """Validate, stream one segment per input, merge with the supplied header and write provenance.
 
     ``hit_limit``: the conversion hit limit, required for compact input only (FR-22).
+    ``lm_seed`` (FR-22, T25.5): each file's ambiguous-slab draws come from its own NumPy stream,
+    ``file_seed(lm_seed, index)``, so the .lm is the same on every run and for any ``workers`` count; None
+    keeps the reference's one stream continuing across files (one worker only). ``workers`` > 1 processes
+    files in spawned worker processes (``src.cornell.parallel``); segments are merged in the same order.
     """
     descriptors = _check_request(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions,
                                  metadata, batch_records, hit_limit)
+    if lm_seed is not None and (type(lm_seed) is not int or not 0 <= lm_seed < 2 ** 63):
+        raise InputError("lm_seed must be a non-negative integer or None")
+    if type(workers) is not int or workers < 1:
+        raise InputError("workers must be a positive integer (resolve 0 = automatic before LM)")
+    if workers > 1 and lm_seed is None:
+        raise InputError("Parallel LM needs lm_seed: one random stream per file, independent of the workers")
     ctx = ListmodeContext.build(config, calibration, cog_limits, doi_limits, pairs, regions, metadata)
     job = job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
                      batch_records, debug, hit_limit)
+    seeds = None if lm_seed is None else [file_seed(lm_seed, index) for index in range(len(descriptors))]
+    if lm_seed is not None:            # part of the job digest: resume reuses only segments of the same seed
+        job["random_streams"] = {"lm_seed": lm_seed, "file_seeds": seeds}
     job_sha256 = _digest(job)
     completed, ignored = _prepare(destination, job, resume)
     destination = Path(destination)
     segments = destination / SEGMENTS
-    files, total_debug = [], DebugSummary() if debug else None
+    files, total_debug = [None] * len(descriptors), DebugSummary() if debug else None
+
+    def keep(index, value):                  # debug summaries are sums: merged at once, never retained per file
+        files[index], file_debug = value
+        if total_debug is not None:
+            total_debug.merge(file_debug)
+    todo = []
     for index, (descriptor, job_input) in enumerate(zip(descriptors, job["inputs"])):
         name = segment_name(descriptor.path)
         if name in completed:
-            item, file_debug = _reuse(completed[name], job_sha256, job_input, debug)
+            keep(index, _reuse(completed[name], job_sha256, job_input, debug))
         else:
-            item, file_debug = _process_file(descriptor, ctx, config.mapping, segments, job_sha256, job_input,
-                                             batch_records=batch_records, debug=debug, cancelled=cancelled,
-                                             progress=progress, index=index, hit_limit=hit_limit)
-        files.append(item)
-        if total_debug is not None:
-            total_debug.merge(file_debug)
+            todo.append((index, descriptor, job_input))
+    options = dict(batch_records=batch_records, debug=debug, hit_limit=hit_limit)
+    if workers == 1:
+        for index, descriptor, job_input in todo:
+            keep(index, _process_file(descriptor, ctx, config.mapping, segments, job_sha256, job_input,
+                                      cancelled=cancelled, progress=progress, index=index,
+                                      seed=None if seeds is None else seeds[index], **options))
+    elif todo:
+        from .parallel import OrderedPool, PoolCancelled
+
+        def done(position, value):
+            index, descriptor, _ = todo[position]
+            keep(index, value)
+            if progress is not None:
+                progress(index, descriptor.path, value[0].records_read, value[0].records_written)
+        try:
+            with OrderedPool(min(workers, len(todo)), _lm_worker_init,
+                             (ctx, config.mapping, segments, job_sha256, options), cancelled) as pool:
+                pool.run(_lm_task, [(descriptor, job_input, index, seeds[index])
+                                    for index, descriptor, job_input in todo], done)
+        except PoolCancelled:
+            raise ListmodeCancelled("Listmode cancelled") from None
     if cancelled is not None and cancelled():
         raise ListmodeCancelled("Listmode cancelled before merging")
     header = header_bytes(metadata)

@@ -96,12 +96,13 @@ class ProcessingLimits:
     calibration_event_limit: int = 10_000_000   # reference mode: a file stops once more events have passed
     calibration_target_per_key: int = 3_000     # target mode: T kept sides per histogram (FR-21)
     calibration_memory_mb: int = 8_192          # target mode: decode each file once within this budget (FR-15)
+    lm_seed: int = 0                            # LM: per-file random streams for ambiguous slabs (FR-22)
     qc_pair_limit: int = 1_000_001
     log_tail_lines: int = 1000
 
     def __post_init__(self):
         for item in fields(self):
-            _integer(getattr(self, item.name), item.name, minimum=0 if item.name == "workers" else 1)
+            _integer(getattr(self, item.name), item.name, minimum=0 if item.name in ("workers", "lm_seed") else 1)
 
 
 @dataclass(frozen=True)

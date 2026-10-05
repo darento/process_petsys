@@ -69,7 +69,8 @@ _SPEC = {
         "files": {"calibration": "file", "calibration_sidecar": "file?", "cog_limits": "file",
                   "doi_limits": "file", "pair_map": "file", "region_map": "file"},
         "options": {"num_regions": "int", "region_boundaries": "numbers?", "metadata": "metadata",
-                    "batch_records": "int", "debug": "bool", "resume": "bool", "hit_limit": "int?"},
+                    "batch_records": "int", "debug": "bool", "resume": "bool", "hit_limit": "int?",
+                    "lm_seed": "seed?", "workers": "int"},
         "outputs": {"directory": "job_dir"},
     },
     "qc": {
@@ -168,6 +169,9 @@ def _value(kind, value, label):
             value = SourceMode(value)
         except ValueError:
             raise RequestError(f"{label} must be 'with', 'without' or null (not recorded)") from None
+    elif kind == "seed":
+        if type(value) is not int or not 0 <= value < 2 ** 63:
+            raise RequestError(f"{label} must be a non-negative integer or null")
     elif kind == "limit_mode":
         if value not in ("reference", "target"):
             raise RequestError(f"{label} must be 'reference' or 'target'")
@@ -427,7 +431,7 @@ def run_listmode(request, events, cancelled):
         descriptors, config, calibration, cog, doi, lm.load_pair_map(files["pair_map"]),
         lm.load_region_map(files["region_map"], mapping), options["metadata"], request.outputs["directory"],
         resume=options["resume"], debug=options["debug"], batch_records=options["batch_records"],
-        hit_limit=options["hit_limit"], cancelled=cancelled,
+        hit_limit=options["hit_limit"], lm_seed=options["lm_seed"], workers=options["workers"], cancelled=cancelled,
         progress=lambda index, path, records, written: events.progress(index, len(paths), path, records,
                                                                        records_written=written))
     if cancelled():
