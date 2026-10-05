@@ -91,16 +91,17 @@ class AcquisitionSafety:
 
 @dataclass(frozen=True)
 class ProcessingLimits:
-    workers: int = 1
+    workers: int = 0                            # FR-15: worker processes; 0 = automatic (CPU count - 2, at least 1)
     batch_records: int = 5000
     calibration_event_limit: int = 10_000_000   # reference mode: a file stops once more events have passed
-    calibration_target_per_key: int = 3_000     # target mode: T events per histogram (FR-21)
+    calibration_target_per_key: int = 3_000     # target mode: T kept sides per histogram (FR-21)
+    calibration_memory_mb: int = 8_192          # target mode: decode each file once within this budget (FR-15)
     qc_pair_limit: int = 1_000_001
     log_tail_lines: int = 1000
 
     def __post_init__(self):
         for item in fields(self):
-            _integer(getattr(self, item.name), item.name)
+            _integer(getattr(self, item.name), item.name, minimum=0 if item.name == "workers" else 1)
 
 
 @dataclass(frozen=True)

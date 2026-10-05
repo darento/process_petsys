@@ -61,7 +61,8 @@ _SPEC = {
     "calibrate": {
         "files": {"cog_limits": "file?"},
         "options": {"positions": "int", "event_limit": "int?", "limit_mode": "limit_mode",
-                    "target_per_key": "int?", "batch_records": "int"},
+                    "target_per_key": "int?", "memory_budget_mb": "int?", "workers": "int",
+                    "batch_records": "int"},
         "outputs": {"encal": "new_file", "sidecar": "new_file", "status": "new_file", "plot": "new_file?"},
     },
     "listmode": {
@@ -366,12 +367,18 @@ def run_calibrate(request, events, cancelled):
     limits = (None if options["positions"] == 1 else
               load_limits(request.files["cog_limits"], config.mapping, kind="cog"))
     paths = [str(d.path) for d in descriptors]
+
+    def progress(path, records, phase="read", **extra):     # FR-1: read / pass 2 per file, fits per keys
+        index = None if path is None else paths.index(str(path))
+        events.progress(index, len(paths), f"{phase}:{path}" if path is None else path, records, phase=phase,
+                        **extra)
     result = cal.calibrate(descriptors, config, limits, positions=options["positions"],
                            event_limit=options["event_limit"], limit_mode=options["limit_mode"],
-                           target_per_key=options["target_per_key"], batch_records=options["batch_records"],
-                           cancelled=cancelled,
-                           progress=lambda path, records: events.progress(paths.index(str(path)), len(paths), path,
-                                                                          records))
+                           target_per_key=options["target_per_key"],
+                           memory_budget=(None if options["memory_budget_mb"] is None
+                                          else options["memory_budget_mb"] * 2 ** 20),
+                           batch_records=options["batch_records"], workers=options["workers"],
+                           cancelled=cancelled, progress=progress)
     if cancelled():
         raise Cancelled("Calibration cancelled")
     digest = cal.write_calibration(result, outputs["encal"], outputs["sidecar"], outputs["status"])
@@ -391,7 +398,8 @@ def run_calibrate(request, events, cancelled):
         "population": result.population.value, "region_boundaries": list(result.boundaries),
         "min_ch": result.min_ch, "en_min_ch": result.en_min_ch,
         "passing_event_limit_per_file": result.event_limit, "batch_records": result.batch_records,
-        "limit_plan": result.limit_plan, "coverage": result.coverage,
+        "limit_plan": result.limit_plan, "coverage": result.coverage, "decoding": result.decoding,
+        "workers": result.workers,
         "inputs": [{"path": str(f.path), "records_validated": f.records_validated, "records_read": f.records_read,
                     "events_passed": f.events_passed, "accepted_sides": f.accepted_sides,
                     "stopped_at_limit": f.stopped_at_limit, "rejected": f.rejected} for f in result.files],

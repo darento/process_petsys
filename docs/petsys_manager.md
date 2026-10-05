@@ -78,10 +78,11 @@ safety:                                      # acquisition monitoring (editable 
   retry_delay_s: 2.0
   terminate_grace_s: 3.0
 limits:
-  workers: 1
+  workers: 0                                 # worker processes for calibration; 0 = CPU count - 2
   batch_records: 5000
   calibration_event_limit: 10000000          # reference mode: passing coincidences per file
-  calibration_target_per_key: 3000           # target mode: T events per histogram
+  calibration_target_per_key: 3000           # target mode: T kept sides per histogram
+  calibration_memory_mb: 8192                # target mode: read each file once if its selected events fit
   qc_pair_limit: 1000001                     # accepted pairs per file (reference)
   log_tail_lines: 1000
 capabilities:
@@ -147,7 +148,9 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - Failed or partial outputs are kept and marked unvalidated.
   - A run manifest records the settings snapshot, the exact inputs and every output with its hash. Later stages use only the outputs recorded for this run, never similarly named files.
 - **Calibration:** a new `.encal` is never applied automatically. The GUI offers it for LM as an unsaved profile edit.
-  - **Event limit:** *target* (default) reads N = ⌈K × P × T / 2⌉ passing coincidences in total, ⌈N / n⌉ from each of the n files (K = time-channel × slab keys of the selected map, T = target events per histogram, saved in the profile). The LDAT Processing tab shows N and the share before the run. *Reference* stops each file after 10,000,000, as `cornell_slab_en_cal.py`; use it to compare with the reference script. The result and sidecar record the limit used and the sides each key received (minimum, median, keys below T and below the 200-event fit minimum); T is an average, so low-occupancy keys can stay below it.
+  - **Event limit:** *target* (default) keeps S = K × P × T sides in total, ⌈S / n⌉ from each of the n files; a file stops once its kept sides (sides that enter a key's histogram) exceed its share (K = time-channel × slab keys of the selected map, T = target sides per histogram, saved in the profile). The LDAT Processing tab shows S and the share before the run. *Reference* stops each file after 10,000,000, as `cornell_slab_en_cal.py`; use it to compare with the reference script. The result and sidecar record the limit used and the sides each key received (minimum, median, keys below T and below the 200-event fit minimum); T is an average, so low-occupancy keys can stay below it.
+  - **Reading once:** in target mode each file is read once when the selected events (at most (share + 2) sides per file × 16 bytes) fit `calibration_memory_mb`; otherwise, and in reference mode, each file is read twice, as the reference does. Both give identical files; the result says which was used.
+  - **Workers:** calibration reads files and fits keys in `workers` processes (0 = automatic, CPU count − 2). The files do not depend on the worker count; the sidecar records it. The status line shows the phase (read, pass 2, fits k/K keys).
   - An existing `.encal` row with μ ≤ 0 (a failed legacy fit) is read as "no factor", as the reference LM does: its pairs are rejected as missing calibration, and the keys are listed in the LM provenance and as a warning in the log. Nothing is estimated in their place; to fill them from neighbours, make a new calibration, whose status file labels borrowed and estimated keys.
   - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.

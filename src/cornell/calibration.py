@@ -62,8 +62,9 @@ MIN_EVENTS = 200
 MIN_FITTED_FOR_ESTIMATE = 4
 LINEAR_DEVIANCE_GAIN = 8
 EVENT_LIMIT = 10_000_000          # reference: a file stops once more events than this have passed
-LIMIT_MODES = ("reference", "target")   # FR-21: reference = EVENT_LIMIT per file; target = from T per key
+LIMIT_MODES = ("reference", "target")   # FR-21: reference = passing events per file; target = kept sides
 DEFAULT_TARGET_PER_KEY = 3_000
+PAIR_BYTES = 16                   # one kept side: int64 key code + float64 energy (FR-15, one decoding)
 DEFAULT_POSITIONS = 5
 MAX_POSITIONS = 127
 EDGE_MULTIPLIER = 1.8
@@ -651,6 +652,31 @@ class _Accumulator:
         inside = index >= 0
         np.add.at(self.fit_counts, (rows[inside], index[inside]), 1)
 
+    def merge_first(self, codes, counts, anchor):
+        """Add one file's pass-1 histograms (its own unique codes); integer sums, so the order is irrelevant."""
+        if not len(codes):
+            return
+        rows = self._rows(np.asarray(codes, np.int64), True)
+        self.counts[rows] += counts
+        self.anchor[rows] += anchor
+
+    @classmethod
+    def for_second(cls, codes, interval, fit_edges):
+        """A worker's pass-2 accumulator over the parent's keys, rows in the parent's order."""
+        accumulator = cls()
+        accumulator.codes = [int(code) for code in codes]
+        accumulator.rows = {code: row for row, code in enumerate(accumulator.codes)}
+        accumulator.counts = np.zeros(len(accumulator.codes), np.int64)
+        accumulator.anchor = np.zeros((len(accumulator.codes), ANCHOR_BINS), np.int64)
+        accumulator.interval, accumulator.fit_edges = interval, fit_edges
+        accumulator.fit_counts = np.zeros((len(accumulator.codes), FIT_BINS), np.int64)
+        accumulator.second_counts = np.zeros(len(accumulator.codes), np.int64)
+        return accumulator
+
+    def merge_second(self, rows, second_counts, fit_counts):
+        self.second_counts[rows] += second_counts
+        self.fit_counts[rows] += fit_counts
+
     @property
     def nbytes(self):
         arrays = [self.counts, self.anchor] + [getattr(self, name) for name in
@@ -670,16 +696,29 @@ def stand_in_values(counts, edges, events):
     return np.concatenate((inside, outside))
 
 
-def _fit_key(accumulator, row):
-    """Reference ``fit_slab_photopeak`` from the key's histograms: (mu, sigma, status)."""
+def _fit_payload(accumulator, row):
+    """What the fit of one key reads: (events, smoothed anchor histogram, anchor, fit counts, fit edges)."""
     events = int(accumulator.counts[row])
     if events < MIN_EVENTS:
-        return 0.0, 0.0, f"no fit: {events} events (< {MIN_EVENTS})"
+        return events, None, None, None, None
     smooth, anchor = accumulator.smooth[row]
-    centres = (accumulator.anchor_edges[:-1] + accumulator.anchor_edges[1:]) / 2
+    return events, smooth, anchor, accumulator.fit_counts[row], accumulator.fit_edges[row]
+
+
+def _fit_key(accumulator, row):
+    """Reference ``fit_slab_photopeak`` from the key's histograms: (mu, sigma, status)."""
+    return _fit_values(*_fit_payload(accumulator, row))
+
+
+def _fit_values(events, smooth, anchor, fit_counts, fit_edges):
+    """The fit of one key from its histograms alone (picklable inputs; T25.4 runs chunks in workers)."""
+    if events < MIN_EVENTS:
+        return 0.0, 0.0, f"no fit: {events} events (< {MIN_EVENTS})"
+    anchor_edges = np.linspace(*ANCHOR_RANGE, ANCHOR_BINS + 1)
+    centres = (anchor_edges[:-1] + anchor_edges[1:]) / 2
     settings = dict(interval=(0.55 * anchor, 1.5 * anchor), search=(0.8 * anchor, 1.2 * anchor),
                     sigma0=0.07 * anchor, mu_halfwidth=0.15 * anchor)
-    values = stand_in_values(accumulator.fit_counts[row], accumulator.fit_edges[row], events)
+    values = stand_in_values(fit_counts, fit_edges, events)
     linear = fit_peak_background(values, background_model="linear", bins=FIT_BINS, **settings)
     flat = fit_peak_background(values, background_model="constant", bins=FIT_BINS, **settings)
     best = (linear if linear["status"] == "FIT" and (flat["status"] != "FIT" or
@@ -730,6 +769,8 @@ class CalibrationResult:
     sources: dict = field(default_factory=dict)
     limit_plan: dict = field(default_factory=dict)    # FR-21: mode, T, K, total and per-file limit
     coverage: dict = field(default_factory=dict)      # FR-21: sides per key that received sides
+    decoding: dict = field(default_factory=dict)      # FR-15: decodings, budget, bound and pairs kept
+    workers: int = 1                                  # FR-15: worker processes used (outputs do not depend on it)
 
     @property
     def layout(self):
@@ -809,12 +850,12 @@ def _borrow_and_estimate(factors, statuses, mapping, positions):
 
 def event_limit_plan(mapping, positions, files, *, limit_mode="reference", event_limit=EVENT_LIMIT,
                      target_per_key=None):
-    """Passing-coincidence limit per file (FR-21).
+    """Per-file limit (FR-21) and its unit.
 
-    Reference mode: ``event_limit`` per file (the reference 10,000,000, or None for whole files). Target
-    mode: total N = ceil(K x P x T / 2) over the n files, ceil(N / n) each; K = (time channel, slab) keys
-    of the selected map, T = ``target_per_key``; /2 because a passing coincidence fills one key per side.
-    T, when given, is also the coverage threshold in reference mode.
+    Reference mode: ``event_limit`` passing coincidences per file (the reference 10,000,000, or None for
+    whole files). Target mode (amended 2026-10-05): S = K x P x T kept sides in total, ceil(S / n) per file;
+    K = (time channel, slab) keys of the selected map, T = ``target_per_key``. Kept sides are the sides that
+    enter a key's histogram. T, when given, is also the coverage threshold in reference mode.
     """
     if limit_mode not in LIMIT_MODES:
         raise InputError(f"limit_mode must be one of {', '.join(LIMIT_MODES)}")
@@ -826,17 +867,17 @@ def event_limit_plan(mapping, positions, files, *, limit_mode="reference", event
     if limit_mode == "reference":
         if event_limit is not None and (type(event_limit) is not int or event_limit < 1):
             raise InputError("The passing-event limit must be a positive integer or None")
-        total, per_file = None, event_limit
+        unit, total, per_file = "passing events", None, event_limit
     else:
         if target_per_key is None:
-            raise InputError("Target mode needs target_per_key (T events per histogram)")
+            raise InputError("Target mode needs target_per_key (T sides per histogram)")
         if keys < 1:
-            raise InputError("The selected map has no time-channel keys for a target event limit")
-        total = -(-keys * positions * target_per_key // 2)
+            raise InputError("The selected map has no time-channel keys for a target limit")
+        unit, total = "kept sides", keys * positions * target_per_key
         per_file = -(-total // files)
-    return {"limit_mode": limit_mode, "target_per_key": target_per_key, "mapped_slab_keys": keys,
-            "positions": positions, "files": files, "passing_event_limit_total": total,
-            "passing_event_limit_per_file": per_file}
+    return {"limit_mode": limit_mode, "limit_unit": unit, "target_per_key": target_per_key,
+            "mapped_slab_keys": keys, "positions": positions, "files": files, "limit_total": total,
+            "limit_per_file": per_file}
 
 
 def key_coverage(counts, target_per_key=None):
@@ -851,13 +892,34 @@ def key_coverage(counts, target_per_key=None):
             "target_per_key": target_per_key}
 
 
+def pair_storage_bound(plan, population):
+    """Upper bound of the bytes kept by one decoding. A record keeps at most one side per detector; target
+    mode stops a file within one record past its kept-side share, reference mode within one record past its
+    passing-event limit. None without a per-file limit."""
+    per_file = plan["limit_per_file"]
+    if per_file is None:
+        return None
+    sides = 1 if population == Population.GROUP else 2
+    if plan["limit_mode"] == "target":
+        return plan["files"] * (per_file + sides) * PAIR_BYTES
+    return sides * plan["files"] * (per_file + 1) * PAIR_BYTES
+
+
 def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, event_limit=EVENT_LIMIT,
-              limit_mode="reference", target_per_key=None, batch_records=DEFAULT_BATCH_RECORDS, cancelled=None,
-              progress=None):
-    """Two validated passes over the ordered inputs, then the reference fits. No files are written.
+              limit_mode="reference", target_per_key=None, memory_budget=None, batch_records=DEFAULT_BATCH_RECORDS,
+              workers=1, cancelled=None, progress=None):
+    """Validated reading of the ordered inputs, then the reference fits. No files are written.
 
     ``limit_mode`` "reference" (default) stops each file at ``event_limit``; "target" derives the per-file
-    limit from ``target_per_key`` (``event_limit_plan``). Both use the reference stopping rule."""
+    limit from ``target_per_key`` (``event_limit_plan``). Both use the reference stopping rule.
+    ``memory_budget`` (bytes): in target mode, when the pair-storage bound fits it, each file is decoded
+    once and its selected (key, energy) batches are kept for the second accumulation; otherwise (and in
+    reference mode, or without a budget) each file is read twice, as the reference does. Both paths make
+    the same accumulator calls on the same batches, so their outputs are identical.
+    ``workers`` > 1 reads files and fits keys in spawned worker processes (``src.cornell.parallel``); their
+    integer histograms are merged by key and fits are per key, so outputs are identical for any count.
+    ``progress(path, records, phase=..., **extra)``: phases "read", "pass 2" and "fits" (keys_done,
+    keys_total)."""
     descriptors = tuple(descriptors)
     if not isinstance(config, ProcessingConfig):
         raise InputError("Calibration requires a typed processing config")
@@ -876,36 +938,69 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
         raise InputError("Position calibration (positions >= 2) requires the selected COG limits")
     plan = event_limit_plan(config.mapping, positions, len(descriptors), limit_mode=limit_mode,
                             event_limit=event_limit, target_per_key=target_per_key)
-    event_limit = plan["passing_event_limit_per_file"]
+    event_limit = plan["limit_per_file"] if limit_mode == "reference" else None
+    side_limit = plan["limit_per_file"] if limit_mode == "target" else None
+    if memory_budget is not None and (type(memory_budget) is not int or memory_budget < 1):
+        raise InputError("memory_budget must be a positive integer number of bytes or None")
+    bound = pair_storage_bound(plan, population)
+    once = limit_mode == "target" and memory_budget is not None and bound is not None and bound <= memory_budget
     if type(batch_records) is not int or not 1 <= batch_records <= 1_000_000:
         raise InputError("batch_records must be an integer from 1 to 1,000,000")
-    context = _Context(config, limits if positions > 1 else None, positions)
+    if type(workers) is not int or workers < 1:
+        raise InputError("workers must be a positive integer (resolve 0 = automatic before calibrating)")
+    limits = limits if positions > 1 else None
+    context = _Context(config, limits, positions)
     accumulator = _Accumulator()
-    files, fingerprints = [], []
-    for index, descriptor in enumerate(descriptors):
+    files, fingerprints, kept = [], [], []
+    phase = (lambda name: None if progress is None else
+             (lambda path, records, **extra: progress(path, records, phase=name, **extra)))
+
+    def first_and_keep(codes, energies):
+        accumulator.first(codes, energies)
+        kept.append((codes, energies))           # fresh arrays from select(); the same batches pass 2 would read
+    for descriptor in descriptors:
         info = os.stat(descriptor.path)
         fingerprints.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
-        sample = _sample(descriptor, context, accumulator.first, event_limit, batch_records, cancelled,
-                         progress, validate=True)
-        files.append(sample)
+    if workers == 1:
+        for descriptor in descriptors:
+            sample = _sample(descriptor, context, first_and_keep if once else accumulator.first, event_limit,
+                             batch_records, cancelled, phase("read"), validate=True, side_limit=side_limit)
+            files.append(sample)
+    else:
+        files = _parallel_first(descriptors, accumulator, kept, (config, limits, positions, None), event_limit,
+                                side_limit, batch_records, once, workers, cancelled, phase("read"))
+    kept_bytes = sum(codes.nbytes + energies.nbytes for codes, energies in kept)
+    if once and kept_bytes > bound:              # the bound is the budget's guarantee
+        raise InputError(f"Kept calibration pairs ({kept_bytes} B) exceed their bound ({bound} B)")
     accumulator.prepare_fit()
-    for index, descriptor in enumerate(descriptors):
-        again = _sample(descriptor, context, accumulator.second, event_limit, batch_records, cancelled, None,
-                        validate=False)
-        if (again.accepted_sides, again.events_passed) != (files[index].accepted_sides, files[index].events_passed):
-            raise InputError(f"Input changed between calibration passes: {descriptor.path}")
+    if once:
+        for codes, energies in kept:
+            if cancelled is not None and cancelled():
+                raise CalibrationCancelled("Calibration cancelled")
+            accumulator.second(codes, energies)
+        kept.clear()
+    elif workers == 1:
+        for index, descriptor in enumerate(descriptors):
+            again = _sample(descriptor, context, accumulator.second, event_limit, batch_records, cancelled,
+                            phase("pass 2"), validate=False, side_limit=side_limit)
+            _same_sample(again, files[index])
+    else:
+        table = (np.asarray(accumulator.codes, np.int64), accumulator.interval, accumulator.fit_edges)
+        _parallel_second(descriptors, accumulator, files, (config, limits, positions, table), event_limit,
+                         side_limit, batch_records, workers, cancelled, phase("pass 2"))
     for descriptor, before in zip(descriptors, fingerprints):
         info = os.stat(descriptor.path)
         if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != before:
             raise InputError(f"Input changed during calibration: {descriptor.path}")
     if not np.array_equal(accumulator.second_counts, accumulator.counts):
         raise InputError("Calibration passes disagree (input changed)")
+    fits = _fit_all(accumulator, workers, cancelled, phase("fits"))
     factors, statuses = {}, {}
     for row, code in enumerate(accumulator.codes):
         region = code % positions
         time_ch, slab = divmod(code // positions, MAX_SLABS)
         key = (int(time_ch), int(slab)) if positions == 1 else (int(time_ch), int(slab), int(region))
-        mu, sigma, text = _fit_key(accumulator, row)
+        mu, sigma, text = fits[row]
         statuses[key] = text
         if mu > 0:
             factors[key] = (mu, sigma)
@@ -919,13 +1014,146 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
     return CalibrationResult(positions, tuple(float(b) for b in context.boundaries), data_format, population,
                              context.min_ch, context.en_min_ch, event_limit, batch_records, tuple(files),
                              tuple(sorted(_mapped_keys(mapping, positions))), factors, statuses, sources=sources,
-                             limit_plan=plan, coverage=key_coverage(accumulator.counts, target_per_key))
+                             limit_plan=plan, coverage=key_coverage(accumulator.counts, target_per_key),
+                             workers=workers,
+                             decoding={"decodings": 1 if once else 2, "memory_budget_bytes": memory_budget,
+                                       "pair_storage_bound_bytes": bound, "pairs_kept_bytes": kept_bytes if once
+                                       else 0, "pair_bytes": PAIR_BYTES})
 
 
-def _sample(descriptor, context, add, event_limit, batch_records, cancelled, progress, *, validate):
+def _same_sample(again, first):
+    if (again.accepted_sides, again.events_passed) != (first.accepted_sides, first.events_passed):
+        raise InputError(f"Input changed between calibration passes: {first.path}")
+
+
+# Parallel reading and fits (FR-15, T25.4) ----------------------------------------------------------
+
+FIT_CHUNK = 256          # keys per fit task
+FIT_PROGRESS = 500       # keys between serial fit progress reports
+_WORKER = {}
+
+
+def _worker_init(event, config, limits, positions, table):
+    """Per worker process: its own context (built once), the shared cancellation event, the pass-2 table."""
+    _WORKER.clear()
+    _WORKER.update(context=_Context(config, limits, positions), cancelled=event.is_set, table=table)
+
+
+def _plain_init(event):
+    _WORKER.clear()
+    _WORKER.update(cancelled=event.is_set)
+
+
+def _first_task(descriptor, event_limit, side_limit, batch_records, keep):
+    """Pass 1 of one file: its sample, its histograms by key and, when decoding once, its kept batches."""
+    accumulator, kept = _Accumulator(), []
+
+    def add(codes, energies):
+        accumulator.first(codes, energies)
+        if keep:
+            kept.append((codes, energies))
+    sample = _sample(descriptor, _WORKER["context"], add, event_limit, batch_records, _WORKER["cancelled"], None,
+                     validate=True, side_limit=side_limit)
+    return sample, np.asarray(accumulator.codes, np.int64), accumulator.counts, accumulator.anchor, kept
+
+
+def _second_task(descriptor, event_limit, side_limit, batch_records):
+    """Pass 2 of one file over the parent's keys: its sample and the rows it filled."""
+    accumulator = _Accumulator.for_second(*_WORKER["table"])
+    sample = _sample(descriptor, _WORKER["context"], accumulator.second, event_limit, batch_records,
+                     _WORKER["cancelled"], None, validate=False, side_limit=side_limit)
+    used = np.flatnonzero(accumulator.second_counts)
+    return sample, used, accumulator.second_counts[used], accumulator.fit_counts[used]
+
+
+def _fit_task(payloads):
+    if _WORKER["cancelled"]():
+        raise CalibrationCancelled("Calibration cancelled")
+    return [_fit_values(*payload) for payload in payloads]
+
+
+def _pool(workers, tasks, initializer, initargs, cancelled):
+    from .parallel import OrderedPool
+    return OrderedPool(min(workers, max(1, tasks)), initializer, initargs, cancelled)
+
+
+def _parallel_first(descriptors, accumulator, kept, initargs, event_limit, side_limit, batch_records, once, workers,
+                    cancelled, progress):
+    from .parallel import PoolCancelled
+    files = [None] * len(descriptors)
+
+    def merge(index, value):                     # in input order: the same rows, kept batches and samples
+        sample, codes, counts, anchor, batches = value
+        files[index] = sample
+        accumulator.merge_first(codes, counts, anchor)
+        kept.extend(batches)
+        if progress is not None:
+            progress(sample.path, sample.records_read)
+    try:
+        with _pool(workers, len(descriptors), _worker_init, initargs, cancelled) as pool:
+            pool.run(_first_task, [(d, event_limit, side_limit, batch_records, once) for d in descriptors], merge)
+    except PoolCancelled:
+        raise CalibrationCancelled("Calibration cancelled") from None
+    return files
+
+
+def _parallel_second(descriptors, accumulator, files, initargs, event_limit, side_limit, batch_records, workers,
+                     cancelled, progress):
+    from .parallel import PoolCancelled
+
+    def merge(index, value):
+        sample, rows, second_counts, fit_counts = value
+        _same_sample(sample, files[index])
+        accumulator.merge_second(rows, second_counts, fit_counts)
+        if progress is not None:
+            progress(sample.path, sample.records_read)
+    try:
+        with _pool(workers, len(descriptors), _worker_init, initargs, cancelled) as pool:
+            pool.run(_second_task, [(d, event_limit, side_limit, batch_records) for d in descriptors], merge)
+    except PoolCancelled:
+        raise CalibrationCancelled("Calibration cancelled") from None
+
+
+def _fit_all(accumulator, workers, cancelled, progress):
+    """(mu, sigma, status) per row, in row order; chunks of keys in workers when ``workers`` > 1."""
+    from .parallel import PoolCancelled
+    rows = len(accumulator.codes)
+    if workers == 1:
+        fits = []
+        for row in range(rows):
+            if row % FIT_PROGRESS == 0:
+                if cancelled is not None and cancelled():
+                    raise CalibrationCancelled("Calibration cancelled")
+                if progress is not None:
+                    progress(None, None, keys_done=row, keys_total=rows)
+            fits.append(_fit_key(accumulator, row))
+    else:
+        chunks = [range(start, min(start + FIT_CHUNK, rows)) for start in range(0, rows, FIT_CHUNK)]
+        fits, done = [], [0]
+
+        def collect(index, values):
+            fits.extend(values)
+            done[0] += len(values)
+            if progress is not None:
+                progress(None, None, keys_done=done[0], keys_total=rows)
+        try:
+            with _pool(workers, len(chunks), _plain_init, (), cancelled) as pool:
+                pool.run(_fit_task, [([_fit_payload(accumulator, row) for row in chunk],) for chunk in chunks],
+                         collect)
+        except PoolCancelled:
+            raise CalibrationCancelled("Calibration cancelled") from None
+    if progress is not None:
+        progress(None, None, keys_done=rows, keys_total=rows)
+    return fits
+
+
+def _sample(descriptor, context, add, event_limit, batch_records, cancelled, progress, *, validate,
+            side_limit=None):
     """One pass over one file, validating what it reads; both passes stop at the limit (FR-24).
 
-    ``validate`` is kept for the call sites; records after the limit are neither read nor validated.
+    ``event_limit``: passing events (reference rule); ``side_limit``: kept sides (target mode, FR-21). A
+    record is processed while the count before it does not exceed the limit. ``validate`` is kept for the
+    call sites; records after the limit are neither read nor validated.
     """
     reader = _Reader(descriptor, context.mapped, batch_records, cancelled)
     rejected = dict.fromkeys(REJECTIONS, 0)
@@ -938,10 +1166,16 @@ def _sample(descriptor, context, add, event_limit, batch_records, cancelled, pro
         if progress is not None:
             progress(descriptor.path, reader.records)
         counted = dict.fromkeys(REJECTIONS, 0)
-        codes, energies, _, passed = context.select(batch, counted)
+        codes, energies, rows, passed = context.select(batch, counted)
+        included = None
         if event_limit is not None:
             before = passed_total + np.cumsum(passed) - passed    # events passed before each record
             included = before <= event_limit                      # reference: stop once count > limit
+        elif side_limit is not None:
+            kept = np.bincount(rows, minlength=len(passed))       # sides each record adds to the histograms
+            before = accepted + np.cumsum(kept) - kept
+            included = before <= side_limit                       # target: stop once kept sides > share
+        if included is not None:
             if not included.all():
                 stopped = True
                 last = int(np.argmin(included))                   # first record not processed
@@ -1012,10 +1246,15 @@ def sidecar(result, calibration_sha256):
                      "limit_mode": result.limit_plan.get("limit_mode", "reference"),
                      "target_per_key": result.limit_plan.get("target_per_key"),
                      "mapped_slab_keys": result.limit_plan.get("mapped_slab_keys"),
-                     "passing_event_limit_total": result.limit_plan.get("passing_event_limit_total"),
-                     "limit_rule": "target: total = ceil(K x P x T / 2), ceil(total / files) per file; "
-                                   "reference: the limit per file",
-                     "limit_semantics": "a file stops once more events than the limit have passed",
+                     "limit_unit": result.limit_plan.get("limit_unit", "passing events"),
+                     "limit_total": result.limit_plan.get("limit_total"),
+                     "limit_per_file": result.limit_plan.get("limit_per_file", result.event_limit),
+                     "limit_rule": "target: S = K x P x T kept sides, ceil(S / files) per file; "
+                                   "reference: passing events per file",
+                     "limit_semantics": "a file stops once more than its limit (in its unit) has been counted",
+                     "decoding": result.decoding, "workers": result.workers,
+                     "decoding_rule": "target mode within the memory budget: each file decoded once, its selected "
+                                      "(key, energy) batches kept for the second accumulation; otherwise read twice",
                      "validation": "records_validated = records read (whole reader batches); records after a limit "
                                    "stop are neither read nor validated (FR-24)"},
         "sources": result.sources,

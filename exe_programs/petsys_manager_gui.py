@@ -184,12 +184,12 @@ def limit_plan_text(plan):
         return f"Event limit unavailable: {plan['error']}"
     files = f"{plan['files']} split(s)" if plan.get("files_from_splits") else f"{plan['files']} file(s)"
     if plan["limit_mode"] == "reference":
-        per_file = plan["passing_event_limit_per_file"]
+        per_file = plan["limit_per_file"]
         return ("Event limit (reference): " + ("whole files" if per_file is None else
                 f"{per_file:,} passing coincidences per file") + f", {files} (cornell_slab_en_cal.py)")
-    return (f"Event limit (target): ceil(K {plan['mapped_slab_keys']:,} keys x P {plan['positions']} x "
-            f"T {plan['target_per_key']:,} / 2) = {plan['passing_event_limit_total']:,} passing coincidences, "
-            f"{plan['passing_event_limit_per_file']:,} per file over {files}; low-occupancy keys can stay below T")
+    return (f"Event limit (target): K {plan['mapped_slab_keys']:,} keys x P {plan['positions']} x "
+            f"T {plan['target_per_key']:,} = {plan['limit_total']:,} kept sides, {plan['limit_per_file']:,} per "
+            f"file over {files}; T is an average, so low-occupancy keys can stay below it")
 
 
 def limit_used_text(summary):
@@ -197,10 +197,23 @@ def limit_used_text(summary):
     plan, coverage = summary.get("limit_plan") or {}, summary.get("coverage") or {}
     text = ""
     if plan:
-        used = [item.get("events_passed", 0) for item in summary.get("inputs") or ()]
+        inputs = summary.get("inputs") or ()
+        events = [item.get("events_passed", 0) for item in inputs]
+        sides = [item.get("accepted_sides", 0) for item in inputs]
         text += f"\n  {limit_plan_text(plan)}"
-        if used:
-            text += f"; events used per file {min(used):,}-{max(used):,}"
+        if events:
+            text += (f"; used per file: {min(events):,}-{max(events):,} events, {min(sides):,}-{max(sides):,} "
+                     "kept sides")
+    decoding = summary.get("decoding") or {}
+    if decoding.get("decodings") == 1:
+        text += (f"\n  Each file read once: {decoding['pairs_kept_bytes'] / 2 ** 20:,.0f} MB of selected events kept "
+                 f"(budget {decoding['memory_budget_bytes'] / 2 ** 20:,.0f} MB)")
+    elif decoding.get("decodings") == 2:
+        bound, budget = decoding.get("pair_storage_bound_bytes"), decoding.get("memory_budget_bytes")
+        why = ("reference mode" if plan.get("limit_mode") == "reference" else
+               "no memory budget" if budget is None else
+               f"up to {bound / 2 ** 20:,.0f} MB needed, budget {budget / 2 ** 20:,.0f} MB" if bound else "no limit")
+        text += f"\n  Each file read twice ({why})"
     if coverage.get("keys_with_sides"):
         below = coverage.get("keys_below_target")
         text += (f"\n  Sides per key ({coverage['keys_with_sides']:,} keys with sides): min {coverage['min_sides']:,}, "
@@ -726,10 +739,10 @@ class PETsysManager:
         modes = ctk.CTkFrame(frame, fg_color="transparent")
         modes.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=2)
         ctk.CTkLabel(modes, text="Event limit:").pack(side="left", padx=(0, 6))
-        for value, text in (("target", "Target events per histogram (default)"),
+        for value, text in (("target", "Target sides per histogram (default)"),
                             ("reference", "Reference: 10,000,000 per file (cornell_slab_en_cal.py)")):
             ctk.CTkRadioButton(modes, text=text, variable=self.limit_mode, value=value).pack(side="left", padx=4)
-        self._row(frame, 7, "Target events per histogram (T):", self.target_per_key, width=100)
+        self._row(frame, 7, "Target sides per histogram (T):", self.target_per_key, width=100)
         self.limit_plan = ctk.CTkLabel(frame, text="", **self._small())
         self.limit_plan.grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         self._button(frame, "calibrate", "Create Energy cal file", command=self.calibrate).grid(
@@ -996,9 +1009,13 @@ class PETsysManager:
         elif event.kind == "stage_started":
             text = f"{step}{event.message}\nWriting to: {payload.get('directory')}"
         elif event.kind == "stage_progress":
-            index, files = payload.get("file_index"), payload.get("files")
+            index, files, phase = payload.get("file_index"), payload.get("files"), payload.get("phase")
             text = f"{step}{STAGE_TEXT.get(stage, stage)}"
-            if isinstance(index, int) and isinstance(files, int):
+            if phase in ("read", "pass 2"):
+                text += f" ({phase})"
+            if phase == "fits" and isinstance(payload.get("keys_total"), int):
+                text += f": fits {payload.get('keys_done', 0):,}/{payload['keys_total']:,} keys"
+            elif isinstance(index, int) and isinstance(files, int):
                 text += f": file {index + 1}/{files} {Path(str(payload.get('path'))).name}"
             if isinstance(payload.get("records_read"), int):
                 text += f", {payload['records_read']:,} records read"
@@ -1376,7 +1393,7 @@ class PETsysManager:
         try:
             target = int(self.target_per_key.get().strip())
         except ValueError:
-            raise ProfileError("Target events per histogram (T) must be a positive integer") from None
+            raise ProfileError("Target sides per histogram (T) must be a positive integer") from None
         values["limits"] = replace(self.session.profile.limits, calibration_target_per_key=target)
         return replace(self.session.profile, **values)
 

@@ -271,6 +271,7 @@ def _entry(descriptor):
 
 def processing_request(settings, stage, inputs, directory, context):
     """Exact ``src.cornell.cli`` request for one stage; outputs inside ``directory``."""
+    from src.cornell.parallel import resolve_workers
     options, paths, limits = settings.options, settings.paths, settings.profile.limits
     action = CLI_ACTIONS[stage]
     request = {"schema_version": 1, "action": action, "processing_root": str(settings.processing_root),
@@ -284,6 +285,8 @@ def processing_request(settings, stage, inputs, directory, context):
                        options={"positions": positions, "event_limit": limits.calibration_event_limit,
                                 "limit_mode": options.calibration_limit_mode,
                                 "target_per_key": limits.calibration_target_per_key,
+                                "memory_budget_mb": limits.calibration_memory_mb,
+                                "workers": resolve_workers(limits.workers),
                                 "batch_records": limits.batch_records},
                        outputs={"encal": str(directory / f"{name}.encal"),
                                 "sidecar": str(directory / f"{name}.encal.json"),
@@ -617,7 +620,8 @@ class WorkflowCoordinator:
             elif event.get("kind") == "progress":
                 self._emit(identity, "stage_progress", "", {k: event.get(k) for k in
                                                             ("file_index", "files", "path", "records_read",
-                                                             "records_written")})
+                                                             "records_written", "phase", "keys_done",
+                                                             "keys_total")})
 
         def validate(command):
             value = cli.read_result(result_path, verify_hashes=True)
