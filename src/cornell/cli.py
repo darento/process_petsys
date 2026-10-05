@@ -60,7 +60,8 @@ _COMMON = ("schema_version", "action", "processing_root", "processing_config", "
 _SPEC = {
     "calibrate": {
         "files": {"cog_limits": "file?"},
-        "options": {"positions": "int", "event_limit": "int?", "batch_records": "int"},
+        "options": {"positions": "int", "event_limit": "int?", "limit_mode": "limit_mode",
+                    "target_per_key": "int?", "batch_records": "int"},
         "outputs": {"encal": "new_file", "sidecar": "new_file", "status": "new_file", "plot": "new_file?"},
     },
     "listmode": {
@@ -166,6 +167,9 @@ def _value(kind, value, label):
             value = SourceMode(value)
         except ValueError:
             raise RequestError(f"{label} must be 'with', 'without' or null (not recorded)") from None
+    elif kind == "limit_mode":
+        if value not in ("reference", "target"):
+            raise RequestError(f"{label} must be 'reference' or 'target'")
     elif kind == "metadata":
         names = [item.name for item in fields(LMMetadata)]
         _keys(value, names, label)
@@ -363,7 +367,8 @@ def run_calibrate(request, events, cancelled):
               load_limits(request.files["cog_limits"], config.mapping, kind="cog"))
     paths = [str(d.path) for d in descriptors]
     result = cal.calibrate(descriptors, config, limits, positions=options["positions"],
-                           event_limit=options["event_limit"], batch_records=options["batch_records"],
+                           event_limit=options["event_limit"], limit_mode=options["limit_mode"],
+                           target_per_key=options["target_per_key"], batch_records=options["batch_records"],
                            cancelled=cancelled,
                            progress=lambda path, records: events.progress(paths.index(str(path)), len(paths), path,
                                                                           records))
@@ -386,6 +391,7 @@ def run_calibrate(request, events, cancelled):
         "population": result.population.value, "region_boundaries": list(result.boundaries),
         "min_ch": result.min_ch, "en_min_ch": result.en_min_ch,
         "passing_event_limit_per_file": result.event_limit, "batch_records": result.batch_records,
+        "limit_plan": result.limit_plan, "coverage": result.coverage,
         "inputs": [{"path": str(f.path), "records_validated": f.records_validated, "records_read": f.records_read,
                     "events_passed": f.events_passed, "accepted_sides": f.accepted_sides,
                     "stopped_at_limit": f.stopped_at_limit, "rejected": f.rejected} for f in result.files],

@@ -14,7 +14,8 @@ destinations before a workflow starts, or writes processing configuration/maps.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import queue
 import threading
@@ -41,6 +42,7 @@ class ShellEvent:
 class Readiness:
     generation: int
     issues: dict  # check key -> tuple[PrerequisiteIssue, ...]; empty means prerequisites met
+    limit_plans: dict = field(default_factory=dict)  # calibrate/pipeline key -> event-limit plan (FR-21)
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class ManagerSession:
         self._shutdown = threading.Event()
         self._threads = []
         self._probes = {}        # selection key -> (request, cancellation Event)
+        self._map_cache = None   # (file stamps, mapping) for the event-limit plan
         self._probe_request = 0
 
     @property
@@ -160,14 +163,44 @@ class ManagerSession:
                     return
                 generation, profile, requests = self._pending
                 self._pending = None
-            issues = {}
+            issues, plans = {}, {}
             for key, (action, options, inputs) in requests.items():
                 try:
-                    issues[key] = preflight(profile, action, options, inputs, repo_root=self.repo_root,
-                                            probe=self.probe).issues
+                    report = preflight(profile, action, options, inputs, repo_root=self.repo_root,
+                                       probe=self.probe)
+                    issues[key] = report.issues
+                    if report.settings is not None and action in (Action.CALIBRATE, Action.PIPELINE):
+                        try:
+                            plans[key] = self._limit_plan(report.settings)
+                        except (OSError, ValueError) as exc:   # display only: never a readiness reason
+                            plans[key] = {"error": str(exc)}
                 except Exception as exc:  # A probe/profile fault is a reason, never readiness.
                     issues[key] = (PrerequisiteIssue("settings", f"{type(exc).__name__}: {exc}"),)
-            self.events.put(ShellEvent("readiness", Readiness(generation, issues)))
+            self.events.put(ShellEvent("readiness", Readiness(generation, issues, plans)))
+
+    def _limit_plan(self, settings):
+        """Calibration event-limit plan shown before a run (FR-21); the map's key count is cached per file.
+
+        The pipeline's file count is its split count (the converter's actual outputs may differ)."""
+        from src.cornell.calibration import event_limit_plan
+        from src.cornell.inputs import load_processing_config
+        yaml_path = Path(settings.paths["yaml_file"])
+        stamp = []
+        for path in (yaml_path, settings.paths.get("map_file")):
+            info = os.stat(path) if path is not None else None
+            stamp.append(None if info is None else (str(path), info.st_size, info.st_mtime_ns))
+        stamp = tuple(stamp)
+        if self._map_cache is None or self._map_cache[0] != stamp:
+            mapping = load_processing_config(yaml_path, processing_root=settings.processing_root,
+                                             action=Action.CALIBRATE).mapping
+            self._map_cache = (stamp, mapping)
+        options, limits = settings.options, settings.profile.limits
+        files = len(settings.inputs) if settings.action == Action.CALIBRATE else options.splits
+        plan = event_limit_plan(self._map_cache[1], options.regions, files,
+                                limit_mode=options.calibration_limit_mode,
+                                event_limit=limits.calibration_event_limit,
+                                target_per_key=limits.calibration_target_per_key)
+        return {**plan, "files_from_splits": settings.action == Action.PIPELINE}
 
     def probe_inputs(self, profile, key, descriptors, *, max_records=10000):
         """Check the first records of each selected file against the selected map, off the UI thread.

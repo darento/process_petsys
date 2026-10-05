@@ -282,6 +282,8 @@ def processing_request(settings, stage, inputs, directory, context):
         cog = paths.get("cog_limits_file") if positions > 1 else None
         request.update(files={"cog_limits": None if cog is None else str(cog)},
                        options={"positions": positions, "event_limit": limits.calibration_event_limit,
+                                "limit_mode": options.calibration_limit_mode,
+                                "target_per_key": limits.calibration_target_per_key,
                                 "batch_records": limits.batch_records},
                        outputs={"encal": str(directory / f"{name}.encal"),
                                 "sidecar": str(directory / f"{name}.encal.json"),

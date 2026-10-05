@@ -62,6 +62,8 @@ MIN_EVENTS = 200
 MIN_FITTED_FOR_ESTIMATE = 4
 LINEAR_DEVIANCE_GAIN = 8
 EVENT_LIMIT = 10_000_000          # reference: a file stops once more events than this have passed
+LIMIT_MODES = ("reference", "target")   # FR-21: reference = EVENT_LIMIT per file; target = from T per key
+DEFAULT_TARGET_PER_KEY = 3_000
 DEFAULT_POSITIONS = 5
 MAX_POSITIONS = 127
 EDGE_MULTIPLIER = 1.8
@@ -726,6 +728,8 @@ class CalibrationResult:
     statuses: dict              # key -> status text for keys that received values or a factor
     edge_multiplier: float = EDGE_MULTIPLIER
     sources: dict = field(default_factory=dict)
+    limit_plan: dict = field(default_factory=dict)    # FR-21: mode, T, K, total and per-file limit
+    coverage: dict = field(default_factory=dict)      # FR-21: sides per key that received sides
 
     @property
     def layout(self):
@@ -803,9 +807,57 @@ def _borrow_and_estimate(factors, statuses, mapping, positions):
     return counts
 
 
+def event_limit_plan(mapping, positions, files, *, limit_mode="reference", event_limit=EVENT_LIMIT,
+                     target_per_key=None):
+    """Passing-coincidence limit per file (FR-21).
+
+    Reference mode: ``event_limit`` per file (the reference 10,000,000, or None for whole files). Target
+    mode: total N = ceil(K x P x T / 2) over the n files, ceil(N / n) each; K = (time channel, slab) keys
+    of the selected map, T = ``target_per_key``; /2 because a passing coincidence fills one key per side.
+    T, when given, is also the coverage threshold in reference mode.
+    """
+    if limit_mode not in LIMIT_MODES:
+        raise InputError(f"limit_mode must be one of {', '.join(LIMIT_MODES)}")
+    if type(files) is not int or files < 1:
+        raise InputError("The event-limit plan needs at least one input file")
+    if target_per_key is not None and (type(target_per_key) is not int or target_per_key < 1):
+        raise InputError("target_per_key must be a positive integer")
+    keys = len(_mapped_keys(mapping, 1))
+    if limit_mode == "reference":
+        if event_limit is not None and (type(event_limit) is not int or event_limit < 1):
+            raise InputError("The passing-event limit must be a positive integer or None")
+        total, per_file = None, event_limit
+    else:
+        if target_per_key is None:
+            raise InputError("Target mode needs target_per_key (T events per histogram)")
+        if keys < 1:
+            raise InputError("The selected map has no time-channel keys for a target event limit")
+        total = -(-keys * positions * target_per_key // 2)
+        per_file = -(-total // files)
+    return {"limit_mode": limit_mode, "target_per_key": target_per_key, "mapped_slab_keys": keys,
+            "positions": positions, "files": files, "passing_event_limit_total": total,
+            "passing_event_limit_per_file": per_file}
+
+
+def key_coverage(counts, target_per_key=None):
+    """Sides received per key, over the keys that received any (FR-21): min, median and keys below T and
+    below the fit minimum. Keys without sides are the status file's "no values"."""
+    counts = np.asarray(counts, np.int64)
+    counts = counts[counts > 0]
+    return {"keys_with_sides": int(len(counts)), "min_sides": int(counts.min()) if len(counts) else None,
+            "median_sides": float(np.median(counts)) if len(counts) else None,
+            "keys_below_target": None if target_per_key is None else int((counts < target_per_key).sum()),
+            "keys_below_fit_minimum": int((counts < MIN_EVENTS).sum()), "fit_minimum": MIN_EVENTS,
+            "target_per_key": target_per_key}
+
+
 def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, event_limit=EVENT_LIMIT,
-              batch_records=DEFAULT_BATCH_RECORDS, cancelled=None, progress=None):
-    """Two validated passes over the ordered inputs, then the reference fits. No files are written."""
+              limit_mode="reference", target_per_key=None, batch_records=DEFAULT_BATCH_RECORDS, cancelled=None,
+              progress=None):
+    """Two validated passes over the ordered inputs, then the reference fits. No files are written.
+
+    ``limit_mode`` "reference" (default) stops each file at ``event_limit``; "target" derives the per-file
+    limit from ``target_per_key`` (``event_limit_plan``). Both use the reference stopping rule."""
     descriptors = tuple(descriptors)
     if not isinstance(config, ProcessingConfig):
         raise InputError("Calibration requires a typed processing config")
@@ -822,8 +874,9 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
         raise InputError(f"positions must be an integer from 1 to {MAX_POSITIONS}")
     if positions > 1 and not isinstance(limits, Limits):
         raise InputError("Position calibration (positions >= 2) requires the selected COG limits")
-    if event_limit is not None and (type(event_limit) is not int or event_limit < 1):
-        raise InputError("The passing-event limit must be a positive integer or None")
+    plan = event_limit_plan(config.mapping, positions, len(descriptors), limit_mode=limit_mode,
+                            event_limit=event_limit, target_per_key=target_per_key)
+    event_limit = plan["passing_event_limit_per_file"]
     if type(batch_records) is not int or not 1 <= batch_records <= 1_000_000:
         raise InputError("batch_records must be an integer from 1 to 1,000,000")
     context = _Context(config, limits if positions > 1 else None, positions)
@@ -865,7 +918,8 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
                                  "zero_width_keys": [list(k) for k in limits.zero_width]}
     return CalibrationResult(positions, tuple(float(b) for b in context.boundaries), data_format, population,
                              context.min_ch, context.en_min_ch, event_limit, batch_records, tuple(files),
-                             tuple(sorted(_mapped_keys(mapping, positions))), factors, statuses, sources=sources)
+                             tuple(sorted(_mapped_keys(mapping, positions))), factors, statuses, sources=sources,
+                             limit_plan=plan, coverage=key_coverage(accumulator.counts, target_per_key))
 
 
 def _sample(descriptor, context, add, event_limit, batch_records, cancelled, progress, *, validate):
@@ -955,6 +1009,12 @@ def sidecar(result, calibration_sha256):
                 "min_events": MIN_EVENTS, "outer_slabs": "0/15 take slab 1/14",
                 "estimates": f"fitted neighbours, else minimodule median (>= {MIN_FITTED_FOR_ESTIMATE} fitted)"},
         "sampling": {"batch_records": result.batch_records, "passing_event_limit_per_file": result.event_limit,
+                     "limit_mode": result.limit_plan.get("limit_mode", "reference"),
+                     "target_per_key": result.limit_plan.get("target_per_key"),
+                     "mapped_slab_keys": result.limit_plan.get("mapped_slab_keys"),
+                     "passing_event_limit_total": result.limit_plan.get("passing_event_limit_total"),
+                     "limit_rule": "target: total = ceil(K x P x T / 2), ceil(total / files) per file; "
+                                   "reference: the limit per file",
                      "limit_semantics": "a file stops once more events than the limit have passed",
                      "validation": "records_validated = records read (whole reader batches); records after a limit "
                                    "stop are neither read nor validated (FR-24)"},
@@ -964,6 +1024,7 @@ def sidecar(result, calibration_sha256):
                     "accepted_sides": f.accepted_sides, "stopped_at_limit": f.stopped_at_limit,
                     "rejected": f.rejected} for f in result.files],
         "status_counts": result.status_counts(),
+        "coverage": result.coverage,
     }
 
 

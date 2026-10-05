@@ -80,7 +80,8 @@ safety:                                      # acquisition monitoring (editable 
 limits:
   workers: 1
   batch_records: 5000
-  calibration_event_limit: 10000000          # passing coincidences per file (reference)
+  calibration_event_limit: 10000000          # reference mode: passing coincidences per file
+  calibration_target_per_key: 3000           # target mode: T events per histogram
   qc_pair_limit: 1000001                     # accepted pairs per file (reference)
   log_tail_lines: 1000
 capabilities:
@@ -118,7 +119,7 @@ These files are machine- and system-specific, are not in the repository, and are
 | Start DAQD / Initialize | profile tools, cards, INI | owned `daqd`; initialization valid for this daemon, INI and cards |
 | Acquire | Acq. Time, optional hardware trigger | `.rawf`/`.idxf` (`data_dir`) |
 | Convert, coincidence | `.rawf` | compact coincidence `.ldat` (`data_dir`) |
-| Create energy cal file | compact coincidence `.ldat`; positions per slab P | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
+| Create energy cal file | compact coincidence `.ldat`; positions per slab P; event limit (target T per histogram, or the reference 10 M per file) | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
 | Generate LM file | compact coincidence `.ldat` (read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
 | Run quality control (live) | 60 s with source or 180 s without (fixed presets) | compact coincidence conversion, then QC report (run folder in `data_dir`) |
 | Analyze existing compact LDAT | **compact coincidence** `.ldat` | QC report (`report_dir/<run>`) |
@@ -146,6 +147,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - Failed or partial outputs are kept and marked unvalidated.
   - A run manifest records the settings snapshot, the exact inputs and every output with its hash. Later stages use only the outputs recorded for this run, never similarly named files.
 - **Calibration:** a new `.encal` is never applied automatically. The GUI offers it for LM as an unsaved profile edit.
+  - **Event limit:** *target* (default) reads N = ⌈K × P × T / 2⌉ passing coincidences in total, ⌈N / n⌉ from each of the n files (K = time-channel × slab keys of the selected map, T = target events per histogram, saved in the profile). The LDAT Processing tab shows N and the share before the run. *Reference* stops each file after 10,000,000, as `cornell_slab_en_cal.py`; use it to compare with the reference script. The result and sidecar record the limit used and the sides each key received (minimum, median, keys below T and below the 200-event fit minimum); T is an average, so low-occupancy keys can stay below it.
   - An existing `.encal` row with μ ≤ 0 (a failed legacy fit) is read as "no factor", as the reference LM does: its pairs are rejected as missing calibration, and the keys are listed in the LM provenance and as a warning in the log. Nothing is estimated in their place; to fill them from neighbours, make a new calibration, whose status file labels borrowed and estimated keys.
   - A COG or DOI limits row with left = right is used unchanged, as in the reference, so the sides of that slab fall out of range and are counted; the keys are listed in the provenance and as a warning. A row with right < left still refuses the file.
 - **QC:** findings are observations of the coincidence sample (occupancy, fits in a.u.), not a detector PASS/FAIL verdict.

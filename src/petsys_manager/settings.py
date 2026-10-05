@@ -93,7 +93,8 @@ class AcquisitionSafety:
 class ProcessingLimits:
     workers: int = 1
     batch_records: int = 5000
-    calibration_event_limit: int = 10_000_000   # reference: a file stops once more events have passed
+    calibration_event_limit: int = 10_000_000   # reference mode: a file stops once more events have passed
+    calibration_target_per_key: int = 3_000     # target mode: T events per histogram (FR-21)
     qc_pair_limit: int = 1_000_001
     log_tail_lines: int = 1000
 
@@ -221,6 +222,7 @@ class RunOptions:
     slabs: bool = False
     debug: bool = False
     regions: int = 5
+    calibration_limit_mode: str = "target"      # FR-21: "target" (from T per key) or "reference" (10 M per file)
     raw_input: str | None = None
 
     def __post_init__(self):
@@ -231,6 +233,8 @@ class RunOptions:
         _integer(self.splits, "splits")
         _integer(self.hit_limit, "hit_limit", maximum=255)
         _integer(self.regions, "regions", maximum=127)
+        if self.calibration_limit_mode not in ("target", "reference"):
+            raise ProfileError("calibration_limit_mode must be target or reference")
         for name in ("plots", "slabs", "debug"):
             _bool(getattr(self, name), name)
         if self.slabs and not self.plots:

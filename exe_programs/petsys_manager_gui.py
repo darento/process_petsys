@@ -178,6 +178,38 @@ def issue_lines(issues):
     return lines
 
 
+def limit_plan_text(plan):
+    """Operator text for an event-limit plan (FR-21)."""
+    if "error" in plan:
+        return f"Event limit unavailable: {plan['error']}"
+    files = f"{plan['files']} split(s)" if plan.get("files_from_splits") else f"{plan['files']} file(s)"
+    if plan["limit_mode"] == "reference":
+        per_file = plan["passing_event_limit_per_file"]
+        return ("Event limit (reference): " + ("whole files" if per_file is None else
+                f"{per_file:,} passing coincidences per file") + f", {files} (cornell_slab_en_cal.py)")
+    return (f"Event limit (target): ceil(K {plan['mapped_slab_keys']:,} keys x P {plan['positions']} x "
+            f"T {plan['target_per_key']:,} / 2) = {plan['passing_event_limit_total']:,} passing coincidences, "
+            f"{plan['passing_event_limit_per_file']:,} per file over {files}; low-occupancy keys can stay below T")
+
+
+def limit_used_text(summary):
+    """The limit a calibration used and the sides its keys received (FR-21)."""
+    plan, coverage = summary.get("limit_plan") or {}, summary.get("coverage") or {}
+    text = ""
+    if plan:
+        used = [item.get("events_passed", 0) for item in summary.get("inputs") or ()]
+        text += f"\n  {limit_plan_text(plan)}"
+        if used:
+            text += f"; events used per file {min(used):,}-{max(used):,}"
+    if coverage.get("keys_with_sides"):
+        below = coverage.get("keys_below_target")
+        text += (f"\n  Sides per key ({coverage['keys_with_sides']:,} keys with sides): min {coverage['min_sides']:,}, "
+                 f"median {coverage['median_sides']:,.0f}"
+                 + ("" if below is None else f"; {below:,} below T {coverage['target_per_key']:,}")
+                 + f"; {coverage['keys_below_fit_minimum']:,} below the {coverage['fit_minimum']}-event fit minimum")
+    return text
+
+
 def natural_key(path):
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(path))]
 
@@ -491,12 +523,15 @@ class PETsysManager:
         self.qc_plots = tk.BooleanVar(root, False)
         self.qc_slabs = tk.BooleanVar(root, False)
         self.lm_debug = tk.BooleanVar(root, True)          # the reference LM call always passes -d
+        self.limit_mode = tk.StringVar(root, "target")     # FR-21: calibration event limit, per run
+        self.target_per_key = tk.StringVar(root)           # FR-21: T, saved in the profile limits
+        self._limit_plans = {}
         self.safety_vars = {name: tk.StringVar(root) for name in SAFETY_FIELDS}
         self.lm_vars = {name: tk.StringVar(root) for name in LM_FIELDS}
         self._build()
         for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
-                         self.positions, self.qc_source,
+                         self.positions, self.qc_source, self.limit_mode, self.target_per_key,
                          self.qc_plots, self.qc_slabs, self.lm_debug):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
@@ -688,8 +723,17 @@ class PETsysManager:
                                  "position regions along the slab, ID(time_ch, slab, region), from the COG limits",
                      font=ctk.CTkFont(size=11), justify="left", anchor="w", wraplength=780).grid(
             row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        modes = ctk.CTkFrame(frame, fg_color="transparent")
+        modes.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(modes, text="Event limit:").pack(side="left", padx=(0, 6))
+        for value, text in (("target", "Target events per histogram (default)"),
+                            ("reference", "Reference: 10,000,000 per file (cornell_slab_en_cal.py)")):
+            ctk.CTkRadioButton(modes, text=text, variable=self.limit_mode, value=value).pack(side="left", padx=4)
+        self._row(frame, 7, "Target events per histogram (T):", self.target_per_key, width=100)
+        self.limit_plan = ctk.CTkLabel(frame, text="", **self._small())
+        self.limit_plan.grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         self._button(frame, "calibrate", "Create Energy cal file", command=self.calibrate).grid(
-            row=6, column=0, columnspan=3, padx=20, pady=10)
+            row=9, column=0, columnspan=3, padx=20, pady=10)
         status = self._frame(tab, "Energy Calibration Result")
         self.cal_status = ctk.CTkLabel(status, text="No calibration run in this session", **self._small())
         self.cal_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
@@ -795,8 +839,10 @@ class PETsysManager:
                 if event.payload.generation == self._awaiting:
                     self.shown_generation = event.payload.generation
                     found = event.payload.issues
+                    self._limit_plans = dict(event.payload.limit_plans)
                     self._show_readiness({key: tuple(found.get(key, ())) + tuple(self._option_issues.get(key, ()))
                                           for key in {*found, *self._option_issues}})
+                    self._show_limit_plans()
             elif event.kind == "inputs_probed":
                 selection = self.selections.get(event.payload.key)
                 if selection is not None and selection.show_probe(event.payload):
@@ -848,6 +894,17 @@ class PETsysManager:
             self.log_text.delete("1.0", f"{lines - limit + 1}.0")
         self.log_text.configure(state="disabled")
         self.log_text.see("end")
+
+    def _show_limit_plans(self):
+        """Event limit of the next calibration (FR-21), from the readiness worker; shown, never computed here."""
+        plan = self._limit_plans.get("calibrate")
+        self.limit_plan.configure(text=limit_plan_text(plan) if plan else
+                                  "Event limit: shown when the calibration prerequisites are met")
+        pipeline = self._limit_plans.get("pipeline")
+        text = self.pipeline_plan.cget("text").split("\nCalibration ")[0]
+        if pipeline:
+            text += "\nCalibration " + limit_plan_text(pipeline)[0].lower() + limit_plan_text(pipeline)[1:]
+        self.pipeline_plan.configure(text=text)
 
     def _show_readiness(self, issues):
         self._issues = {key: tuple(issues.get(key, ())) for key in self.readiness}
@@ -1002,6 +1059,7 @@ class PETsysManager:
                 counts = ", ".join(f"{key} {value:,}" for key, value in (summary.get("status_counts") or {}).items())
                 text += f"\n  {layout}; {summary.get('factors', 0):,} of {summary.get('keys', 0):,} mapped keys " \
                         f"have a factor ({counts})"
+                text += limit_used_text(summary)
             elif stage.stage_id == "listmode" and summary:
                 text += f"\n  {summary.get('records_written', 0):,} LM records written"
                 if summary.get("calibration_non_positive_mu_as_no_factor"):
@@ -1274,6 +1332,7 @@ class PETsysManager:
                  f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
                  f"Processing tab) -> LM with the LM tab files and metadata, header acquisition/measurement time "
                  f"{acq_time} s (Acq. Time). Every stage stays in a new run folder in the Output Data Folder.")
+        self._show_limit_plans()
         mode = SourceMode(self.qc_source.get())
         self.qc_plan.configure(
             text=f"This run: acquire {QC_PRESET_S[mode]:g} s {mode.value} source -> compact coincidence conversion, "
@@ -1299,6 +1358,7 @@ class PETsysManager:
                 value = getattr(profile.lm_metadata, name)
                 self.lm_vars[name].set("" if value is None else format(value, ".15g") if type(value) is float
                                        else str(value))
+            self.target_per_key.set(str(profile.limits.calibration_target_per_key))
         finally:
             self._loading = False
         self._update_profile_status()
@@ -1313,6 +1373,11 @@ class PETsysManager:
         values["cards"] = tuple(card.strip() for card in self.vars["cards"].get().split(",") if card.strip())
         values["safety"] = self.safety_from_ui()
         values["lm_metadata"] = self.lm_metadata_from_ui()
+        try:
+            target = int(self.target_per_key.get().strip())
+        except ValueError:
+            raise ProfileError("Target events per histogram (T) must be a positive integer") from None
+        values["limits"] = replace(self.session.profile.limits, calibration_target_per_key=target)
         return replace(self.session.profile, **values)
 
     def lm_metadata_from_ui(self):
@@ -1373,7 +1438,8 @@ class PETsysManager:
         for key, selection in self.selections.items():
             if key == "calibrate":
                 if positions is not None:
-                    add(key, selection.descriptors(), regions=positions)
+                    add(key, selection.descriptors(), regions=positions,
+                        calibration_limit_mode=self.limit_mode.get())
             elif key == "listmode":   # compact LM decodes at the conversion hit limit (FR-22)
                 if hits is None:
                     reason(key, "options", "Max Hits per Side (RAWF to LDAT tab) must be a positive integer: "
@@ -1389,7 +1455,8 @@ class PETsysManager:
             add("acquire", duration_s=duration, hardware_trigger=self.hw_trigger.get())
             if None not in (splits, hits, positions):   # compact coincidence conversion (FR-10)
                 add("pipeline", duration_s=duration, hardware_trigger=self.hw_trigger.get(), splits=splits,
-                    hit_limit=hits, regions=positions, debug=self.lm_debug.get())
+                    hit_limit=hits, regions=positions, debug=self.lm_debug.get(),
+                    calibration_limit_mode=self.limit_mode.get())
         if None not in (splits, raw_duration, hits):
             common = dict(splits=splits, duration_s=raw_duration, hit_limit=hits,
                           raw_input=self.raw_input.get().strip() or None)
@@ -1414,6 +1481,8 @@ class PETsysManager:
         except ProfileError as exc:
             self._awaiting = None  # an in-flight answer for an older profile is now stale
             self._show_readiness({key: (PrerequisiteIssue("profile", str(exc)),) for key in CHECKS})
+            self._limit_plans = {}  # never show a plan computed from older values
+            self._show_limit_plans()
             return
         requests, self._option_issues = self.requests()
         self._awaiting = self.session.check(profile, requests)
