@@ -948,7 +948,7 @@ Execute in dependency order, one named task at a time. Each task cites its FRs a
   **Verified 2026-10-05:**
   - **`src/petsys_manager/session.py`:** after the outcome, wait (bounded by the shutdown timeout, `time.sleep(0.05)`) until the request thread has released its token; report a new workflow only when a different handle is registered.
   - **Checks:** new `test_close_during_conversion_closes_on_the_first_request` in `scripts/petsys_manager_gui_check.py` (blocking fake converter; the request thread clears the handle 0.5 s late): with the old `session.py` it logs "Close incomplete: A workflow started during shutdown" and the window stays open; with the fix it closes on the first request. Regressions: GUI `--shell --acquisition --conversion --processing` **25/25**; manager `--all` **178 passed / 1 existing Linux-only skip**.
-  - **Still pending:** repeat on the Cornell machine (close during a conversion closes in one request).
+  - **Cornell 2026-10-05:** after the pull and a GUI restart, close during a `run_0002` compact conversion closed the window in one request (`convert-20261005-025333-7f726399`: run and attempt `cancelled`, "Cancelled; owned child reaped", no `convert_raw` left).
 
 - [ ] **T19 — Cornell Linux baseline comparison and operator acceptance** (FR-6–FR-8, FR-12–FR-14, FR-17–FR-18). Using confirmed tool/script versions and operator-selected profile/representative data, compare migrated numerical outputs and perform all live GUI workflows with the operator. Keep this as an explicit external gate.
 
