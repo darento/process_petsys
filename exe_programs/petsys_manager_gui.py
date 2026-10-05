@@ -183,6 +183,9 @@ def limit_plan_text(plan):
     if "error" in plan:
         return f"Event limit unavailable: {plan['error']}"
     files = f"{plan['files']} split(s)" if plan.get("files_from_splits") else f"{plan['files']} file(s)"
+    workers = plan.get("workers")
+    if isinstance(workers, int):
+        files += f", {workers} worker process(es)" if workers > 1 else ", 1 worker (no parallel processing)"
     if plan["limit_mode"] == "reference":
         per_file = plan["limit_per_file"]
         return ("Event limit (reference): " + ("whole files" if per_file is None else
@@ -538,13 +541,14 @@ class PETsysManager:
         self.lm_debug = tk.BooleanVar(root, True)          # the reference LM call always passes -d
         self.limit_mode = tk.StringVar(root, "target")     # FR-21: calibration event limit, per run
         self.target_per_key = tk.StringVar(root)           # FR-21: T, saved in the profile limits
+        self.workers = tk.StringVar(root)                  # FR-15: worker processes, saved in the profile limits
         self._limit_plans = {}
         self.safety_vars = {name: tk.StringVar(root) for name in SAFETY_FIELDS}
         self.lm_vars = {name: tk.StringVar(root) for name in LM_FIELDS}
         self._build()
         for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
-                         self.positions, self.qc_source, self.limit_mode, self.target_per_key,
+                         self.positions, self.qc_source, self.limit_mode, self.target_per_key, self.workers,
                          self.qc_plots, self.qc_slabs, self.lm_debug):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
@@ -743,10 +747,11 @@ class PETsysManager:
                             ("reference", "Reference: 10,000,000 per file (cornell_slab_en_cal.py)")):
             ctk.CTkRadioButton(modes, text=text, variable=self.limit_mode, value=value).pack(side="left", padx=4)
         self._row(frame, 7, "Target sides per histogram (T):", self.target_per_key, width=100)
+        self._row(frame, 8, "Workers (0 = automatic):", self.workers, width=100)
         self.limit_plan = ctk.CTkLabel(frame, text="", **self._small())
-        self.limit_plan.grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        self.limit_plan.grid(row=9, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         self._button(frame, "calibrate", "Create Energy cal file", command=self.calibrate).grid(
-            row=9, column=0, columnspan=3, padx=20, pady=10)
+            row=10, column=0, columnspan=3, padx=20, pady=10)
         status = self._frame(tab, "Energy Calibration Result")
         self.cal_status = ctk.CTkLabel(status, text="No calibration run in this session", **self._small())
         self.cal_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
@@ -1376,6 +1381,7 @@ class PETsysManager:
                 self.lm_vars[name].set("" if value is None else format(value, ".15g") if type(value) is float
                                        else str(value))
             self.target_per_key.set(str(profile.limits.calibration_target_per_key))
+            self.workers.set(str(profile.limits.workers))
         finally:
             self._loading = False
         self._update_profile_status()
@@ -1394,7 +1400,11 @@ class PETsysManager:
             target = int(self.target_per_key.get().strip())
         except ValueError:
             raise ProfileError("Target sides per histogram (T) must be a positive integer") from None
-        values["limits"] = replace(self.session.profile.limits, calibration_target_per_key=target)
+        try:
+            workers = int(self.workers.get().strip())
+        except ValueError:
+            raise ProfileError("Workers must be a whole number (0 = automatic)") from None
+        values["limits"] = replace(self.session.profile.limits, calibration_target_per_key=target, workers=workers)
         return replace(self.session.profile, **values)
 
     def lm_metadata_from_ui(self):

@@ -200,7 +200,9 @@ class ManagerSession:
                                 limit_mode=options.calibration_limit_mode,
                                 event_limit=limits.calibration_event_limit,
                                 target_per_key=limits.calibration_target_per_key)
-        return {**plan, "files_from_splits": settings.action == Action.PIPELINE}
+        from src.cornell.parallel import resolve_workers
+        return {**plan, "files_from_splits": settings.action == Action.PIPELINE,
+                "workers": resolve_workers(limits.workers)}         # FR-15: what the run will use
 
     def probe_inputs(self, profile, key, descriptors, *, max_records=10000):
         """Check the first records of each selected file against the selected map, off the UI thread.
