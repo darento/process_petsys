@@ -157,6 +157,20 @@ Owner decision 2026-10-01: one algorithm for every input format, from `scripts_c
 - **Compact input (FR-22, T21):** each compact record is decoded into the fixed coincidence layout of the conversion hit limit H (empty slots channel −1, time 0, energy 0), regrouped into the same 1000-record batches, and passed to the unchanged batch function. Padding width matters: the reference's float32 sums use numpy pairwise summation, whose grouping depends on the row width, so H must be the fixed width. The slab draws (`np.random.randint(size=rows)`) do not depend on batching. Fixed input keeps `read_fixed_file_numpy` unchanged. The owner's fork writes side-1 padding as channel 0 (side 2: −1); channel 0 is in no minimodule of the Cornell map, so this has no effect there (byte-identical output with it masked, January split 3).
 - Existing resume support is not a new recovery system: retain it only for validated matching manifest/settings/artifacts. Never trust arbitrary existing LM files as successful predecessor outputs.
 
+### Throughput, event limit and progress (FR-1, FR-15, FR-21, FR-22, T25)
+
+Owner decisions 2026-10-04/05. Profile on six January compact files (14.9 M records): P = 1 157 s (pass 1 50 s, pass 2 53 s with no GUI progress, fits 54 s on one core); P = 5 395 s (fits 281 s, 27,772 keys). The LM loops over files one at a time, while every `scripts_cornell/cornell_listmode*.py` ran CPU − 1 files at once; the reference calibration reads its files in a pool too (Cornell 2026-10-05: 6 F18 files, 3 min 23 s wall for 13 min 30 s CPU). Library defaults stay the reference (per-file 10 M, one worker, current LM stream) so the existing parity checks keep pinning reference behaviour; the manager passes the new modes explicitly.
+
+- **Settings (`ProcessingLimits`, profile):** `workers` (0 = auto: `max(1, os.cpu_count() - 2)`, as the Inspector), `calibration_target_per_key` (T, default 3,000), `calibration_memory_mb` (default 8,192), `lm_seed` (fixed default, e.g. 0). `RunOptions.calibration_limit_mode` = `target` (default) or `reference`. Old profiles without these keys load with the defaults.
+- **Event limit (`src/cornell/calibration.py`):** `calibrate(..., limit_mode="per_file", event_limit=EVENT_LIMIT, target_per_key=None, workers=1, memory_budget=None, progress=None)`. `limit_mode="target"`: K = `len(_mapped_keys(mapping, 1))`, N = ⌈K × P × T / 2⌉, per-file limit ⌈N / n⌉, applied by the unchanged `_sample` rule (`before <= limit`). `CalibrationResult`/sidecar `"sampling"` gain mode, T, K, N, per-file limit, workers, decodings and the budget decision; `"coverage"` gains sides per key over the keys that received sides (min, median, below T, below `MIN_EVENTS`); the GUI result shows them. The session's readiness worker computes K from the selected map (off the Tk thread) so the LDAT Processing tab shows N and the share before the run.
+- **One decoding (target mode):** upper bound of kept pairs = 2 × n × (share + 1) sides × (8-byte code + 4-byte energy). Within `memory_budget`, each file's pass returns its selected `codes`/`energies` exactly as `context.select` produced them; the parent concatenates them in input order and runs the existing `first`, `prepare_fit` and `second` from memory, so histograms and fits equal the two-pass path. The two-pass path stays for reference mode, no limit, or a bound above the budget; the pass-consistency check becomes the existing file-fingerprint check when decoding once.
+- **Parallel reading and fits:** a small shared helper `src/cornell/parallel.py` (`ProcessPoolExecutor`, `spawn` context as `exe_programs/ldat_inspector_gui.py`; `workers == 1` runs in-process, no pool). Per-file work is a picklable top-level function building its own `_Context` and `_Reader`; results are consumed in input order. Two-pass parallel: workers return per-file integer histograms by code, merged exactly (integer adds; output order is already the sorted mapped keys, so discovery order does not matter). Fits: `_fit_key` is pure per key; chunks of rows go to the same pool with only the arrays they read, and results are reassembled by row. Calibration makes no random draws (it keeps only two-time-channel sides), so identical bytes for any worker count follow from exact merging.
+- **Parallel LM (`src/cornell/listmode.py` via the helper):** `_process_file` per file in the pool; segments, debug summaries and counts merged in the existing natural order; `listmode.py` itself still imports no `multiprocessing` (the listmode check's ban stays). Each file sets the global NumPy stream once before its first batch, `np.random.seed(SeedSequence([lm_seed, file_index]).generate_state(1)[0])`, so `get_slab_cornell_vectorized` keeps its reference call order within the file; the seed and the per-file seeds are recorded in the segment records and the LM provenance and enter the job digest (resume reuses only segments of the same seed). Library default `lm_seed=None` keeps the current continuing stream.
+- **Cancellation:** the parent checks `cancelled()` between completions, then `shutdown(cancel_futures=True)` and raises the stage's cancelled error; STOP also terminates the CLI child's process group, which holds the spawned workers (Linux).
+- **Progress (FR-1):** the CLI progress event gains `phase` (`read`, `pass 2`, `fits`), `keys_done`, `keys_total`; the workflow relays them in `stage_progress`; the GUI status line shows `pass 2: file i/n` and `fits k/K`. Workers report through completions (per file, per fit chunk), not shared state.
+- **Log timestamps (FR-1):** `PETsysManager.log` prefixes each line with local `HH:MM:SS`; the coordinator measures each stage with its clock and appends the elapsed time to `stage_finished` and the manifest attempt record.
+- **Checks:** calibration: target mode share/stop points; one file target ≡ per-file; reference mode byte-identical to the reference functions (existing tests unchanged); workers 1 vs 2/4, both modes, P = 1 and 5: identical files; one vs two decodings identical, one decoding reads each file once and stays within its bound; budget fallback; cancellation in each phase publishes nothing; coverage numbers on a synthetic map. LM: workers 1 vs 2/4 byte-identical with `lm_seed`; same seed twice identical; different seeds differ only in ambiguous-side slabs; reference loop with the same per-file seeds byte-identical (the real check re-pins its LM item to per-file seeding). GUI/workflow: timestamps, elapsed text, progress phases, limit-mode radio, T/N display. Real: January compact, workers auto vs 1 identical, with timings; Cornell: the 34-file calibration and a multi-file LM, timed.
+
 ### QC and reports
 
 - Extract the reference compact-coincidence filtering/counting/fits and existing PDF/Excel/plot generation into tracked functions. Do not replace it with Inspector algorithms.
@@ -174,7 +188,7 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 
 | Requirement | Components | Tasks |
 | --- | --- | --- |
-| FR-1 | Entry point, GUI; unchanged Inspector | T13–T17 |
+| FR-1 | Entry point, GUI (log timestamps, stage elapsed time, progress); unchanged Inspector | T13–T17, T25 |
 | FR-2 | Tracked Cornell code, CLI, dependencies/preflight | T1–T2, T8–T11, T18 |
 | FR-3 | Settings/profile, resolved inputs, GUI | T2, T5, T13 |
 | FR-4 | Commands/runner/CLI | T3, T11 |
@@ -188,14 +202,14 @@ Actual DAQD readiness, acquisition growth/loss text, successful duration/artifac
 | FR-12 | Calibration/listmode/metadata/provenance | T1, T5, T8–T9, T11, T16, T19 |
 | FR-13 | Pipeline coordinator and actual artifacts | T12, T16–T17, T19 |
 | FR-14 | QC, reports, source settings | T1, T10–T12, T16, T19 |
-| FR-15 | Bounded readers/accumulators/debug summaries | T5, T8–T10, T17 |
+| FR-15 | Bounded readers/accumulators/debug summaries; parallel workers, identical results | T5, T8–T10, T17, T25 |
 | FR-16 | Local deterministic checks and Inspector regression | T1–T18 |
 | FR-17 | Baseline comparison, Linux operator review | T1, T19 |
 | FR-18 | Deployment docs, checkout audit, retirement boundary | T18–T19 |
 | FR-19 | Bias-off after abnormal acquisition end, unknown-bias warning | T7, T14, T19 |
 | FR-20 | Growth/progress feedback, editable safety limits | T7, T14, T19 |
-| FR-21 | Compact/per-slab/position calibration, LM per-slab lookup | T20, T16, T19 |
-| FR-22 | Compact LM and pipeline conversion format | T21, T19 |
+| FR-21 | Compact/per-slab/position calibration, LM per-slab lookup; target/reference event limit | T20, T16, T19, T25 |
+| FR-22 | Compact LM and pipeline conversion format; parallel LM, per-file streams from the LM seed | T21, T19, T25 |
 | FR-23 | PETsys Python interpreter for init/acquire/bias tools | T22, T19 |
 | FR-24 | Each stage validates only the records it reads, in one pass | T24, T19 |
 
