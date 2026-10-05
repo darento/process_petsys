@@ -220,6 +220,14 @@ def common_base(paths):
     return portable_name(base)
 
 
+def reference_base(path):
+    """Reference ``.encal`` base: ``"_".join(basename.split("_")[0:-1])`` (``cornell_slab_en_cal.py``), so the
+    split number goes (``X_coincCompact_00000055.ldat`` -> ``X_coincCompact``); a name without ``_`` keeps its
+    stem (the reference would give an empty base)."""
+    name = Path(path).name
+    return "_".join(name.split("_")[:-1]) or Path(path).stem
+
+
 def run_name(settings, now=None):
     """``<data>_<action>[-<options>]_<YYYY-MM-DD>_<HHMM>`` (FR-9, T29); ``RunStore`` adds ``_2`` ... on a clash."""
     action, options = settings.action, settings.options
@@ -384,7 +392,7 @@ def processing_request(settings, stage, inputs, directory, context):
     action = CLI_ACTIONS[stage]
     request = {"schema_version": 1, "action": action, "processing_root": str(settings.processing_root),
                "processing_config": str(paths["yaml_file"]), "inputs": [_entry(d) for d in inputs]}
-    stem = Path(inputs[0].path).stem
+    stem = reference_base(inputs[0].path)
     if action == "calibrate":
         positions = options.regions
         name = f"{stem}_resolved" if positions == 1 else f"{stem}_position_{positions}regions"
