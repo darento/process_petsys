@@ -78,6 +78,8 @@ class OrderedPool:
                 finished, pending = wait(pending, timeout=POLL_S, return_when=FIRST_COMPLETED)
                 failed = sorted((position[f] for f in finished if f.exception() is not None))
                 if failed:
+                    # STOP sends SIGTERM to the whole process group: a worker killed by it is the cancellation.
+                    self._check()
                     raise futures[failed[0]].exception()
                 while delivered < len(futures) and futures[delivered].done():
                     on_result(delivered, futures[delivered].result())
