@@ -191,7 +191,9 @@ def _file_sha256(path):
 
 class DaqdService:
     def __init__(self, *, runner=None, init_runner=None, resources=None, clock=None, policy=None,
-                 status_sink=None, log_sink=None, build_command=None, build_init=None):
+                 status_sink=None, log_sink=None, daemon_log_sink=None, build_command=None, build_init=None):
+        # daemon_log_sink: the daemon's own output (per-second counters once acquisition is on), kept
+        # apart from the operator log (T35); log_sink when not given. init_system output goes to log_sink.
         self.policy = DaqdPolicy() if policy is None else policy
         if not isinstance(self.policy, DaqdPolicy):
             raise ValueError("DAQD service requires a typed policy")
@@ -201,6 +203,7 @@ class DaqdService:
         self._clock = Clock() if clock is None else clock
         self._status_sink = status_sink
         self._log_sink = log_sink
+        self._daemon_log_sink = log_sink if daemon_log_sink is None else daemon_log_sink
         if build_command is None or build_init is None:
             from .commands import build_daqd, build_initialize  # needs PyYAML via settings
             build_command = build_command or build_daqd
@@ -294,7 +297,7 @@ class DaqdService:
                     if generation == self._generation:
                         self._pid = event.payload["pid"]
         try:
-            result = self._runner.run(command, cancellation=stop, event_sink=events, log_sink=self._log_sink)
+            result = self._runner.run(command, cancellation=stop, event_sink=events, log_sink=self._daemon_log_sink)
             outcome = f"exit code {result.exit_code}, {result.status.value}: {result.message}"
             stop_failed = result.status in (ResultStatus.FAILED, ResultStatus.LAUNCH_ERROR) and stop.is_set()
         except Exception as exc:

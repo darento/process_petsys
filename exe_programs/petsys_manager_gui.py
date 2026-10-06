@@ -124,6 +124,9 @@ OUTPUT_TARGETS = {(DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "l
 SPLIT_NAME = re.compile(r"(.+)_(\d+)\.ldat\Z")
 MAX_FOLDER_ENTRIES = 20000  # bound for the split-sibling folder scan
 PROBE_RECORDS = 10000
+# The daemon's per-second counter line once acquisition is on (one per card): shown, not kept (T35).
+DAQD_COUNTER = re.compile(r"\[std(?:out|err)\] CNT\s")
+DAQD_OUTPUT_HEIGHT = 90
 DAQD_TEXT = {DaqdState.OFF: "DAQD OFF", DaqdState.STARTING: "DAQD STARTING", DaqdState.READY: "DAQD ON",
              DaqdState.STOPPING: "DAQD STOPPING", DaqdState.FAILED: "DAQD FAILED"}
 STATUS_COLOURS = {"info": ("gray10", "gray90"), "ok": ("#1e7d3a", "#6fcf8a"), "warn": ("#a04000", "#f0a050"),
@@ -503,6 +506,8 @@ class PETsysManager:
         self.logo_path = None
         self._ready = {}                # check key -> prerequisites met (latest shown generation)
         self.daqd_status = None         # newest DaqdStatus by service revision
+        self.daqd_counters = []         # newest DAQD counter lines, one per card (T35)
+        self.daqd_counter_lines = 0     # counter lines received from this window's daemons
         self._daqd_pending = False      # a start/stop request has not been answered yet
         self._init_pending = False
         self._token = None              # this window's requested/running workflow
@@ -576,9 +581,19 @@ class PETsysManager:
         self._qc_tab(self.tabs[4])
         output = ctk.CTkFrame(self.root)
         output.pack(fill="x", padx=10, pady=5)  # the tabs take any extra height
-        ctk.CTkLabel(output, text="Output Log:").pack(anchor="w", padx=5, pady=(5, 0))
+        header = ctk.CTkFrame(output, fg_color="transparent")
+        header.pack(fill="x", padx=5, pady=(5, 0))
+        ctk.CTkLabel(header, text="Output Log:").pack(side="left")
+        self.save_log_button = ctk.CTkButton(header, text="Save Log", width=100, command=self.save_log)
+        self.save_log_button.pack(side="right")
         self.log_text = ctk.CTkTextbox(output, width=800, height=150, state="disabled")
         self.log_text.pack(fill="both", expand=True, padx=5, pady=5)
+        # The daemon's own output (T35), apart from the operator log; its counter lines only update
+        # the System Control counters.
+        ctk.CTkLabel(output, text="DAQD Output (daemon messages; counters in System Control):").pack(
+            anchor="w", padx=5, pady=(0, 0))
+        self.daqd_text = ctk.CTkTextbox(output, width=800, height=DAQD_OUTPUT_HEIGHT, state="disabled")
+        self.daqd_text.pack(fill="both", expand=True, padx=5, pady=5)
         self._add_logo()
 
     def _frame(self, parent, title):
@@ -684,6 +699,9 @@ class PETsysManager:
         self.daqd_label = ctk.CTkLabel(control, text="DAQD not started by this manager", justify="left",
                                        anchor="w", wraplength=360, font=ctk.CTkFont(size=11))
         self.daqd_label.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        self.daqd_counter_label = ctk.CTkLabel(control, text="", justify="left", anchor="w", wraplength=360,
+                                               font=ctk.CTkFont(family="Courier", size=10))
+        self.daqd_counter_label.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
         acquisition = self._frame(left, "Data Acquisition")
         ctk.CTkCheckBox(acquisition, text="Enable Hardware Trigger", variable=self.hw_trigger).grid(
             row=1, column=0, padx=20, pady=10)
@@ -852,7 +870,7 @@ class PETsysManager:
 
     def _poll(self):
         self._poll_id = None
-        lines = []
+        lines, daemon = [], []
         for _ in range(MAX_EVENTS_PER_POLL):
             try:
                 event = self.session.events.get_nowait()
@@ -860,6 +878,8 @@ class PETsysManager:
                 break
             if event.kind == "log":
                 lines.append(event.payload)
+            elif event.kind == "daqd_log":
+                daemon.append(event.payload)
             elif event.kind == "readiness":
                 if event.payload.generation == self._awaiting:
                     self.shown_generation = event.payload.generation
@@ -895,6 +915,9 @@ class PETsysManager:
             elif event.kind == "workflow_done":
                 self._workflow_done(event.payload, lines)
             elif event.kind == "shutdown":
+                if daemon:
+                    self.daqd_output(*daemon)
+                    daemon = []
                 if lines:
                     self.log(*lines)
                     lines = []
@@ -902,6 +925,8 @@ class PETsysManager:
                     return  # the window is gone
             else:
                 lines.append(f"Ignored {event.kind} event")
+        if daemon:
+            self.daqd_output(*daemon)
         if lines:
             self.log(*lines)
         self._refresh_controls()
@@ -910,15 +935,75 @@ class PETsysManager:
 
     def log(self, *messages):
         """Append lines in one widget update, each starting with the local time (FR-1); bounded tail."""
+        self._append(self.log_text, messages)
+
+    def _append(self, widget, messages):
         stamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", "".join(f"{stamp} {message}\n" for message in messages))
+        widget.configure(state="normal")
+        widget.insert("end", "".join(f"{stamp} {message}\n" for message in messages))
         limit = self.session.profile.limits.log_tail_lines
-        lines = int(self.log_text.index("end-1c").split(".")[0]) - 1
+        lines = int(widget.index("end-1c").split(".")[0]) - 1
         if lines > limit:
-            self.log_text.delete("1.0", f"{lines - limit + 1}.0")
-        self.log_text.configure(state="disabled")
-        self.log_text.see("end")
+            widget.delete("1.0", f"{lines - limit + 1}.0")
+        widget.configure(state="disabled")
+        widget.see("end")
+
+    def daqd_output(self, *messages):
+        """The daemon's own lines (T35): counters replace the System Control counter text; the
+        other lines go to the bounded DAQD Output box, never to the operator log."""
+        counters = [message for message in messages if DAQD_COUNTER.match(message)]
+        other = [message for message in messages if not DAQD_COUNTER.match(message)]
+        if counters:
+            self.daqd_counter_lines += len(counters)
+            keep = max(1, len(self.session.profile.cards))
+            self.daqd_counters = (self.daqd_counters + counters)[-keep:]
+            stamp = datetime.now().strftime("%H:%M:%S")
+            self.daqd_counter_label.configure(
+                text=f"DAQD counters {stamp} ({self.daqd_counter_lines:,} lines, not logged):\n"
+                     + "\n".join(line.split("] ", 1)[-1] for line in self.daqd_counters))
+        if other:
+            self._append(self.daqd_text, other)
+
+    def save_log(self):
+        """Write the shown Output Log, DAQD Output and counters to a new file in the Report
+        Destination; never overwrites. Written on the Tk thread: at most a few thousand lines."""
+        try:
+            folder = self._report_folder()
+            stamp = datetime.now()
+            content = (f"PETsys Manager {__version__} log saved {stamp.isoformat(timespec='seconds')}\n"
+                       f"Profile: {self.session.profile_path}\n\n== Output Log ==\n"
+                       f"{self.log_text.get('1.0', 'end-1c')}\n\n== DAQD Output ==\n"
+                       f"{self.daqd_text.get('1.0', 'end-1c')}\n\n== DAQD counters ==\n"
+                       f"{self.daqd_counter_label.cget('text')}\n")
+            base = f"petsys_manager_log_{stamp:%Y-%m-%d_%H%M%S}"
+            for number in range(1, 100):
+                path = folder / (base + (f"_{number}" if number > 1 else "") + ".txt")
+                try:
+                    with open(path, "x", encoding="utf-8") as handle:
+                        handle.write(content)
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise OSError(f"No free log file name for {base} in {folder}")
+        except (OSError, ValueError) as exc:
+            self.log(f"Log not saved: {exc}")
+            return None
+        self.log(f"Log saved: {path}")
+        return path
+
+    def _report_folder(self):
+        """The Report Destination as shown (relative to the map root, as preflight resolves it)."""
+        value = self.vars["report_dir"].get().strip()
+        if not value:
+            raise ValueError("Report Destination is empty")
+        root = Path(self.vars["processing_root"].get().strip() or self.session.repo_root).expanduser()
+        root = root if root.is_absolute() else self.session.repo_root / root
+        path = Path(value).expanduser()
+        path = path if path.is_absolute() else root / path
+        if not path.is_dir():
+            raise ValueError(f"Report Destination is not an existing folder: {path}")
+        return path
 
     def _show_limit_plans(self):
         """Event limit of the next calibration (FR-21), from the readiness worker; shown, never computed here."""

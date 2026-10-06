@@ -31,7 +31,8 @@ CHECKOUT = Path(__file__).resolve().parents[2]
 
 @dataclass(frozen=True)
 class ShellEvent:
-    # "log", "readiness", "daqd" (DaqdStatus), "init_done" (InitOutcome), "refused" ((key, message)),
+    # "log", "daqd_log" (a line of the daemon's own output), "readiness", "daqd" (DaqdStatus),
+    # "init_done" (InitOutcome), "refused" ((key, message)),
     # "workflow" (RunEvent), "workflow_done" (WorkflowResult), "shutdown" (ShutdownResult),
     # "inputs_probed" (InputProbe)
     kind: str
@@ -105,6 +106,9 @@ class ManagerSession:
 
     def log(self, message):
         self.events.put(ShellEvent("log", str(message)))
+
+    def daqd_log(self, message):
+        self.events.put(ShellEvent("daqd_log", str(message)))
 
     # Profile ------------------------------------------------------------------------------------
 
@@ -260,7 +264,7 @@ class ManagerSession:
                     from .acquisition import DaqdService
                     self._daqd_factory = DaqdService
                 self._daqd = self._daqd_factory(status_sink=lambda status: self.events.put(ShellEvent("daqd", status)),
-                                                log_sink=self.log)
+                                                log_sink=self.log, daemon_log_sink=self.daqd_log)
             if self._coordinator is None:
                 if self._coordinator_factory is None:
                     from .workflow import WorkflowCoordinator

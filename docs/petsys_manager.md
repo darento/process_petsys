@@ -138,6 +138,7 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
   - READY requires the owned process to answer the DAQD shared-memory query, not just a socket file.
   - Daemon death, or a change of INI or cards, invalidates initialization.
   - Stop and close signal only the owned process.
+  - The daemon's own messages appear in the **DAQD Output** box, not in the Output Log. Its per-second `CNT` counter lines (one per card, once acquisition is on) only update the latest counters under the DAQD status in System Control. **Save Log** writes the Output Log, DAQD Output and counters to a new `petsys_manager_log_<date>_<time>.txt` in the Report Destination.
 - **Acquisition:**
   - A monitored attempt needs the RAW file to start within `startup_timeout_s` and grow by `min_growth_bytes` within `growth_window_s`, with frame loss at most `max_loss_percent`.
   - Only startup timeout, no growth, no data and frame loss are retried, up to `max_attempts`, each to a new path. A nonzero exit is a failure and is not retried.
