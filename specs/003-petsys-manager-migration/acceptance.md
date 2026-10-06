@@ -52,6 +52,8 @@ Before starting:
 - Check the environment: `python -s -c "import customtkinter, numpy, numba, yaml, reportlab, openpyxl"`.
 - Stop `gui_cornell` and any `daqd` it started. The manager refuses to start while `/tmp/d.sock` or `/dev/shm/daqd_shm` exists.
 - Record the PETsys tools folder, the SHA-256 of `daqd`, `acquire_sipm_data`, `convert_raw_to_coincidence`, `convert_raw_to_group` and `set_bias`, the INI path and SHA-256, and the cards.
+- **PETsys software (owner decision 2026-10-06):** confirm that the profile's tools folder is still `/home/sie/sw/sw_daq_tofpet2_20260731a/build` with the SHA-256 of the pre-start record, and `petsys_python` `/usr/bin/python3`. The scanner steps then check this build's live behaviour.
+- **Sibling repository (FR-18):** `git -C <gui_cornell checkout> status --short` and `git -C <gui_cornell checkout> log -1 --format=%H` show it untouched.
 - Note the files already in `data_dir` (`ls -l`) so step 13 can show they survived.
 
 Launch with `python exe_programs/PETsysManager.py --profile <profile.yaml>`. Record each run folder.
@@ -77,32 +79,35 @@ Launch with `python exe_programs/PETsysManager.py --profile <profile.yaml>`. Rec
 | Data | Check | Result |
 |---|---|---|
 | Cornell (owner January/September files; Inspector source unchanged) | `ldat_inspector_check --selftest` 59/59; `ldat_scale_check --real` 15/15; `ldat_unpopulated_check --real` 8/8; `ldat_views_check --real` 174/174; `ldat_pair_choices_check --real` 19/19 (25 GB file as a 30 M prefix, 1.99 GB result); `ldat_issue_check --real` 8/8; slab convention 16/16 | **pass** (2026-10-02) |
-| IMAS | representative IMAS acquisition | pending (no IMAS acquisition on the owner workstation) |
+| IMAS | representative IMAS acquisition | **waived** (owner 2026-10-06): no IMAS acquisition available; spec 003 changes no Inspector source |
 
 ## D. FR-by-FR
 
+Filled 2026-10-06 from the evidence above; every `pending` row names the scanner-on steps left.
+
 | FR | Headless evidence (tasks.md) | Live / real data | Status |
 |---|---|---|---|
-| FR-1 | T13, T17 GUI `--all` | B launch | pending |
-| FR-2 | T18 checkout audit (Windows + Cornell) | B 11 | pending |
-| FR-3 | T2, T13 | B launch (profile) | pending |
-| FR-4 | T3 | B 1–13 | pending |
-| FR-5 | T3, T6, T12 | B 2 | pending |
-| FR-6 | T6, Linux dummy 16/16 | B 1, 2, 13 | pending |
-| FR-7 | T12–T14, T17 | B 4, 11, 13 | pending |
-| FR-8 | T7 | B 3, 12 | pending |
-| FR-9 | T4 | B 5, 13 | pending |
-| FR-10 | T5, T15 | B 5 | pending |
-| FR-11 | T5, T15 | B 5 | pending |
-| FR-12 | T8, T9, T16, T19 μ ≤ 0 / zero-width checks | A pass; B 6, 7, 10 | pending (live) |
-| FR-13 | T12, T16, T17 | B 10, 11 | pending |
-| FR-14 | T10, T16 | A pass; B 9 | pending (live) |
-| FR-15 | T8–T10, T17 bounded storage | A pass | **pass** |
+| FR-1 | T13, T17, T25.1, T31 GUI `--all` | B launch; log timestamps, stage times and progress at Cornell (T25, T28) | **pass** |
+| FR-2 | T18 checkout audit (Windows + Cornell) | B 11: missing COG file refused on the manual action | pending (B 11 pipeline variant) |
+| FR-3 | T2, T13 | B launch (profile `~/.config/process_petsys/petsys_manager.yaml`, used for B 1–8) | **pass** |
+| FR-4 | T3, T22 | B 1, 2, 5–8 (`daqd`, `init_system`, converter) | pending (B 3, 4: `acquire_sipm_data`, `set_bias`) |
+| FR-5 | T3, T6, T12 | B 2 failure path | pending (B 2 success path) |
+| FR-6 | T6, Linux dummy 16/16 | B 1; B 13 close during conversion left the operator's `daqd` running | pending (B 2, 13 acquisition) |
+| FR-7 | T12–T14, T17, T25.4, T30 | STOP in calibration/LM/QC and close during conversion (B 13, T25, T29) | pending (B 4, 11, 13 acquisition) |
+| FR-8 | T7 | — | pending (B 3, 12) |
+| FR-9 | T4, T29, T34 | B 5; T29/T34 run folders, `runs.tsv`, removed index files | pending (B 3, 10, 12: attempt and stage folders) |
+| FR-10 | T5, T15, T21, T28 | B 5 compact conversion; compact calibration, LM and offline QC | **pass** |
+| FR-11 | T5, T15 | B 5–7 exact file lists | **pass** |
+| FR-12 | T8, T9, T16, T19 μ ≤ 0 / zero-width checks | A pass; B 6, 7 pass | pending (B 10) |
+| FR-13 | T12, T16, T17, T29 | — | pending (B 10, 11) |
+| FR-14 | T10, T16, T33 | A pass; offline QC at Cornell (T29, T33) | pending (B 9) |
+| FR-15 | T8–T10, T17 bounded storage, T25, T33 | A pass | **pass** |
 | FR-16 | T1–T17, T19 regressions | — | **pass** (headless) |
-| FR-17 | — | A, B | pending |
-| FR-18 | T18 | sibling untouched | pending |
-| FR-19 | T7, T14 | B 4, 12, 13 | pending |
-| FR-20 | T7, T14 | B 3 | pending |
-| FR-21 | T20 | A pass; B 6 | pending (live) |
-| FR-22 | T21 | A pass (compact LM = fixed); B 5–7, 10 with compact | pending (live) |
-| FR-23 | T22 | B 2 (repeat), 3, 4, 12 | pending (live) |
+| FR-17 | — | A pass; B 1, 5–8 pass; B 7 reconstruction read out of scope (owner 2026-10-06) | pending (B 2–4, 9–13) |
+| FR-18 | T18 | — | pending (sibling untouched, checked at the scanner session) |
+| FR-19 | T7, T14 | — | pending (B 4, 12, 13) |
+| FR-20 | T7, T14 | — | pending (B 3) |
+| FR-21 | T20, T25.2 | A pass; B 6 pass; T25.2 Reference P = 1 byte-identical at Cornell | **pass** |
+| FR-22 | T21, T25.5 | A pass (compact LM = fixed); B 5–7 compact | pending (B 10) |
+| FR-23 | T22 | B 2 failure path reached the daemon with `petsys_python` | pending (B 2 success, 3, 4, 12) |
+| FR-24 | T23, T24, T31 | B 5 structure check; B 6, 7 validated reads | **pass** |
