@@ -42,7 +42,7 @@ from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, Prerequi
 from src.petsys_manager.workflow import format_elapsed, portable_name
 
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 TITLE = "PETsys Manager - Cornell"
 TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processing",
         "LM File Generation", "System Quality Control")

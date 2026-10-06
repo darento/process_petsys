@@ -46,6 +46,12 @@ First versioned release. Offline LDAT inspection as shipped by:
 
 ## PETsys Manager
 
-### Unreleased (0.1.0)
+### 1.0.0 — 2026-10-06
 
-Acquisition, RAW conversion, energy calibration, list-mode and QC workflows for the Cornell system ([spec 003](specs/003-petsys-manager-migration/spec.md), `in progress`). Becomes **1.0.0** when spec 003 is `shipped`.
+First versioned release: Cornell acquisition, compact coincidence conversion, energy calibration, list-mode (LM) and QC workflows in one manager, as shipped by [spec 003](specs/003-petsys-manager-migration/spec.md).
+
+- Owned DAQD, initialization, monitored acquisition with retries and SiPM bias-off after STOP, failures and close.
+- Compact coincidence conversion; per-slab and position energy calibration; compact LM; live and offline QC; complete pipeline in one run folder.
+- Readable run folders with `run.json` and an append-only `runs.tsv`.
+- DAQD output kept apart from the command log, Save Log, and acquisition progress at most every 5 s (T35, T36).
+- Accepted at Cornell on 2026-10-06 ([`acceptance.md`](specs/003-petsys-manager-migration/acceptance.md)).
