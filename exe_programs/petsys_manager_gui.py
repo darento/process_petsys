@@ -1140,7 +1140,13 @@ class PETsysManager:
                         f"first {checked:,} records checked" if checked is not None else "")
                 text += f"\n  {index}. {artifact.path}" + (f"   ({note})" if note else "")
             self.last_conversion = (run_id, tuple(artifact.input_descriptor for artifact in outputs))
-        empty = stage.details.get("empty_ldat", ())
+        removed = stage.details.get("removed", ())
+        if removed:     # T34: after a successful conversion
+            splits = [Path(path).name for path in removed if path.endswith(".ldat")]
+            text += (f"\nRemoved after conversion (not outputs): "
+                     f"{sum(path.endswith('.lidx') for path in removed)} .lidx index file(s)"
+                     + (f"; empty split(s): {', '.join(splits)}" if splits else ""))
+        empty = [path for path in stage.details.get("empty_ldat", ()) if path not in removed]
         if empty:
             text += "\nEmpty split files (kept, not outputs): " + ", ".join(Path(path).name for path in empty)
         return text

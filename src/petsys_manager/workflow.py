@@ -699,23 +699,25 @@ class WorkflowCoordinator:
         result = self._finish(store, attempt, result, details, exclude={str(a.path) for a in empty})
         if result.status == ResultStatus.SUCCEEDED:
             context["inputs"] = tuple(a.input_descriptor for a in result.artifacts)
-            self._remove_disposable(store, attempt, removable)
+            details["removed"] = self._remove_disposable(store, attempt, removable)
         return StageOutcome("conversion", result.status, result.message, identity.attempt_id, attempt.directory,
                             result.artifacts if result.status == ResultStatus.SUCCEEDED else (), freeze(details))
 
     def _remove_disposable(self, store, attempt, artifacts):
-        """T34: the converter's .lidx files and empty splits; a refusal is logged, never a stage failure."""
-        removed = 0
+        """T34: the converter's .lidx files and empty splits; a refusal is logged, never a stage failure.
+        Returns the removed paths (the stage outcome's ``removed``; the run record has each one's cleanup)."""
+        removed = []
         for artifact in artifacts:
             try:
                 store.remove_disposable(attempt, artifact.path)
-                removed += 1
+                removed.append(str(artifact.path))
             except Exception as exc:
                 self._log(f"[conversion] Kept {artifact.path.name}: {exc}")
         if artifacts:
             indexes = sum(a.kind == "index" for a in artifacts)
-            self._log(f"[conversion] Removed {removed} of {len(artifacts)} unused converter file(s) "
+            self._log(f"[conversion] Removed {len(removed)} of {len(artifacts)} unused converter file(s) "
                       f"({indexes} .lidx index, {len(artifacts) - indexes} empty .ldat)")
+        return removed
 
     def _finish(self, store, attempt, result, details, *, exclude=(), extra=()):
         """Record the attempt; failed/cancelled ones keep every regular file as an unvalidated partial."""
