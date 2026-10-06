@@ -226,23 +226,40 @@ class CommandRunner:
                 put((name, None, None))
 
         def consume(name, data, error):
+            # Like a terminal, a "\r" not followed by "\n" overwrites its line (T36): progress written
+            # with "\r" only (acquire_sipm_data) logs its newest line once per chunk; one followed by a
+            # "\n" line is overwritten without a log line. "\r" at the end of a chunk waits for the next.
             if error:
                 fail(error)
             final = data is None
             pending[name] += decoders[name].decode(data or b"", final=final)
+            overwritten = None
             while pending[name]:
-                newline = pending[name].find("\n")
-                if 0 <= newline <= policy.line_chars:
-                    log(name, pending[name][:newline].rstrip("\r"))
-                    pending[name] = pending[name][newline + 1:]
-                elif len(pending[name]) >= policy.line_chars:
-                    log(name, pending[name][:policy.line_chars])
-                    pending[name] = pending[name][policy.line_chars:]
+                text = pending[name]
+                newline = text.find("\n")
+                limit = newline if newline >= 0 else len(text)
+                carriage = text.find("\r", 0, limit)
+                if 0 <= carriage <= policy.line_chars and carriage + 1 != newline and (
+                        carriage + 1 < len(text) or final):
+                    overwritten = text[:carriage]
+                    pending[name] = text[carriage + 1:]
+                elif 0 <= newline <= policy.line_chars:
+                    overwritten = None
+                    log(name, text[:newline].rstrip("\r"))
+                    pending[name] = text[newline + 1:]
+                elif len(text) >= policy.line_chars:
+                    if overwritten is not None:
+                        log(name, overwritten)
+                        overwritten = None
+                    log(name, text[:policy.line_chars])
+                    pending[name] = text[policy.line_chars:]
                 elif final:
-                    log(name, pending[name])
+                    log(name, text)
                     pending[name] = ""
                 else:
                     break
+            if overwritten:
+                log(name, overwritten)
             if final:
                 ended.add(name)
 
