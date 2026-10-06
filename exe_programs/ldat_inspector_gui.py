@@ -41,7 +41,7 @@ from src.ldat_inspector.engine import (
 from src.ldat_inspector.memory import estimate_memory
 
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 # Strong colours for plotted channel states; table rows keep the pale RAWInspector colours.
 STATE_EDGES = {"OK": "#4c9a5b", "NOT OBSERVED": "#d62728", "HIGH": "#c2185b", "LOW": "#ef8a00",
                "INSUFFICIENT EVENTS": "#8c939a"}

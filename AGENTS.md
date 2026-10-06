@@ -19,3 +19,5 @@ Follow [`docs/prompts.md`](docs/prompts.md) for feature work: **Spec → Clarify
 Use `conda run -n process_petsys --no-capture-output python ...` or the corresponding environment interpreter; see `process_petsys.yml` for dependencies. Record a deterministic check for each numerical or file-processing task; compile-check the GUI; verify IMAS and Cornell with representative data. A full-system report needs explicit provenance, denominators, and a clear unavailable state for unsupported measurements. Do not silently import CMB-specific hardware or fit models into PETsys analysis.
 
 Before modifying files, check `git status --short`; never overwrite existing user changes. Do not run release/build commands as a side effect of implementation.
+
+Each `exe_programs/` program carries its own SemVer `__version__`; when its spec ships, bump it and add the entry by following [`CHANGELOG.md`](CHANGELOG.md).
