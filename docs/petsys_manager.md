@@ -7,9 +7,9 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
 | Area | State |
 |---|---|
 | Offline processing (calibration, LM, offline QC) | Checked on synthetic fixtures, and on six real January 2026 Cornell splits against the reference scripts (Windows, 2026-10-02) |
-| Hardware workflows (DAQD, initialize, acquire, live QC, pipeline) | Checked with fake and dummy processes only; **not yet run on the Cornell machine** (T19) |
+| Hardware workflows (DAQD, initialize, acquire, live QC, pipeline) | Accepted on the Cornell machine on 2026-10-06 (T19): initialization, acquisition, STOP and bias-off, retries, live QC, complete pipeline and close ([`acceptance.md`](../specs/003-petsys-manager-migration/acceptance.md)) |
 | Linux runtime environment | Clean-checkout audit (5/5, production process backend) and dummy process checks (16/16) pass on the Cornell machine (2026-10-02) |
-| Comparison with the reference scripts on real data | Pass on the January 2026 Cornell data: calibration, LM and QC identical to the reference ([`acceptance.md`](../specs/003-petsys-manager-migration/acceptance.md)). Repeat on a new Cornell acquisition during operator acceptance (T19) |
+| Comparison with the reference scripts on real data | Pass on the January 2026 Cornell data: calibration, LM and QC identical to the reference; P = 1 calibration and QC also identical on Cornell F18 compact data (2026-10-05) ([`acceptance.md`](../specs/003-petsys-manager-migration/acceptance.md)) |
 
 ## Prerequisites (Cornell Linux machine)
 

@@ -1,6 +1,6 @@
 # Spec 003 — PETsys Manager migration
 
-Status: `in progress`
+Status: `shipped` (2026-10-06; T19 operator acceptance in [`acceptance.md`](acceptance.md); PETsys Manager 1.0.0)
 
 Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). This feature brings the sibling Cornell manager into this repository as a separate application; it does not extend LDAT Inspector with acquisition controls.
 
