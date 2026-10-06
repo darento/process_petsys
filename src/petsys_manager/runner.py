@@ -35,13 +35,14 @@ class RunnerPolicy:
     reap_timeout_s: float = 5.0
     drain_timeout_s: float = 1.0
     descendant_grace_s: float = 2.0   # helpers (e.g. multiprocessing's resource tracker) exit just after the child
+    progress_interval_s: float = 5.0  # newest "\r"-overwritten line logged at most this often (T36)
 
     def __post_init__(self):
         for name in ("log_tail_lines", "chunk_bytes", "queue_chunks", "line_chars"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"{name} must be a positive integer")
         for name in ("poll_interval_s", "terminate_grace_s", "reap_timeout_s", "drain_timeout_s",
-                     "descendant_grace_s"):
+                     "descendant_grace_s", "progress_interval_s"):
             value = getattr(self, name)
             try:
                 finite = type(value) in (int, float) and math.isfinite(value)
@@ -225,15 +226,25 @@ class CommandRunner:
             finally:
                 put((name, None, None))
 
+        held = {name: "" for name in decoders}       # newest "\r"-overwritten line not yet logged
+        shown_at = {name: None for name in decoders}  # when an overwritten line was last logged
+
+        def show_held(name, now):
+            if held[name]:
+                log(name, held[name])
+                shown_at[name] = now
+            held[name] = ""
+
         def consume(name, data, error):
             # Like a terminal, a "\r" not followed by "\n" overwrites its line (T36): progress written
-            # with "\r" only (acquire_sipm_data) logs its newest line once per chunk; one followed by a
-            # "\n" line is overwritten without a log line. "\r" at the end of a chunk waits for the next.
+            # with "\r" only (acquire_sipm_data, ten lines a second) logs its newest line at most every
+            # progress_interval_s, and the last one at the end of the stream; one followed by a "\n"
+            # line is overwritten without a log line. A "\r" ending the data read waits for the next read.
             if error:
                 fail(error)
             final = data is None
+            now = self.clock.monotonic()
             pending[name] += decoders[name].decode(data or b"", final=final)
-            overwritten = None
             while pending[name]:
                 text = pending[name]
                 newline = text.find("\n")
@@ -241,16 +252,14 @@ class CommandRunner:
                 carriage = text.find("\r", 0, limit)
                 if 0 <= carriage <= policy.line_chars and carriage + 1 != newline and (
                         carriage + 1 < len(text) or final):
-                    overwritten = text[:carriage]
+                    held[name] = text[:carriage]
                     pending[name] = text[carriage + 1:]
                 elif 0 <= newline <= policy.line_chars:
-                    overwritten = None
+                    held[name] = ""
                     log(name, text[:newline].rstrip("\r"))
                     pending[name] = text[newline + 1:]
                 elif len(text) >= policy.line_chars:
-                    if overwritten is not None:
-                        log(name, overwritten)
-                        overwritten = None
+                    show_held(name, now)
                     log(name, text[:policy.line_chars])
                     pending[name] = text[policy.line_chars:]
                 elif final:
@@ -258,8 +267,8 @@ class CommandRunner:
                     pending[name] = ""
                 else:
                     break
-            if overwritten:
-                log(name, overwritten)
+            if final or shown_at[name] is None or now - shown_at[name] >= policy.progress_interval_s:
+                show_held(name, now)
             if final:
                 ended.add(name)
 
