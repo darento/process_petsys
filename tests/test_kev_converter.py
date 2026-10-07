@@ -19,12 +19,12 @@ def _write(tmp_path, name, text):
 
 @pytest.fixture
 def mu_file(tmp_path):
-    return _write(tmp_path, "mu.tsv", "ID\tmu\n5\t100.0\n6\t255.5\n7\t0.0\n")
+    return _write(tmp_path, "mu.tsv", "ID\tmu\n5\t100.0\n6\t255.5\n7\t0.0\n8\t-5.0\n9\tnan\n")
 
 
 @pytest.fixture
 def cornell_file(tmp_path):
-    return _write(tmp_path, "slab.encal", "ID(t_ch, slab)\tmu\tsigma\n(10, 3)\t200.0\t5.0\n(10, 4)\t0.0\t0.0\n")
+    return _write(tmp_path, "slab.encal", "ID(t_ch, slab)\tmu\tsigma\n(10, 3)\t200.0\t5.0\n(10, 4)\t0.0\t0.0\n(10, 6)\t-2.0\t0.0\n")
 
 
 @pytest.mark.fr("006-FR-7")
@@ -71,8 +71,9 @@ def test_unknown_file_type_rejected(mu_file):
 
 
 @pytest.mark.fr("006-FR-7", "bug-kev-mu-zero")
-@pytest.mark.xfail(strict=True, reason="bug-kev-mu-zero: mu == 0 returns 0 keV; fix pending")
-@pytest.mark.parametrize("file_type, key", [("mu", 7), ("cornell", (10, 4))])
-def test_zero_factor_gets_no_number(mu_file, cornell_file, file_type, key):
+@pytest.mark.parametrize("file_type, key", [("mu", 7), ("mu", 8), ("mu", 9), ("cornell", (10, 4)), ("cornell", (10, 6))],
+                         ids=["mu 0", "mu negative", "mu nan", "cornell 0", "cornell negative"])
+def test_unusable_factor_gets_no_number(mu_file, cornell_file, file_type, key):
+    # Before the fix: mu == 0 gave 0 keV and a negative mu a negative keV.
     path = {"mu": mu_file, "cornell": cornell_file}[file_type]
     assert math.isnan(KevConverter(path, file_type).convert(key, 100.0))

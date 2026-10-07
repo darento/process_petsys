@@ -1,3 +1,4 @@
+import math
 import random
 from typing import Callable
 import pandas as pd
@@ -453,8 +454,8 @@ class KevConverter:
 
     def convert_mu(self, id: int, energy: float) -> float:
         mu = self.kev_factors[id]
-
-        return 511.0 / mu * energy if mu != 0 else 0
+        # A zero, negative or non-finite factor is no calibration: NaN, never a made-up keV.
+        return 511.0 / mu * energy if math.isfinite(mu) and mu > 0 else math.nan
 
     def convert_poly(self, id: int, energy: float) -> float:
         coeffs = self.poly_coeffs[id]
