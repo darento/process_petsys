@@ -2,13 +2,14 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
-# Default run excludes real_data; a command-line -m replaces this one.
+# Default run excludes real_data and slow (spec 007); a command-line -m replaces this one,
+# so -m "not real_data" is the full run.
 # No cacheprovider: pytest writes nothing into the repo tree.
-addopts = ["--strict-markers", "-m", "not real_data", "-p", "no:cacheprovider", "-p", "pytester"]
+addopts = ["--strict-markers", "-m", "not real_data and not slow", "-p", "no:cacheprovider", "-p", "pytester"]
 markers = [
-    "real_data: needs acquisitions/calibrations under PETSYS_DATA_DIR; excluded by default",
+    "real_data: needs acquisitions under PETSYS_DATA_DIR / calibrations under PETSYS_CAL_DIR; excluded by default",
     "gui: opens hidden Tk windows; skipped when no display is available",
     "linux: runs only on Linux (Cornell PC); skipped elsewhere",
-    "slow: takes more than a few seconds; runs by default",
+    "slow: takes 5 s or more; excluded by default, runs with -m \"not real_data\"",
     "fr(*ids): requirement ids this test checks, e.g. 003-FR-21 or bug-<short-name>; select with --fr <id>",
 ]

@@ -1,4 +1,4 @@
-"""Shared pytest fixtures and options for the process_petsys suite (spec 006).
+"""Shared pytest fixtures and options for the process_petsys suite (specs 006, 007).
 
 Markers are registered in ``pyproject.toml``; the pytester plugin is loaded there
 with ``-p pytester`` for the infrastructure tests. Shared non-fixture code lives
@@ -12,11 +12,26 @@ from pathlib import Path
 import pytest
 
 DATA_ENV = "PETSYS_DATA_DIR"
+CAL_ENV = "PETSYS_CAL_DIR"
 
 
 def pytest_addoption(parser):
     parser.addoption("--fr", action="append", default=[], metavar="ID",
                      help="run only tests citing requirement ID with @pytest.mark.fr (repeatable)")
+    parser.addoption("--slow-limit", type=float, default=None, metavar="SECONDS",
+                     help="fail a passing test not marked slow whose call takes SECONDS or more")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    limit = item.config.getoption("slow_limit")
+    if (limit is not None and report.when == "call" and report.passed
+            and report.duration >= limit and not item.get_closest_marker("slow")):
+        report.outcome = "failed"
+        report.longrepr = (f"slow-limit: took {report.duration:.2f} s >= {limit:g} s "
+                           f"without @pytest.mark.slow")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -50,24 +65,46 @@ def tk_root():
     root.destroy()
 
 
-@pytest.fixture
-def real_data_dir():
-    """Root of acquisitions/calibrations from PETSYS_DATA_DIR; skips when unavailable."""
-    value = os.environ.get(DATA_ENV)
+def _env_dir(env):
+    """Directory named by environment variable ``env``; skips, naming it, when unavailable."""
+    value = os.environ.get(env)
     if not value:
-        pytest.skip(f"real_data: {DATA_ENV} is not set")
+        pytest.skip(f"real_data: {env} is not set")
     path = Path(value)
     if not path.is_dir():
-        pytest.skip(f"real_data: {DATA_ENV}={value} is not a directory")
+        pytest.skip(f"real_data: {env}={value} is not a directory")
     return path
+
+
+def _file_finder(root, env):
+    """Return a finder for files under ``root`` that skips, naming the file, when one is missing."""
+    def find(relative):
+        path = root / relative
+        if not path.is_file():
+            pytest.skip(f"real_data: missing {relative} under {env}={root}")
+        return path
+    return find
+
+
+@pytest.fixture
+def real_data_dir():
+    """Root of acquisitions from PETSYS_DATA_DIR; skips when unavailable."""
+    return _env_dir(DATA_ENV)
 
 
 @pytest.fixture
 def real_data_file(real_data_dir):
-    """Return a finder for files under PETSYS_DATA_DIR that skips, naming the file, when one is missing."""
-    def find(relative):
-        path = real_data_dir / relative
-        if not path.is_file():
-            pytest.skip(f"real_data: missing {relative} under {DATA_ENV}={real_data_dir}")
-        return path
-    return find
+    """Finder for files under PETSYS_DATA_DIR; skips, naming the file, when one is missing."""
+    return _file_finder(real_data_dir, DATA_ENV)
+
+
+@pytest.fixture
+def real_cal_dir():
+    """Root of calibration files from PETSYS_CAL_DIR; skips when unavailable."""
+    return _env_dir(CAL_ENV)
+
+
+@pytest.fixture
+def real_cal_file(real_cal_dir):
+    """Finder for files under PETSYS_CAL_DIR; skips, naming the file, when one is missing."""
+    return _file_finder(real_cal_dir, CAL_ENV)

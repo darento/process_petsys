@@ -6,9 +6,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 ## Infrastructure
 
-- [ ] **T0 — Default run, calibration fixture, slow guard** (FR-4, FR-5). `addopts` `-m "not real_data and not slow"`; `real_cal_file` fixture (`PETSYS_CAL_DIR`, skip naming it); `--slow-limit SECONDS` option; `test_infra.py` cases for all three; spec 006's `--fr` unchanged.
+- [x] **T0 — Default run, calibration fixture, slow guard** (FR-4, FR-5). `addopts` `-m "not real_data and not slow"`; `real_cal_file` fixture (`PETSYS_CAL_DIR`, skip naming it); `--slow-limit SECONDS` option; `test_infra.py` cases for all three; spec 006's `--fr` unchanged.
 
   **Done when:** `python -m pytest tests/test_infra.py` passes, covering: default run deselects `slow` and `real_data`; `-m "not real_data"` runs `slow`; `real_cal_file` skips naming `PETSYS_CAL_DIR` (unset) and the missing file; `--slow-limit 1` fails a 1.5 s non-slow test and passes a `slow` one. Full suite still passes.
+
+  Verified 2026-10-07 (Windows): `python -m pytest tests/test_infra.py` → 25 passed (7 new: 3 `real_cal_file`, default/full selection, `--slow-limit 1` fails the unmarked 1.5 s test with `slow-limit: took 1.5x s >= 1 s`, off by default); `python -m pytest` → 100 passed; `-m "not real_data" --slow-limit 5` → 100 passed. Negative (scratch copies): dropping the `slow` exemption → 1 failed; `CAL_ENV` → `PETSYS_DATA_DIR` → 3 failed; `addopts` without `not slow` → 2 failed.
 
 - [ ] **T1 — Retire three scripts** (FR-1). Delete `scripts/ldat_package_check.py`, `scripts/cornell_slab_en_cal_check.py` (+ `scripts/fixtures_cornell_slab_spectra.json`), `scripts/ldat_real_check.py`.
 

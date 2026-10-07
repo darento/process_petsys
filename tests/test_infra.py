@@ -1,4 +1,5 @@
-"""Suite infrastructure (spec 006): markers, --fr selection, real-data skips, platform skips.
+"""Suite infrastructure (specs 006, 007): markers, --fr selection, real-data skips, platform
+skips, default run without slow, --slow-limit.
 
 Each check runs a throwaway project in a pytester subprocess with copies of the real
 ``pyproject.toml`` and ``tests/conftest.py``, so it exercises the actual configuration.
@@ -107,6 +108,89 @@ def test_real_data_runs_when_file_present(project, monkeypatch, tmp_path):
     monkeypatch.setenv("PETSYS_DATA_DIR", str(tmp_path))
     project(REAL_DATA_TESTS).runpytest_subprocess("-m", "real_data").assert_outcomes(
         passed=1, deselected=1)
+
+
+REAL_CAL_TESTS = """
+import pytest
+
+@pytest.mark.real_data
+def test_needs_cal(real_cal_file):
+    assert real_cal_file("jan/slab.encal").stat().st_size == 3
+"""
+
+
+@pytest.mark.fr("007-FR-4")
+def test_real_cal_skips_naming_unset_variable(project, monkeypatch):
+    monkeypatch.delenv("PETSYS_CAL_DIR", raising=False)
+    result = project(REAL_CAL_TESTS).runpytest_subprocess("-m", "real_data", "-rs")
+    result.assert_outcomes(skipped=1)
+    result.stdout.fnmatch_lines(["*SKIPPED*real_data: PETSYS_CAL_DIR is not set*"])
+
+
+@pytest.mark.fr("007-FR-4")
+def test_real_cal_skips_naming_missing_file(project, monkeypatch, tmp_path):
+    monkeypatch.setenv("PETSYS_CAL_DIR", str(tmp_path))
+    result = project(REAL_CAL_TESTS).runpytest_subprocess("-m", "real_data", "-rs")
+    result.assert_outcomes(skipped=1)
+    result.stdout.fnmatch_lines(["*SKIPPED*real_data: missing jan/slab.encal under PETSYS_CAL_DIR=*"])
+
+
+@pytest.mark.fr("007-FR-4")
+def test_real_cal_runs_when_file_present(project, monkeypatch, tmp_path):
+    (tmp_path / "jan").mkdir()
+    (tmp_path / "jan" / "slab.encal").write_bytes(b"abc")
+    monkeypatch.setenv("PETSYS_CAL_DIR", str(tmp_path))
+    project(REAL_CAL_TESTS).runpytest_subprocess("-m", "real_data").assert_outcomes(passed=1)
+
+
+SLOW_TESTS = """
+import pytest
+
+@pytest.mark.slow
+def test_slow(): pass
+
+@pytest.mark.real_data
+def test_real(): pass
+
+def test_plain(): pass
+"""
+
+
+@pytest.mark.fr("007-FR-5")
+def test_default_run_deselects_slow_and_real_data(project):
+    project(SLOW_TESTS).runpytest_subprocess().assert_outcomes(passed=1, deselected=2)
+
+
+@pytest.mark.fr("007-FR-5")
+def test_full_run_includes_slow(project):
+    project(SLOW_TESTS).runpytest_subprocess("-m", "not real_data").assert_outcomes(
+        passed=2, deselected=1)
+
+
+SLEEP_TESTS = """
+import time
+import pytest
+
+@pytest.mark.slow
+def test_slow_sleeper(): time.sleep(1.5)
+
+def test_sleeper(): time.sleep(1.5)
+
+def test_quick(): pass
+"""
+
+
+@pytest.mark.fr("007-FR-5")
+def test_slow_limit_fails_unmarked_slow_test(project):
+    result = project(SLEEP_TESTS).runpytest_subprocess("-m", "not real_data", "--slow-limit", "1", "-v")
+    result.assert_outcomes(passed=2, failed=1)
+    result.stdout.fnmatch_lines(["*::test_slow_sleeper PASSED*", "*::test_sleeper FAILED*",
+                                 "*slow-limit: took 1.* s >= 1 s without @pytest.mark.slow*"])
+
+
+@pytest.mark.fr("007-FR-5")
+def test_slow_limit_is_off_by_default(project):
+    project(SLEEP_TESTS).runpytest_subprocess().assert_outcomes(passed=2, deselected=1)
 
 
 @pytest.mark.fr("006-FR-3", "006-FR-11")
