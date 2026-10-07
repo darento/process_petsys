@@ -7,7 +7,7 @@ Reference oracles (``scripts_cornell``) stay out: their outputs become golden fi
   ``FakeBackend``, ``DirectDummyChild``, ``FakeDaemon``, ``FakeResources``, ``ToolWorld``.
 - Wire encoders: ``compact_record``, ``fixed_record``, ``encode``, ``encode_fixed``, ``encode_compact``.
 - Fixture builders: ``CalibrationFixtures`` (a root-based builder), and the ``TestCase`` mixins
-  ``ListmodeFixtures``, ``QCFixtures`` and ``CLIFixtures``. ``ListmodeFixtures.at(root)`` and
+  ``SettingsFixtures``, ``ListmodeFixtures``, ``QCFixtures`` and ``CLIFixtures``. ``ListmodeFixtures.at(root)`` and
   ``QCFixtures.at(root)`` build the same fixtures outside a test class.
 - ``PrivateOutput``: per-class private folder under the user temp directory (short paths:
   Windows MAX_PATH applies to the literal fixture paths), removed after the class unless
@@ -66,12 +66,12 @@ def private_parent():
 class PrivateOutput:
     """``TestCase`` mixin: ``cls.output`` is a fresh private folder for the class."""
 
-    output_prefix = "petsys-manager-"
+    fixture_prefix = "petsys-manager-"
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.output = Path(tempfile.mkdtemp(prefix=cls.output_prefix, dir=private_parent()))
+        cls.output = Path(tempfile.mkdtemp(prefix=cls.fixture_prefix, dir=private_parent()))
 
     @classmethod
     def tearDownClass(cls):
@@ -116,6 +116,25 @@ def profile_fixture(root):
         calibration_file="private/cal.encal", pair_map_file="private/pairs.txt", region_map_file="private/regions.tsv",
         cards=(str(root / "private/card0"), str(root / "private/card1")),
         capabilities=ToolCapabilities(), lm_metadata=metadata)
+
+
+class SettingsFixtures:
+    """``TestCase`` mixin (petsys_manager_check ``SettingsChecks`` setup): a fresh profile per test."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.output / self._testMethodName
+        self.profile = profile_fixture(self.root)
+        self.probe = FixtureProbe()
+        self.inputs = (InputDescriptor(Path("private/input.ldat"), "compact", "coincidence"),)
+
+    def check_action(self, action, profile=None, options=None, inputs=None, **kwargs):
+        return preflight(profile or self.profile, action, options, self.inputs if inputs is None else inputs,
+                         repo_root=self.root, probe=kwargs.pop("probe", self.probe), **kwargs)
+
+    def assertReady(self, report):
+        self.assertTrue(report.ready, report.issues)
+        self.assertIsNotNone(report.settings)
 
 
 class FakeChild:
@@ -752,7 +771,7 @@ class CLIFixtures(PrivateOutput):
     """``TestCase`` mixin: requests for the three processing actions on fixtures whose every
     path contains spaces and shell metacharacters, and launchers for ``src.cornell.cli``."""
 
-    output_prefix = "petsys-manager-cli-"
+    fixture_prefix = "petsys-manager-cli-"
 
     @classmethod
     def setUpClass(cls):

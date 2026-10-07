@@ -120,7 +120,7 @@ def test_tool_world_fakes_acquisition(tmp_path):
 
 
 class ListmodeMixinSmoke(ListmodeFixtures, PrivateOutput, unittest.TestCase):
-    output_prefix = "petsys-t3-lm-"
+    fixture_prefix = "petsys-t3-lm-"
 
     @pytest.mark.fr("007-FR-6")
     def test_mixin_roots_at_test_name(self):

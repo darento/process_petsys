@@ -20,7 +20,7 @@ from src.petsys_manager.contracts import (Artifact, CommandResult, Identity,
 
 @pytest.mark.fr("003-FR-9", "003-FR-11", "003-FR-16")  # spec 003 T4
 class ArtifactChecks(PrivateOutput, unittest.TestCase):
-    output_prefix = "petsys-manager-artifacts-"
+    fixture_prefix = "petsys-manager-artifacts-"
 
     def setUp(self):
         self.root = self.output / self._testMethodName

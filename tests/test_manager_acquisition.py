@@ -142,7 +142,7 @@ class ScenarioBackend:
 
 @pytest.mark.fr("003-FR-5", "003-FR-7", "003-FR-8", "003-FR-9", "003-FR-16")  # spec 003 T7
 class AcquisitionChecks(PrivateOutput, unittest.TestCase):
-    output_prefix = "petsys-manager-acquisition-"
+    fixture_prefix = "petsys-manager-acquisition-"
 
     def setUp(self):
         self.root = self.output / self._testMethodName

@@ -55,7 +55,7 @@ def wait_for(predicate, timeout=5.0):
 
 @pytest.mark.fr("003-FR-5", "003-FR-6", "003-FR-7", "003-FR-16")  # spec 003 T6
 class DaqdChecks(PrivateOutput, unittest.TestCase):
-    output_prefix = "petsys-manager-daqd-"
+    fixture_prefix = "petsys-manager-daqd-"
 
     def setUp(self):
         self.root = self.output / self._testMethodName
