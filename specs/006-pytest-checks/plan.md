@@ -4,7 +4,7 @@ Owner-approved scope: [`spec.md`](spec.md) (approved 2026-10-07). One named task
 
 | Requirement | Implementation/check |
 | --- | --- |
-| FR-1 | `pytest==8.3.5` in `process_petsys.yml` (pip block); `pyproject.toml` `[tool.pytest.ini_options]`: `testpaths = ["tests"]`, `pythonpath = [".", "tests"]`, markers, `addopts = "--strict-markers -m 'not real_data' -p no:cacheprovider"` |
+| FR-1 | `pytest==8.3.5` in `process_petsys.yml` (pip block); `pyproject.toml` `[tool.pytest.ini_options]`: `testpaths = ["tests"]`, `pythonpath = [".", "tests"]`, markers, `addopts = ["--strict-markers", "-m", "not real_data", "-p", "no:cacheprovider", "-p", "pytester"]`; `exceptiongroup==1.2.2` pinned (tensorflow 2.13 needs `typing-extensions<4.6`) |
 | FR-2 | Tests write only to `tmp_path`/`tmp_path_factory`; `-p no:cacheprovider` (no `.pytest_cache` in the repo); `git status --short` before/after the fresh-clone run |
 | FR-3 | Markers registered in `pyproject.toml`; `conftest.py` collection hook skips `linux` off Linux with reason; `tk_root` fixture creates a withdrawn `Tk()` and skips on `TclError` with reason |
 | FR-4 | `real_data_dir` fixture reads `PETSYS_DATA_DIR`, skips naming the variable; `real_data_file(rel)` helper skips naming the missing file; baselines read from `tests/data/` |
@@ -20,7 +20,7 @@ Owner-approved scope: [`spec.md`](spec.md) (approved 2026-10-07). One named task
 ```
 pyproject.toml            # pytest config only; setup.py unchanged
 tests/
-  conftest.py             # markers/options/fixtures; pytest_plugins = ["pytester"]
+  conftest.py             # options/fixtures (pytester loaded by -p pytester in addopts)
   helpers.py              # write_ldat(), load_map(), REPO, DATA
   data/                   # future real-data baselines (none in this spec)
   test_infra.py           # pytester checks of FR-3/FR-4/FR-5 behavior

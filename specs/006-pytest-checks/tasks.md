@@ -2,13 +2,17 @@
 
 Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-07. Environment: `conda run -n process_petsys --no-capture-output python -m pytest` (or the env interpreter `-m pytest`) from the repo root. Never stage or commit; the owner runs git.
 
-- [ ] **T0 — Owner: commit `bug-map-channels-key` and track the Cornell map** (precondition for T9). Commit the working-tree `channels:` lines in `maps/{imas1DAQ,imas2DAQ,default,cpp,erc}_map.yaml` and force-add `maps/cornell_map_full_system.yaml` (single Cornell full-system map; `_20260928` deleted by the owner). The `configs/*.yaml` diffs are line endings only; leave them out.
+- [x] **T0 — Owner: commit `bug-map-channels-key` and track the Cornell map** (precondition for T9). Commit the working-tree `channels:` lines in `maps/{imas1DAQ,imas2DAQ,default,cpp,erc}_map.yaml` and force-add `maps/cornell_map_full_system.yaml` (single Cornell full-system map; `_20260928` deleted by the owner). The `configs/*.yaml` diffs are line endings only; leave them out.
 
   **Done when:** `git show HEAD:maps/imas1DAQ_map.yaml` loaded by `map_factory` returns without `Missing mandatory key`, for all five maps; `git ls-files maps/cornell_map_full_system.yaml` lists it. T6's test on a fresh clone repeats both.
 
-- [ ] **T1 — pytest install and config** (FR-1, FR-2, FR-3). Add `pytest==8.3.5` to `process_petsys.yml`; `pip install pytest==8.3.5` in the env; add `pyproject.toml` (`[tool.pytest.ini_options]` only) per plan; add `!tests/data/**` to `.gitignore`; create `tests/conftest.py` (empty apart from `pytest_plugins`).
+  **Verified 2026-10-07:** owner commit `f0ae742`. `git show HEAD:` copies of the six maps loaded by `map_factory` in the env interpreter: cornell 7680, cpp 256, default 1792, erc 1792, imas1DAQ 30720, imas2DAQ 30720 channels, no error; `git ls-files` lists `maps/cornell_map_full_system.yaml`.
+
+- [x] **T1 — pytest install and config** (FR-1, FR-2, FR-3). Add `pytest==8.3.5` to `process_petsys.yml`; `pip install pytest==8.3.5` in the env; add `pyproject.toml` (`[tool.pytest.ini_options]` only) per plan; add `!tests/data/**` to `.gitignore`; create `tests/conftest.py` (empty apart from `pytest_plugins`).
 
   **Done when:** `python -m pytest --markers` lists `real_data`, `gui`, `linux`, `slow`, `fr`; `python -m pytest` exits 5 ("no tests ran") with no `.pytest_cache/` created; `git check-ignore -v tests/data/x.tsv tests/data/x.txt tests/data/x.csv` reports none ignored.
+
+  **Verified 2026-10-07 (Windows, env interpreter `C:/Users/dsanchez/AppData/Local/anaconda3/envs/process_petsys/python.exe`):** `pip install pytest==8.3.5` also upgraded `typing-extensions` to 4.16.0 (via `exceptiongroup` 1.3.1), breaking tensorflow 2.13's `<4.6.0` pin; restored with `exceptiongroup==1.2.2 typing-extensions==4.5.0`, `pip check` → no broken requirements, tensorflow 2.13.0 imports. `exceptiongroup==1.2.2` pinned in `process_petsys.yml` next to pytest. `python -m pytest --markers` lists all five markers; `python -m pytest` → `collected 0 items`, `no tests ran`, exit 5, no `.pytest_cache/`. `git check-ignore --no-index tests/data/x.{tsv,txt,csv,png} tests/data/sub/x.json tests/conftest.py pyproject.toml` → none ignored (exit 1); `tests/__pycache__/*.pyc` still ignored. pytester is loaded with `-p pytester` in `addopts` rather than `pytest_plugins` in `conftest.py` (same effect, no conftest-level plugin rule); `conftest.py` is a docstring only until T2. `git diff --check` passes.
 
 - [ ] **T2 — conftest fixtures, options and infra tests** (FR-3, FR-4, FR-5, FR-6). `--fr` option and deselection; `linux` collection skip; `tk_root` fixture; `real_data_dir` / `real_data_file`; `tests/helpers.py` with `write_ldat`, `load_map`, `REPO`, `DATA`. `tests/test_infra.py` uses pytester.
 

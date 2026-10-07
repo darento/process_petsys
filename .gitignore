@@ -166,6 +166,8 @@ cython_debug/
 *.tsv
 *.csv
 *.lm
+# Test data stays tracked despite the patterns above (spec 006).
+!tests/data/**
 
 # Configs and maps directories
 configs/
