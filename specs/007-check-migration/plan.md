@@ -52,7 +52,7 @@ tests/
 - **Spec 003 T19 real tests.** `scripts/petsys_manager_t19_baseline_jan2026.json` (operator manifest) becomes `tests/data/baselines/t19_jan2026_manifest.json` with paths relative to `PETSYS_DATA_DIR` and the January config; the newest Windows `real_baseline.json` (2026-10-05) becomes `t19_jan2026_result.json`. `petsys_manager_t19_baseline_cornell_f18.json` is retired with the other Cornell-PC real modes.
 - **Retired data.** `scripts/fixtures_cornell_slab_spectra.json` is used only by `cornell_slab_en_cal_check.py` and goes with it.
 - **Timing.** Every migration task runs its file with `--durations=0`; tests ≥ 5 s get `slow`. The 120 s default budget is checked at T24 on a fresh clone.
-- **Order.** Leaves before dependents: helpers first, then the manager group from `artifact` (no deps) up to `gui`; the golden capture before the oracle-based checks; the LDAT group after; docs and validation last.
+- **Order.** Leaves before dependents: helpers first, then the manager group from `artifact` (no deps) up to `gui`; the golden capture before the oracle-based checks; the LDAT group after; docs and validation last. **Deferred deletion** (owner 2026-10-07): a migrated script that a remaining script still imports at module level stays on disk, unchanged, until its last importer is migrated, and is deleted in that importer's task; lazy imports in aggregate runners (`petsys_manager_check.py`, `numeric_check` modes) do not defer. `tasks.md` records the deferral.
 - Rejected: moving test classes unchanged with cross-imports (double collection); live oracles behind an env var (owner chose golden files); one huge file per GUI check (owner chose per area).
 
 ## Risks
