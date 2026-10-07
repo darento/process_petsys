@@ -23,13 +23,17 @@ class YAMLMapReader:
         Returns:
         bool: True if the YAML map is valid, False otherwise.
         """
-        # Validate mandatory keys
+        # Validate mandatory keys; a type may be a tuple of accepted types
         for key, value_type in self.schema["mandatory"].items():
             if key not in yaml_map:
                 raise RuntimeError(f"Missing mandatory key in YAML map: {key}")
-            if not isinstance(yaml_map[key], value_type):
+            value = yaml_map[key]
+            types = value_type if isinstance(value_type, tuple) else (value_type,)
+            # bool is a subclass of int: accept it only where bool is expected
+            if not isinstance(value, types) or (isinstance(value, bool) and bool not in types):
+                expected = " or ".join(t.__name__ for t in types)
                 raise RuntimeError(
-                    f"Incorrect type for mandatory key {key}: expected {value_type.__name__}, got {type(yaml_map[key]).__name__}"
+                    f"Incorrect type for mandatory key {key}: expected {expected}, got {type(value).__name__}"
                 )
 
         # Check for the presence and validity of one and only one optional group

@@ -76,7 +76,9 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 ## Bug fixes found by this spec (separate from 007, FR-10)
 
-- `bug-filter-channel-list` — `src/filters.py:filter_channel_list` tests `imp[0]` (timestamp) instead of the channel ID.
-- `bug-filter-max-sm-minimodules` — `src/filters.py:filter_max_sm` counts `(supermodule, minimodule)` pairs, so one supermodule hit in two minimodules fails `max_sm=1` (T2 finding).
-- `bug-yaml-bool-as-int` — `src/yaml_handler.py` accepts a bool for an integer key (`channels: true` → 1).
-- `bug-yaml-tuple-type-message` — `src/yaml_handler.py` formats `value_type.__name__`, so a wrong type for an `(int, float)` key (`x_pitch`, `y_pitch`) raises `AttributeError` instead of `RuntimeError` naming the key (T2 finding).
+Fixes verified 2026-10-07 (Windows): `python -m pytest` → 164 passed, 0 xfailed; `-m "not real_data" --slow-limit 5` → 164 passed; all 11 `maps/*.yaml` load through `map_factory`; nothing calls `filter_max_sm`/`filter_channel_list`; `map_factory` is the only `YAMLMapReader` user; local `ldat_scale_check` 65/65, `ldat_unpopulated_check` 6/6.
+
+- `bug-filter-channel-list` — `src/filters.py:filter_channel_list` tests `imp[0]` (timestamp) instead of the channel ID. Fixed 2026-10-07: tests `imp[2]`; `--fr bug-filter-channel-list` → 3 passed.
+- `bug-filter-max-sm-minimodules` — `src/filters.py:filter_max_sm` counts `(supermodule, minimodule)` pairs, so one supermodule hit in two minimodules fails `max_sm=1` (T2 finding). Fixed 2026-10-07: counts `sm_mM_map[ch][0]`, docstring names the `(SM, mM)` map; `--fr bug-filter-max-sm-minimodules` → 1 passed.
+- `bug-yaml-bool-as-int` — `src/yaml_handler.py` accepts a bool for an integer key (`channels: true` → 1). Fixed 2026-10-07: a bool passes only where `bool` is an accepted type; test also rejects `x_pitch: false` and keeps `sum_rows_cols: false`; `--fr bug-yaml-bool-as-int` → 1 passed.
+- `bug-yaml-tuple-type-message` — `src/yaml_handler.py` formats `value_type.__name__`, so a wrong type for an `(int, float)` key (`x_pitch`, `y_pitch`) raises `AttributeError` instead of `RuntimeError` naming the key (T2 finding). Fixed 2026-10-07: tuple types reported as `expected int or float`; `--fr bug-yaml-tuple-type-message` → 1 passed.

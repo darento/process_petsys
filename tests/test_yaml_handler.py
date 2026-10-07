@@ -45,17 +45,18 @@ def test_wrong_type_named():
 
 
 @pytest.mark.fr("007-FR-9", "bug-yaml-tuple-type-message")
-@pytest.mark.xfail(strict=True, reason="bug-yaml-tuple-type-message: (int, float) has no __name__ -> AttributeError")
 def test_wrong_type_named_for_multi_type_key():
-    with pytest.raises(RuntimeError, match="Incorrect type for mandatory key x_pitch"):
+    with pytest.raises(RuntimeError, match="Incorrect type for mandatory key x_pitch: expected int or float, got str"):
         validate({**VALID, "x_pitch": "3.2"})
 
 
 @pytest.mark.fr("007-FR-9", "bug-yaml-bool-as-int")
-@pytest.mark.xfail(strict=True, reason="bug-yaml-bool-as-int: bool passes isinstance(value, int)")
 def test_bool_rejected_for_integer_key():
-    with pytest.raises(RuntimeError, match="Incorrect type for mandatory key channels"):
+    with pytest.raises(RuntimeError, match="Incorrect type for mandatory key channels: expected int, got bool"):
         validate({**VALID, "channels": True})
+    with pytest.raises(RuntimeError, match="Incorrect type for mandatory key x_pitch: expected int or float, got bool"):
+        validate({**VALID, "x_pitch": False})
+    assert validate({**VALID, "sum_rows_cols": False}) is True
 
 
 @pytest.mark.fr("007-FR-9")
