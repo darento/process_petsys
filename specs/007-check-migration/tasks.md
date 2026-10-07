@@ -32,7 +32,9 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 ## Manager group (spec 003)
 
-- [ ] **T4 — migrate `petsys_manager_artifact_check`** (44 tests) → `tests/test_manager_artifacts.py`.
+- [x] **T4 — migrate `petsys_manager_artifact_check`** (44 tests) → `tests/test_manager_artifacts.py`.
+
+  Verified 2026-10-07 (Windows): script `python scripts/petsys_manager_artifact_check.py` → `PASS: 44 checks; 1 skipped`; `python -m pytest tests/test_manager_artifacts.py` → 43 passed, 1 skipped (`linux`: the symlink test, `@unittest.skipIf(os.name == "nt")` → `@pytest.mark.linux`, FR-7). `ArtifactChecks` moved unchanged on `PrivateOutput` (replaces its `setUpClass`); AST: all 48 methods identical to the script. Citations (FR-8): class `003-FR-9`, `003-FR-11`, `003-FR-16` (spec 003 T4); the 7 T29 tests add `003-FR-13`, the FR-24 test `003-FR-24`; `--fr 003-FR-16` → 43 passed, 1 skipped; `--fr 003-FR-13` → 7; `--fr 003-FR-24` → 1. `--durations`: slowest 0.06 s, none `slow`. No fixture folder left after the run. `python -m pytest` → 220 passed, 1 skipped; `-m "not real_data" --slow-limit 5` → 220 passed, 1 skipped (includes the `test_infra.py` scan). Script deleted; `petsys_manager_check.py --artifacts`/`--all` (lazy import) no longer load it, aggregate dropped at T6.
 - [ ] **T5 — migrate `petsys_manager_daqd_check` (22) and `petsys_manager_acquisition_check` (27)** → `tests/test_manager_daqd.py`, `tests/test_manager_acquisition.py`.
 - [ ] **T6 — migrate `petsys_manager_check`** (75; modes `--settings --commands --runner --artifacts`, plus GUI/Linux parts) → `tests/test_manager_{settings,commands,runner}.py` (artifacts already in T4); aggregate `main()` dropped.
 - [ ] **T7 — migrate `petsys_manager_numeric_check`** (41; modes `--formats --calibration --listmode --qc --bounded --scope`) → `tests/test_manager_formats.py`; the other modes map to T9–T12 files.
