@@ -19,7 +19,6 @@ Welcome to event_petsys's documentation!
    plots
    read_compact
    utils
-   write_output
    yaml_handler
 
 
