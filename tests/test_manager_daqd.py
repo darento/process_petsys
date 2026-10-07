@@ -87,6 +87,8 @@ class DaqdChecks(PrivateOutput, unittest.TestCase):
                               init_runner=CommandRunner(policy=FAST, backend=self.init_backend),
                               resources=self.resources, policy=POLICY, status_sink=self.statuses.append,
                               **sinks)
+        # Stop a daemon the test left running: no petsys-daqd thread outlives the test (spec 007 T15).
+        self.addCleanup(service.close, 5.0)
         return service
 
     def ready(self, service):

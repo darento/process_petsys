@@ -1,0 +1,64 @@
+# tuple of (min, max) total energy to consider per event.
+# if None (default), no cut is applied  
+energy_range: [357, 665] #[408, 613] - 20% ccc [357, 665] - 30% ccc [255.5, 766.5] - 50% ccc [0, 1500] - all
+
+# minimum number of channels to consider per event 
+min_ch: 4
+
+# minimum energy per channel to consider per event
+en_min_ch: 0.2
+
+# path to map file
+map_file: maps/cornell_map_full_system_old.yaml
+
+# SuperModules with only half of their minimodules populated with sensors
+# (owner-confirmed 2026-09-25: SM 2, 5, 8, ..., 29). The listed minimodules have
+# no SiPMs: LDATInspector does not expect channels or data from them.
+unpopulated_minimodules:
+  2: [2, 3, 6, 7, 10, 11, 14, 15]
+  5: [2, 3, 6, 7, 10, 11, 14, 15]
+  8: [2, 3, 6, 7, 10, 11, 14, 15]
+  11: [2, 3, 6, 7, 10, 11, 14, 15]
+  14: [2, 3, 6, 7, 10, 11, 14, 15]
+  17: [2, 3, 6, 7, 10, 11, 14, 15]
+  20: [2, 3, 6, 7, 10, 11, 14, 15]
+  23: [2, 3, 6, 7, 10, 11, 14, 15]
+  26: [2, 3, 6, 7, 10, 11, 14, 15]
+  29: [2, 3, 6, 7, 10, 11, 14, 15]
+
+# Relax factor to apply for skew iteration process
+relax_factor: 0.5
+
+# Monitor time channels list to track skew calibration over iterations
+mon_id: []
+
+# Corona phantom radius (mm) — virtual cylinder the LOR must cross
+pipe_radius: 140.0
+
+# Cassette geometry (mirrors the IMAS ring_* convention, with Cornell's
+# cassette-first SM numbering — see sm_map_gen in cornell_skew_cal_bigdata.py).
+#
+#   ring_r  : the distance used for the skew-calibration phantom (the diameter
+#             of the activity used there), not the cassette-face radius. The
+#             LDATInspector System Overview does not use it.
+#   ring_z  : z positions of the SMs that live inside one cassette (mm). The
+#             cornell_map_full_system map has 3 SMs per (port, slave), so this
+#             list has 3 entries. Total SMs = 10 cassettes * 3 SMs = 30.
+#   ring_yx : [Y, X] centre direction of each cassette, 10 entries at 36° steps
+#             (only the angle is used by sm_centre_pos — magnitudes shown for
+#             clarity).
+#
+# Real Cornell geometry (owner-confirmed 2026-09-28).
+ring_r: 160.0
+ring_z: [-102.0, 0.0, 102.0]
+ring_yx:
+  0: [   0.000,  160.000]   # θ =   0°
+  1: [  94.046,  129.443]   # θ =  36°
+  2: [ 152.169,   49.443]   # θ =  72°
+  3: [ 152.169,  -49.443]   # θ = 108°
+  4: [  94.046, -129.443]   # θ = 144°
+  5: [   0.000, -160.000]   # θ = 180°
+  6: [ -94.046, -129.443]   # θ = 216°
+  7: [-152.169,  -49.443]   # θ = 252°
+  8: [-152.169,   49.443]   # θ = 288°
+  9: [ -94.046,  129.443]   # θ = 324°

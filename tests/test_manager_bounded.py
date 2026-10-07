@@ -1,8 +1,10 @@
-"""Bounded storage: each processing action end to end under tracemalloc (spec 003 T17; spec 007 T12).
+"""Bounded storage: each processing action end to end under tracemalloc (spec 003 T17; spec 007 T12, T26).
 
 Moved from scripts/petsys_manager_bounded_check.py. Each processing action runs end to end through
-``src.cornell.cli.main`` (request -> validation -> processing -> plots/debug -> published result) in-process under
-tracemalloc, on BASE and then COPIES byte-identical copies of one fixture file.
+``src.cornell.cli.main`` (request -> validation -> processing -> plots/debug -> published result) under
+tracemalloc, on BASE and then COPIES byte-identical copies of one fixture file. An action's runs share one
+fresh child interpreter (T26): in the test process, earlier tests had grown the interned-string table, so
+its resize during the COPIES run counted as a 5 MiB peak growth that no input caused.
 Limits fixed before the first run (2026-10-02): peak growth <= BUDGET, while the
 added copies hold >= SENSITIVITY input bytes, so keeping even the raw input would
 exceed the budget. Per-file counts must be equal and totals scale exactly.
@@ -13,15 +15,16 @@ baseline is BASE = 2 files. The budget is unchanged; the 1-file peak is printed.
 Synthetic fixtures only.
 """
 
-import gc
+import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
-import tracemalloc
 import unittest
 
 import pytest
 
+from helpers import REPO
 from manager_helpers import P3_SPECS, CLIFixtures, entry, pairs, sides_for
 from src.cornell import listmode as lm
 from src.petsys_manager.contracts import DataFormat, InputDescriptor
@@ -31,6 +34,24 @@ COPIES = 8
 SCALE = COPIES // BASE
 BUDGET = 2 * 1024 * 1024          # peak growth allowed for COPIES - BASE extra files
 SENSITIVITY = 8 * 1024 * 1024     # minimum input bytes in those extra files
+
+# Child interpreter: argv[1] is a JSON list of (action, request, result); prints [(exit code, peak, stderr tail)].
+MEASURE = """
+import gc, io, json, sys, tracemalloc
+from src.cornell import cli
+out = []
+for action, request, result in json.loads(sys.argv[1]):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    gc.collect()
+    tracemalloc.start()
+    try:
+        code = cli.main([action, "--request", request, "--result", result], stdout=stdout, stderr=stderr)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    out.append((code, peak, stderr.getvalue()[-4000:]))
+print(json.dumps(out))
+"""
 
 
 @pytest.mark.fr("003-FR-15", "003-FR-16")  # spec 003 T17
@@ -54,28 +75,34 @@ class BoundedChecks(CLIFixtures, unittest.TestCase):
             out.append(InputDescriptor(path, descriptor.format, descriptor.population))
         return out
 
-    def measure(self, action, request, inputs, outputs):
-        run = dict(request, inputs=[entry(d) for d in inputs], outputs=outputs)
-        gc.collect()
-        tracemalloc.start()
-        try:
-            code, result, _, stderr = self.in_process(action, run)
-            peak = tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
-        self.assertEqual(code, 0, stderr[-4000:])
-        self.assertEqual(result["status"], "succeeded")
-        return peak, result
+    def measure(self, action, request, runs):
+        """Each (inputs, outputs) run in order in one fresh interpreter (``MEASURE``); returns [(peak, result)]."""
+        jobs = []
+        for inputs, outputs in runs:
+            request_path, result_path = self.write_request(dict(request, inputs=[entry(d) for d in inputs],
+                                                                outputs=outputs))
+            jobs.append((action, str(request_path), str(result_path)))
+        proc = subprocess.run([sys.executable, "-X", "utf8", "-c", MEASURE, json.dumps(jobs)], cwd=REPO,
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr[-4000:])
+        measured = []
+        for (_, _, result_path), (code, peak, stderr) in zip(jobs, json.loads(proc.stdout.splitlines()[-1])):
+            self.assertEqual(code, 0, stderr)
+            result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "succeeded")
+            measured.append((peak, result))
+        return measured
 
     def bounded(self, action, request, base, outputs, *, budget=BUDGET):
         """Warm-up, 1 copy (recorded only), then BASE vs COPIES copies; returns (base, many) summaries.
         ``budget=None`` records the peaks without asserting a growth bound."""
         added = (COPIES - BASE) * base.path.stat().st_size
         self.assertGreaterEqual(added, SENSITIVITY, "fixture too small to detect per-event retention")
-        self.measure(action, request, self.copies(base, 1), outputs("warm"))   # imports, fonts, caches
-        peak_single, _ = self.measure(action, request, self.copies(base, 1), outputs("single"))
-        peak_one, one = self.measure(action, request, self.copies(base, BASE), outputs("one"))
-        peak_many, many = self.measure(action, request, self.copies(base, COPIES), outputs("many"))
+        _, (peak_single, _), (peak_one, one), (peak_many, many) = self.measure(action, request, [
+            (self.copies(base, 1), outputs("warm")),          # imports, fonts, caches
+            (self.copies(base, 1), outputs("single")),
+            (self.copies(base, BASE), outputs("one")),
+            (self.copies(base, COPIES), outputs("many"))])
         print(f"\n  {action}: 1 file {peak_single / 2**20:.2f} MiB; {BASE} -> {COPIES} files (+{added / 2**20:.1f} "
               f"MiB input): peak {peak_one / 2**20:.2f} -> {peak_many / 2**20:.2f} MiB, growth "
               f"{(peak_many - peak_one) / 2**10:.0f} KiB, budget "

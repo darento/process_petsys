@@ -172,6 +172,8 @@ cython_debug/
 # Configs and maps directories
 configs/
 maps/
+# Tracked config copies for tests (spec 007 T15); the rule above would match them too.
+!tests/data/configs/
 scripts_cornell/
 scripts_imas/
 # Local scripts and checks stay untracked; only the template is shared.
