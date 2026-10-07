@@ -28,9 +28,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
   **Verified 2026-10-07 (Windows, env interpreter):** same session, same map file: `python -X utf8 scripts/cornell_slab_convention_check.py` → `PASS: 16/16`; `python -m pytest tests/test_cornell_slab.py` → **16 passed**; `--fr bug-cornell-slab-convention` → 16 passed, 14 deselected; `--fr 002-FR-17` → the same 16. Cases, geometry lookup, seeds (`random.seed(1)`, `np.random.seed(1)` per case and implementation) and 200 trials for the one-channel middle case are unchanged; the `check()` table became `parametrize` (8 cases × scalar/vectorized). Negative check: a scratchpad copy with the half-slab sign flipped and the p-1 case expecting slab 7 → 14 failed, 2 passed (the two unresolved cases have no x). Script deleted from `scripts/` (copy kept in the session scratchpad); no other script imports it; references in specs 001–004 stay as history. Full `python -m pytest -q` → 30 passed.
 
-- [ ] **T5 — read_compact tests** (FR-6, FR-7, FR-10). `tests/test_read_compact.py` using `write_ldat`.
+- [x] **T5 — read_compact tests** (FR-6, FR-7, FR-10). `tests/test_read_compact.py` using `write_ldat`.
 
   **Done when:** round-trip, empty-file and `en_filter` tests pass; truncated-data and truncated-header tests report `xfailed` with reason `bug-read-compact-truncation` (and fail before marking: phantom `([], [])` / `struct.error`, recorded here).
+
+  **Verified 2026-10-07 (Windows, env interpreter):** `python -m pytest tests/test_read_compact.py -rx` → **3 passed, 3 xfailed** (reason `bug-read-compact-truncation`). Passing: round trip of 3 known pairs (multi-hit, timestamps to 2^40+9, channel IDs 0/63/64/4095/4096/131071/131072 and port 7/slave 31/chip 63/channel 63); empty file → no pairs; `en_filter=4.0` keeps hits ≥ 4.0 (boundary kept), drops the rest, keeps all 3 records. Before marking (`--runxfail`) → 3 failed: cut in the header → `struct.error: unpack requires a buffer of 2 bytes`; cut in detector-1 hits → DID NOT RAISE, extra `([], [])`; cut in detector-2 hits → DID NOT RAISE, extra record with detector 1's 3 hits and an empty detector 2 (half a coincidence, which reads like a single). The test asserts the planned fix contract: the complete pair intact, then `ValueError`.
 
 - [ ] **T6 — map_factory tests** (FR-7). `tests/test_mapping.py` over the six tracked maps (five IMAS-family + Cornell).
 
@@ -53,5 +55,5 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 Each one gets its own regression test (the xfail test above, with its marker removed) and is recorded here only as a cross-reference.
 
 - `bug-map-channels-key` — committed maps lack `channels` (T0, owner; same commit tracks the Cornell map).
-- `bug-read-compact-truncation` — phantom `([], [])` / `struct.error` on a truncated last record; fix: yield complete pairs, then raise `ValueError` with the byte offset.
+- `bug-read-compact-truncation` — on a truncated last record: phantom `([], [])` (cut in detector 1), a half record with detector-1 hits and empty detector 2 (cut in detector 2), or `struct.error` (cut in header); fix: yield complete pairs, then raise `ValueError` with the byte offset.
 - `bug-kev-mu-zero` — `convert_mu` returns 0 keV for `mu == 0`; fix: return `nan`, like `ldat_inspector.engine`.

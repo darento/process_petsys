@@ -28,7 +28,7 @@ Clarify (2026-10-06):
 Clarify (2026-10-07, found while planning):
 
 - The committed `maps/{imas1DAQ,imas2DAQ,default,cpp,erc}_map.yaml` lack the mandatory `channels` key, so `map_factory` fails on a fresh clone. The owner commits the working-tree `channels:` lines as bug fix `bug-map-channels-key` before the fresh-clone check; tests use the tracked `maps/`.
-- `src/read_compact.py` truncated last record: the test asserts every complete pair is returned intact and the partial record yields no pair. Today it yields a phantom `([], [])` (data cut) or raises `struct.error` (header cut); the fix is bug fix `bug-read-compact-truncation`.
+- `src/read_compact.py` truncated last record: the test asserts every complete pair is returned intact and the partial record yields no pair. Today it yields a phantom `([], [])` (cut in detector 1), a half record with detector-1 hits and an empty detector 2 (cut in detector 2) or raises `struct.error` (header cut); the fix is bug fix `bug-read-compact-truncation`.
 - `KevConverter.convert_mu` with `mu == 0` returns 0 keV, which is a fabricated value. The test asserts no number is returned; the fix is bug fix `bug-kev-mu-zero`.
 - Cornell map: `maps/cornell_map_full_system.yaml` is the single Cornell full-system map; `cornell_map_full_system_20260928.yaml` was deleted by the owner. The owner force-adds `maps/cornell_map_full_system.yaml` to git in the same commit as `bug-map-channels-key`; tests read it from `maps/`, with no copy under `tests/data/`.
 - Until its bug fix lands, a test that exposes one of these defects is `xfail(strict=True)` citing the bug id, so the default run passes and the fix flips it to a pass.
