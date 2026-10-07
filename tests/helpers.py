@@ -1,4 +1,5 @@
-"""Shared test helpers (spec 006): repo paths, synthetic LDAT writer, map/config loaders.
+"""Shared test helpers (specs 006, 007): repo paths, synthetic LDAT writer, map/config
+loaders, small synthetic channel maps.
 
 Import as ``from helpers import ...``; ``pyproject.toml`` puts ``tests/`` on the path.
 """
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from src.mapping_generator import map_factory
+from src.mapping_generator import ChannelType, map_factory
 
 REPO = Path(__file__).resolve().parent.parent
 DATA = REPO / "tests" / "data"
@@ -19,6 +20,15 @@ CONFIGS = REPO / "configs"
 # counts of the two detectors, then one "qfi" (timestamp, energy, channel ID) per hit.
 HEADER = "2B"
 HIT = "qfi"
+
+# Small maps in map_factory's form (channel -> [ChannelType], channel -> (SM, mM)).
+# Channels 0-3 energy only and 4-7 time only (summed rows/cols); 8-9 both types (FEM128 style).
+SYNTH_CHTYPE = {**{c: [ChannelType.ENERGY] for c in range(4)},
+                **{c: [ChannelType.TIME] for c in range(4, 8)},
+                8: [ChannelType.TIME, ChannelType.ENERGY], 9: [ChannelType.TIME, ChannelType.ENERGY]}
+# SM 0 holds minimodules 0 (channels 0, 1, 4, 5) and 1 (2, 3, 6, 7); SM 1 minimodule 0 holds 8, 9.
+SYNTH_SM_MM = {0: (0, 0), 1: (0, 0), 4: (0, 0), 5: (0, 0), 2: (0, 1), 3: (0, 1), 6: (0, 1), 7: (0, 1),
+               8: (1, 0), 9: (1, 0)}
 
 
 def write_ldat(path, pairs):

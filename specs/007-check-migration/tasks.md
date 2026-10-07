@@ -18,9 +18,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
   Verified 2026-10-07: grep of all `*.py` under the repo (incl. `scripts_cornell/`, `scripts_imas/`) finds only self-references (usage lines, the en_cal check loading its own JSON); the four files were untracked, deleted with `rm` (local backup kept outside the repo); `scripts/` now holds 27 `*_check.py`; earlier evidence untouched in specs 001, 002, 004, 006 `tasks.md`.
 
-- [ ] **T2 — Direct src tests** (FR-9, FR-10). `tests/test_filters.py`, `tests/test_filters_fixed.py`, `tests/test_fem_handler.py`, `tests/test_yaml_handler.py` per spec FR-9.
+- [x] **T2 — Direct src tests** (FR-9, FR-10). `tests/test_filters.py`, `tests/test_filters_fixed.py`, `tests/test_fem_handler.py`, `tests/test_yaml_handler.py` per spec FR-9.
 
-  **Done when:** `python -m pytest --fr 007-FR-9 -rx` passes with exactly two strict xfails (`bug-filter-channel-list`, `bug-yaml-bool-as-int`), each failing before marking (recorded); scalar/vectorized agreement on shared synthetic events; a negative check (deliberately broken copy) fails.
+  **Done when:** `python -m pytest --fr 007-FR-9 -rx` passes with strict xfails only for `bug-filter-channel-list`, `bug-filter-max-sm-minimodules`, `bug-yaml-bool-as-int`, `bug-yaml-tuple-type-message`, each failing before marking (recorded); scalar/vectorized agreement on shared synthetic events; a negative check (deliberately broken copy) fails.
+
+  Verified 2026-10-07 (Windows): `python -m pytest --fr 007-FR-9 -rx` → 54 passed, 6 xfailed (4 bug ids; `bug-filter-channel-list` has 3 cases: det1 valid, timestamps-not-channels, det2 valid). `--runxfail` → exactly those 6 fail, each for its bug (max_sm `False` for one SM in two mM; channel_list judges timestamps; `AttributeError: 'tuple' object has no attribute '__name__'`; bool `DID NOT RAISE`). Vectorized vs scalar agree on 7 shared events incl. padding and the empty event, dict and array forms. Negative (scratch copies of `src`): padding counted in `filter_min_ch_vectorized` → 7 failed; row/col swapped in `get_coordinates` → 3 failed; both-groups check removed → 1 failed; `>=` in `filter_total_energy` → 2 failed; dropping `has_hits` in `filter_single_mM_vectorized` → 0 failed (equivalent: the min/max sentinels already reject an empty event). `python -m pytest` → 158 passed, 6 xfailed; `-m "not real_data" --slow-limit 5` → same. Synthetic maps shared via `tests/helpers.py` (`SYNTH_CHTYPE`, `SYNTH_SM_MM`). FEM128 summed coordinates not asserted (y offset 7 against a 16-channel span gives negative y; no map uses it).
 
 - [ ] **T3 — Manager helpers** (FR-6). `tests/manager_helpers.py`: copy the shared builders and fakes listed in the plan; mixins for the shared `TestCase` setup (`CalibrationFixtures`, `ListmodeFixtures`, `QCFixtures`, `CLIFixtures`). Scripts stay untouched.
 
@@ -75,4 +77,6 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 ## Bug fixes found by this spec (separate from 007, FR-10)
 
 - `bug-filter-channel-list` — `src/filters.py:filter_channel_list` tests `imp[0]` (timestamp) instead of the channel ID.
+- `bug-filter-max-sm-minimodules` — `src/filters.py:filter_max_sm` counts `(supermodule, minimodule)` pairs, so one supermodule hit in two minimodules fails `max_sm=1` (T2 finding).
 - `bug-yaml-bool-as-int` — `src/yaml_handler.py` accepts a bool for an integer key (`channels: true` → 1).
+- `bug-yaml-tuple-type-message` — `src/yaml_handler.py` formats `value_type.__name__`, so a wrong type for an `(int, float)` key (`x_pitch`, `y_pitch`) raises `AttributeError` instead of `RuntimeError` naming the key (T2 finding).
