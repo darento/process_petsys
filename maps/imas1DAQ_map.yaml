@@ -21,6 +21,9 @@ y_pitch: 3.0
 # FEM being used (FEM128/FEM256)
 FEM: "FEM256"
 
+# Number of channels in the FEM (128 for FEM128, 256 for FEM256)
+channels: 256
+
 # FEB/D being used (FEBD1k/FEBD8k)
 FEBD: "FEBD8k"
 
