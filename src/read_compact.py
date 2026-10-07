@@ -21,12 +21,15 @@ def read_detector_evt(
 
     Returns:
     list: A list of tuples containing the unpacked data.
+
+    Raises:
+    ValueError: If the file ends before all ``num_lines`` hits are read.
     """
-    try:
-        data = [struct.unpack(data_format, f.read(data_size)) for _ in range(num_lines)]
-    except struct.error:
-        print("Error reading data")
-        return []
+    expected = data_size * num_lines
+    raw = f.read(expected)
+    if len(raw) < expected:
+        raise ValueError(f"expected {num_lines} hits ({expected} bytes), found {len(raw)} bytes")
+    data = [struct.unpack_from(data_format, raw, i * data_size) for i in range(num_lines)]
 
     return [evt_ch for evt_ch in data if evt_ch[1] >= en_filter]
 
@@ -47,6 +50,10 @@ def read_binary_file(
             - det1: list of [[timestamp, energy, channel_id]] for detector 1
             - det2: list of [[timestamp, energy, channel_id]] for detector 2
                    (empty list if group_events is True)
+
+    Raises:
+        ValueError: If the last record is truncated, after every complete record
+            has been yielded; a partial record never yields hits.
     """
     # Define the struct formats and sizes
     header_format = "B" if group_events else "2B"  # Format for the header
@@ -62,23 +69,33 @@ def read_binary_file(
             total=total_size, unit="B", unit_scale=True, desc="File read progress"
         ) as pbar:
             while True:
+                record_start = read_size
                 header_data = f.read(header_size)
                 if not header_data:
                     break
+                if len(header_data) < header_size:
+                    raise ValueError(
+                        f"{file_path}: truncated record header at byte {record_start}"
+                    )
                 header = struct.unpack(header_format, header_data)
 
                 # Update the read size
                 read_size += header_size
                 pbar.update(header_size)
 
-                det1 = read_detector_evt(
-                    f, data_format, data_size, header[0], en_filter
-                )
-                det2 = (
-                    read_detector_evt(f, data_format, data_size, header[1], en_filter)
-                    if not group_events
-                    else []
-                )
+                try:
+                    det1 = read_detector_evt(
+                        f, data_format, data_size, header[0], en_filter
+                    )
+                    det2 = (
+                        read_detector_evt(f, data_format, data_size, header[1], en_filter)
+                        if not group_events
+                        else []
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{file_path}: truncated record at byte {record_start}: {exc}"
+                    ) from None
                 # Update the read size
                 read_size += header[0] * data_size + (
                     header[1] * data_size if not group_events else 0

@@ -59,8 +59,6 @@ TRUNCATIONS = {
 
 
 @pytest.mark.fr("006-FR-7", "bug-read-compact-truncation")
-@pytest.mark.xfail(strict=True, reason="bug-read-compact-truncation: partial record yields ([], []) "
-                                       "or raises struct.error; fix pending")
 @pytest.mark.parametrize("cut", TRUNCATIONS.values(), ids=TRUNCATIONS.keys())
 def test_truncated_last_record_yields_no_pair(tmp_path, cut):
     complete = PAIRS[:1]
@@ -68,8 +66,9 @@ def test_truncated_last_record_yields_no_pair(tmp_path, cut):
     path = tmp_path / "truncated.ldat"
     path.write_bytes(full[:_complete_bytes(complete) + cut])
 
+    # Before the fix: ([], []) or a half record with detector-1 hits only, or struct.error.
     got = []
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=f"truncated record.* at byte {_complete_bytes(complete)}"):
         for record in read_binary_file(str(path)):
             got.append(record)
     assert _as_lists(got) == _as_lists(complete)
