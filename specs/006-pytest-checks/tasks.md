@@ -52,7 +52,7 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
   **Verified 2026-10-07:** each item is stated once (single source of truth), split by role: `AGENTS.md` (always loaded) holds the rules; `docs/prompts.md` holds the workflow formats. `AGENTS.md`: spec-driven development line now reads "Small bug fixes need a regression test in `tests/`"; PETsys boundaries drops "Check scripts named in `tasks.md` live in `scripts/`; do not stage them" and keeps `scripts/`, `scripts_imas/`, `scripts_cornell/` local with `scripts/template.py` as the shared starting point; "Environment and checks" gains one paragraph: tracked `tests/`, the pytest command, default run on tracked files + synthetic fixtures, `real_data` via `PETSYS_DATA_DIR` with baselines in `tests/data/`, `@pytest.mark.fr` ids and `--fr`, strict `xfail` for a defect until its separate fix (expected values unchanged), and the gradual migration rule (move the check first, record matching pass count, delete the script). `docs/prompts.md`: step 4 `Done when:` = pytest node id or `--fr NNN-FR-n` selection plus any manual step; step 5 `Verified:` = command, platform and pytest's `N passed, M skipped` line; step 6 cites `pytest --fr NNN-FR-n`; bug fixes need a regression test in `tests/` citing `bug-<short-name>`. `git diff --check -- AGENTS.md docs/prompts.md` clean; `python -m pytest -q` → 93 passed.
 
-- [ ] **T9 — Validation** (all FR). Walk FR-1–FR-11 with checks.
+- [x] **T9 — Validation** (all FR). Walk FR-1–FR-11 with checks.
 
   **Done when:** fresh clone of the owner's commit on Windows: `python -m pytest` → all pass, `real_data` deselected, `linux` skipped with reason, xfails only the two bug ids above; `git status --short` identical before/after. `-m real_data` without `PETSYS_DATA_DIR` → skips with reasons. `--strict-markers` rejection and `--fr` selection shown (T2). Same commit on the Cornell Linux PC: all pass including `linux` (owner run). Spec → `shipped`.
 
@@ -70,9 +70,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
   | FR-8 | rule in `AGENTS.md` (T8); applied in T4 (16 = 16/16, script deleted) | pass |
   | FR-9 | `AGENTS.md`, `docs/prompts.md` (T8) | pass |
   | FR-10 | spec commits change no `src/`/`exe_programs/` behaviour; defects fixed separately with regression tests: `--fr bug-read-compact-truncation` 3, `--fr bug-kev-mu-zero` 5; map data fix `f0ae742` | pass |
-  | FR-11 | Windows: this run, `--fr 006-FR-11` 1 passed. **Cornell Linux PC: pending (owner run of the same commit)** | pending |
+  | FR-11 | Windows: this run, `--fr 006-FR-11` 1 passed. Cornell Linux PC (owner, 2026-10-07): 93 passed | pass |
 
-  Remaining before `shipped`: the owner runs `python -m pytest -rs` from a checkout of the same commit in the Cornell Linux PC's analysis env and records the summary line here (expect 93 passed; `test_linux_marker_skips_elsewhere_with_reason` takes its Linux branch).
+  **Cornell Linux verified 2026-10-07 (owner run, `sie@sie:~/sw/process_petsys` after `git pull` to `origin/main` = `a8fcfee`, conda env `process_petsys`, Python 3.10.14, pytest 8.3.5):** `pip install pytest==8.3.5` (pulled `exceptiongroup` 1.3.1; that env already has `typing-extensions` 4.15.0), then `python -m pytest -rs` → **93 passed in 4.96s**, no skips: `test_linux_marker_skips_elsewhere_with_reason` took its Linux branch (passed) and `test_tk_root_is_withdrawn` found a display.
+
+  **Validation verdict: PASS.** All completion criteria met on Windows (fresh clone) and the Cornell Linux PC at the same code; FR-1–FR-11 pass. Status → `shipped` (2026-10-07). No `exe_programs/` program changed (the bug fixes touch `read_binary_file`, which no program calls, and `KevConverter.convert_mu`, which `ldat_inspector.engine` does not use), so no version bump or CHANGELOG entry.
 
 ## Bug fixes found by this spec (separate from 006, FR-10)
 

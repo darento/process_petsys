@@ -1,6 +1,6 @@
 # Spec 006 — Tracked pytest checks
 
-Status: `in progress`
+Status: `shipped`
 
 Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). Spec 003 shipped 2026-10-06; owner approved this spec 2026-10-07. This spec changes the constitution's check rules (FR-9), so owner approval of the spec covers that change.
 
