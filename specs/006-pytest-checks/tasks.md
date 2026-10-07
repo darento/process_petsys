@@ -56,6 +56,24 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
   **Done when:** fresh clone of the owner's commit on Windows: `python -m pytest` → all pass, `real_data` deselected, `linux` skipped with reason, xfails only the two bug ids above; `git status --short` identical before/after. `-m real_data` without `PETSYS_DATA_DIR` → skips with reasons. `--strict-markers` rejection and `--fr` selection shown (T2). Same commit on the Cornell Linux PC: all pass including `linux` (owner run). Spec → `shipped`.
 
+  **Windows verified 2026-10-07 (fresh clone of `e197c52` in the session scratchpad, env interpreter `C:/Users/dsanchez/AppData/Local/anaconda3/envs/process_petsys/python.exe`, `PETSYS_DATA_DIR` unset):** `python -m pytest -rs` → **93 passed** (no skips: no `linux`-marked test exists yet outside the pytester project; the skip-with-reason behaviour is `test_infra.py::test_linux_marker_skips_elsewhere_with_reason`). No xfails remain: both defects found here were fixed as separate bug-fix commits (`4c79f04`, `a20f545`), so the Done-when's "xfails only the two bug ids" is now "no xfails". `-m real_data` → 93 deselected (no real-data test yet; FR-4 behaviour covered by pytester). `--fr bug-cornell-slab-convention` → 16 passed, 77 deselected. `git status --short` empty before and after; no `.pytest_cache/`; the only new files are 16 ignored `__pycache__/*.pyc`.
+
+  | FR | Check (in the clone) | Outcome |
+  | --- | --- | --- |
+  | FR-1 | tracked `tests/`, `pyproject.toml`, `pytest==8.3.5` in `process_petsys.yml`; `--fr 006-FR-1` (incl. AST scan: no `sys.path`, no `scripts*` imports) | 9 passed |
+  | FR-2 | default run on a fresh clone; `git status` before/after; no repo writes | 93 passed; status unchanged |
+  | FR-3 | `--fr 006-FR-3` (default deselects `real_data`, unknown marker rejected, `linux` skip reason, hidden `tk_root`) | 4 passed |
+  | FR-4 | `--fr 006-FR-4` (unset variable, missing file, present file) | 3 passed |
+  | FR-5 | `--fr 006-FR-5` (exact selection, multi-id test, no option); `--fr bug-cornell-slab-convention` | 3 passed; 16 selected |
+  | FR-6 | `--fr 006-FR-6` (`conftest.py`/`helpers.py`, no test-file imports) | 8 passed |
+  | FR-7 | `--fr 006-FR-7` (read_compact 6 + map_factory 29 + IDs 11 + KevConverter 13); slab migration via `--fr 002-FR-17` | 59 passed; 16 passed |
+  | FR-8 | rule in `AGENTS.md` (T8); applied in T4 (16 = 16/16, script deleted) | pass |
+  | FR-9 | `AGENTS.md`, `docs/prompts.md` (T8) | pass |
+  | FR-10 | spec commits change no `src/`/`exe_programs/` behaviour; defects fixed separately with regression tests: `--fr bug-read-compact-truncation` 3, `--fr bug-kev-mu-zero` 5; map data fix `f0ae742` | pass |
+  | FR-11 | Windows: this run, `--fr 006-FR-11` 1 passed. **Cornell Linux PC: pending (owner run of the same commit)** | pending |
+
+  Remaining before `shipped`: the owner runs `python -m pytest -rs` from a checkout of the same commit in the Cornell Linux PC's analysis env and records the summary line here (expect 93 passed; `test_linux_marker_skips_elsewhere_with_reason` takes its Linux branch).
+
 ## Bug fixes found by this spec (separate from 006, FR-10)
 
 Each one gets its own regression test (the xfail test above, with its marker removed) and is recorded here only as a cross-reference.
