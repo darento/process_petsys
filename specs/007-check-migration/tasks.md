@@ -12,9 +12,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
   Verified 2026-10-07 (Windows): `python -m pytest tests/test_infra.py` → 25 passed (7 new: 3 `real_cal_file`, default/full selection, `--slow-limit 1` fails the unmarked 1.5 s test with `slow-limit: took 1.5x s >= 1 s`, off by default); `python -m pytest` → 100 passed; `-m "not real_data" --slow-limit 5` → 100 passed. Negative (scratch copies): dropping the `slow` exemption → 1 failed; `CAL_ENV` → `PETSYS_DATA_DIR` → 3 failed; `addopts` without `not slow` → 2 failed.
 
-- [ ] **T1 — Retire three scripts** (FR-1). Delete `scripts/ldat_package_check.py`, `scripts/cornell_slab_en_cal_check.py` (+ `scripts/fixtures_cornell_slab_spectra.json`), `scripts/ldat_real_check.py`.
+- [x] **T1 — Retire three scripts** (FR-1). Delete `scripts/ldat_package_check.py`, `scripts/cornell_slab_en_cal_check.py` (+ `scripts/fixtures_cornell_slab_spectra.json`), `scripts/ldat_real_check.py`.
 
   **Done when:** no other script imports them (grep); files deleted; their spec 004 / bug evidence stays in earlier `tasks.md`.
+
+  Verified 2026-10-07: grep of all `*.py` under the repo (incl. `scripts_cornell/`, `scripts_imas/`) finds only self-references (usage lines, the en_cal check loading its own JSON); the four files were untracked, deleted with `rm` (local backup kept outside the repo); `scripts/` now holds 27 `*_check.py`; earlier evidence untouched in specs 001, 002, 004, 006 `tasks.md`.
 
 - [ ] **T2 — Direct src tests** (FR-9, FR-10). `tests/test_filters.py`, `tests/test_filters_fixed.py`, `tests/test_fem_handler.py`, `tests/test_yaml_handler.py` per spec FR-9.
 
