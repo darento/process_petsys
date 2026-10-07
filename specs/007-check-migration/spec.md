@@ -1,6 +1,6 @@
 # Spec 007 — Move every remaining check into tests/
 
-Status: `clarified`
+Status: `approved`
 
 Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). Builds on spec 006 ([`../006-pytest-checks/spec.md`](../006-pytest-checks/spec.md)), whose suite, markers, `--fr` option and fixtures this spec reuses. This spec changes two spec 006 rules (default run, real-data location: FR-5, FR-4), so owner approval covers those changes.
 
