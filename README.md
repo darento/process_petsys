@@ -41,7 +41,7 @@ You can configure the behavior of the script by modifying the YAML files in the 
 
 ## Usage
 
-The idea behind it is for everyone to create their own `main.py` script with the desired functionalities taking the necessary functions from the module and defining the `config.yaml` file along with the
+The idea behind it is for everyone to write their own analysis script, starting from `scripts/template.py`, with the functions they need from `src` and a `config.yaml` file along with the
 matching `map.yaml`.
 
 ### PETsys Manager (Cornell Linux)
@@ -90,12 +90,6 @@ The photopeak fit uses the shaded 350–700 keV window, and curves show counts p
 Inspector implementation lives in `src/ldat_inspector/`: `engine.py` (analysis), `fastread.py` (parallel reader), `memory.py` (estimates) and `report.py` (PDFs). Import from these modules directly, e.g. `from src.ldat_inspector.engine import Settings`; the package itself exports nothing, and the old `src.ldat_fastread`, `src.ldat_memory` and `src.ldat_report` paths no longer exist. Shared readers, mapping and calibration helpers stay in `src/`; the GUI and launcher stay in `exe_programs/`. The move and validation are recorded in [spec004](specs/004-ldat-inspector-package/spec.md).
 
 Feature work throughout this repo follows [spec-driven development](docs/prompts.md); project constraints are in [AGENTS.md](AGENTS.md).
-
-You can run the main script with the following command:
-
-```bash
-python main.py configs\<your_config.yml>
-```
 
 ## Documentation
 

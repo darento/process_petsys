@@ -3,8 +3,6 @@
 
 Run from the project root in the process_petsys environment:
     python exe_programs/LDATInspector.py
-
-The original Tk implementation is preserved in LDATInspector_legacy.py.
 """
 
 from multiprocessing import freeze_support
