@@ -81,7 +81,7 @@ def filter_max_sm(
         - det1_list (list[list]): The first list of detections.
         - det2_list (list[list]): The second list of detections.
         - max_sm (int): The maximum number of supermodules allowed.
-        - sm_mM_map (dict): A mapping from module to supermodule.
+        - sm_mM_map (dict): A mapping from channel ID to (supermodule, mini module).
 
     Returns:
     bool: True if the number of unique supermodules in the event does not exceed max_sm, False otherwise.
@@ -90,7 +90,7 @@ def filter_max_sm(
     """
     sm_set = set()
     for hit in chain(det1_list, det2_list):
-        sm_set.add(sm_mM_map[hit[2]])
+        sm_set.add(sm_mM_map[hit[2]][0])
         if len(sm_set) > max_sm:
             return False
     return True
@@ -136,8 +136,8 @@ def filter_channel_list(
     Returns:
     bool: True if all impacts in either det1_list or det2_list are in valid_channels, False otherwise.
     """
-    return all(imp[0] in valid_channels for imp in det1_list) or all(
-        imp[0] in valid_channels for imp in det2_list
+    return all(imp[2] in valid_channels for imp in det1_list) or all(
+        imp[2] in valid_channels for imp in det2_list
     )
 
 

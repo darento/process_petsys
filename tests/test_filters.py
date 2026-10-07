@@ -64,7 +64,6 @@ def test_max_sm_counts_both_detectors():
 
 
 @pytest.mark.fr("007-FR-9", "bug-filter-max-sm-minimodules")
-@pytest.mark.xfail(strict=True, reason="bug-filter-max-sm-minimodules: counts (SM, mM) pairs, not SMs")
 def test_max_sm_counts_supermodules_not_minimodules():
     det1, det2 = hits(0), hits(2)  # SM 0 minimodules 0 and 1: one supermodule
     assert filter_max_sm(det1, det2, 1, SM_MM)
@@ -79,7 +78,6 @@ def test_specific_mm_in_either_detector():
 
 
 @pytest.mark.fr("007-FR-9", "bug-filter-channel-list")
-@pytest.mark.xfail(strict=True, reason="bug-filter-channel-list: tests imp[0] (timestamp), not the channel ID")
 @pytest.mark.parametrize("det1, det2, expected", [
     (hits(0, 1, t0=1000), hits(9, t0=1000), True),   # det1 channels valid, timestamps not
     (hits(5, t0=0), hits(6, t0=1), False),           # timestamps 0, 1 valid, channels not
