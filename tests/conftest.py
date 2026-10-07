@@ -22,6 +22,12 @@ def pytest_addoption(parser):
                      help="fail a passing test not marked slow whose call takes SECONDS or more")
 
 
+def pytest_configure(config):
+    # Parallel workers compete for the CPU and stretch test durations, so slow is measured serially.
+    if config.getoption("slow_limit") is not None and getattr(config.option, "numprocesses", None):
+        raise pytest.UsageError("--slow-limit measures serial durations; add -n 0")
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield

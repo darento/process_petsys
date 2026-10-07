@@ -1,5 +1,5 @@
 """Suite infrastructure (specs 006, 007): markers, --fr selection, real-data skips, platform
-skips, default run without slow, --slow-limit.
+skips, default run without slow and in parallel workers, --slow-limit.
 
 Each check runs a throwaway project in a pytester subprocess with copies of the real
 ``pyproject.toml`` and ``tests/conftest.py``, so it exercises the actual configuration.
@@ -7,6 +7,7 @@ Each check runs a throwaway project in a pytester subprocess with copies of the 
 
 import ast
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,14 +18,19 @@ CONFTEST = REPO / "tests" / "conftest.py"
 
 @pytest.fixture
 def project(pytester):
-    """Pytester project with the suite's config; ``project(source)`` writes tests/test_inner.py."""
+    """Pytester project with the suite's config; ``project(source)`` writes tests/test_inner.py.
+
+    Its ``runpytest_subprocess`` runs serially (``-n 0``), because pytest-xdist leaves the
+    deselected count out of the summary; ``parallel`` runs with the configured workers.
+    """
     pytester.makefile(".toml", pyproject=(REPO / "pyproject.toml").read_text(encoding="utf-8"))
     tests = pytester.mkdir("tests")
     (tests / "conftest.py").write_text(CONFTEST.read_text(encoding="utf-8"), encoding="utf-8")
 
     def write(source):
         (tests / "test_inner.py").write_text(source, encoding="utf-8")
-        return pytester
+        return SimpleNamespace(runpytest_subprocess=lambda *args: pytester.runpytest_subprocess(*args, "-n", "0"),
+                               parallel=pytester.runpytest_subprocess)
     return write
 
 
@@ -191,6 +197,46 @@ def test_slow_limit_fails_unmarked_slow_test(project):
 @pytest.mark.fr("007-FR-5")
 def test_slow_limit_is_off_by_default(project):
     project(SLEEP_TESTS).runpytest_subprocess().assert_outcomes(passed=2, deselected=1)
+
+
+@pytest.mark.fr("007-FR-5")
+def test_slow_limit_refuses_parallel_workers(project):
+    result = project(SLEEP_TESTS).parallel("-m", "not real_data", "--slow-limit", "1")
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*--slow-limit measures serial durations; add -n 0*"])
+
+
+WORKER_TESTS = """
+import os
+import unittest
+from pathlib import Path
+
+def record(test):
+    log = Path(os.environ["WORKER_LOG"])
+    (log / test.id().split(".", 1)[1]).write_text(os.environ.get("PYTEST_XDIST_WORKER", "serial"))
+
+class First(unittest.TestCase):
+    def test_1(self): record(self)
+    def test_2(self): record(self)
+    def test_3(self): record(self)
+
+class Second(unittest.TestCase):
+    def test_1(self): record(self)
+    def test_2(self): record(self)
+    def test_3(self): record(self)
+"""
+
+
+@pytest.mark.fr("007-FR-5")
+def test_default_run_keeps_each_class_on_one_worker(project, monkeypatch, tmp_path):
+    monkeypatch.setenv("WORKER_LOG", str(tmp_path))
+    project(WORKER_TESTS).parallel().assert_outcomes(passed=6)
+    workers = {}
+    for log in tmp_path.iterdir():
+        workers.setdefault(log.name.split(".")[0], set()).add(log.read_text())
+    assert sorted(workers) == ["First", "Second"]
+    for cls, used in workers.items():
+        assert len(used) == 1 and next(iter(used)).startswith("gw"), (cls, used)
 
 
 @pytest.mark.fr("006-FR-3", "006-FR-11")

@@ -2,7 +2,7 @@
 
 Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-07. Environment: env interpreter `-m pytest` from the repo root. Never stage or commit; the owner runs git.
 
-**Migration Done-when (applies to every task marked "migrate"):** in one session on the same fixtures, the script (each listed mode) gives `PASS N` (or `Ran N … OK`) and the new pytest selection gives `N passed` (gui/linux skips counted with their reason); `--durations=0` reviewed and tests ≥ 5 s marked `slow`; `test_infra.py` scan passes (no `sys.path`, no `scripts*`/test-file imports); then the script is deleted, or, when a remaining script still imports it, kept until its last importer's task (plan: Deferred deletion). Record both counts, the selection command and any listed exclusion (retired real mode, owner-approved replacement).
+**Migration Done-when (applies to every task marked "migrate"):** in one session on the same fixtures, the script (each listed mode) gives `PASS N` (or `Ran N … OK`) and the new pytest selection gives `N passed` (gui/linux skips counted with their reason); `--durations=0 -n 0` reviewed and tests ≥ 5 s marked `slow`; `test_infra.py` scan passes (no `sys.path`, no `scripts*`/test-file imports); then the script is deleted, or, when a remaining script still imports it, kept until its last importer's task (plan: Deferred deletion). Record both counts, the selection command and any listed exclusion (retired real mode, owner-approved replacement).
 
 ## Infrastructure
 
@@ -29,6 +29,12 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
   **Done when:** module imports without Tk/display; a smoke test builds one fixture of each kind into `tmp_path`; full suite passes.
 
   Verified 2026-10-07 (Windows): `tests/manager_helpers.py` holds the shared fakes (`FixtureProbe`, `profile_fixture` (was `fixture`), `FakeChild`, `FakeBackend`, `DirectDummyChild`, `FakeDaemon`, `FakeResources`, `ToolWorld`), wire encoders, `CalibrationFixtures` (was `Fixtures`), `sides_for`/`P1_SPECS`/`P3_SPECS`/`pairs`, and the mixins `ListmodeFixtures`, `QCFixtures` (each also `.at(root)` standalone, replacing the scripts' `helper(TestCase(...))` trick), `CLIFixtures`, `PrivateOutput` (private temp folder per class, removed after it unless `PETSYS_KEEP_FIXTURES`); oracle code (`load_reference`, `Oracle`, `reference_loop`, `reference`, `reference_outputs`) left out for T8. AST comparison (docstrings ignored, renames mapped): 71 copied definitions identical to the scripts; only `setUp`/`make`/`listmode_request`/`qc_request` changed for `.at()`. `python -m pytest tests/test_manager_helpers.py` → 10 passed (subprocess import without `tkinter`/`customtkinter`; profile passes `preflight`; encoders round-trip through `read_binary_file`; calibration LDAT passes `validate_ldat` (compact + fixed); listmode/QC standalone; fakes; `ToolWorld` acquisition; both mixins). `--fr 007-FR-6` selects the 2 unittest-style methods too (10 passed). `PrivateOutput` cleanup: temp folder count unchanged after a run (108 older script folders), 2 kept with `PETSYS_KEEP_FIXTURES=1` (then removed). `python -m pytest` → 176 passed; `-m "not real_data" --slow-limit 5` → 176 passed. Scripts untouched.
+
+- [x] **T25 — Parallel default run** (FR-5; owner 2026-10-07, done after T14). `pytest-xdist==3.8.0` + `execnet==2.1.2` in `process_petsys.yml` and the env; `addopts` `-n auto --dist loadscope`; conftest refuses `--slow-limit` with workers; `test_infra.py` inner runs serial (`-n 0`), plus cases for the parallel default and the refusal.
+
+  **Done when:** `python -m pytest tests/test_infra.py` passes, covering: the default run uses workers and keeps each class on one worker; `--slow-limit` with workers exits with a usage error naming `-n 0`. Default run passes in < 120 s with no new failure; `-m "not real_data" -n 0 --slow-limit 5` and `-m "not real_data"` (parallel) pass; the fixture folder count is unchanged.
+
+  Verified 2026-10-07 (Windows, 24 CPUs): `pip install --no-deps pytest-xdist==3.8.0 execnet==2.1.2` (dry run: nothing else; `pip check` clean). `python -m pytest tests/test_infra.py -n 0` → 50 passed (2 new). Default run 512 passed, 18 skipped in 34.7 s (serial `-n 0`: 92.2 s); full `-m "not real_data"` 537 passed, 18 skipped in 211.6 s (serial `-n 0 --slow-limit 5`: 505.2 s, same counts). Fixture folders 908 before and after. Without the guard, a parallel `--slow-limit 5` full run failed 4–6 tests at 5.5–9.0 s that pass serially, which is CPU contention. xdist omits `deselected` from the summary. Negatives (scratch copies): no conftest guard → refusal test fails; `--dist load` → class test fails; no `-n auto` → both fail.
 
 ## Manager group (spec 003)
 
@@ -90,13 +96,13 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 ## Close
 
-- [ ] **T23 — Docs** (FR-11). `AGENTS.md`, `docs/prompts.md`: default vs full run, `slow` ≥ 5 s, `--slow-limit`, golden files and their change rule, `PETSYS_CAL_DIR`; drop `scripts/*_check.py` as evidence.
+- [ ] **T23 — Docs** (FR-11). `AGENTS.md`, `docs/prompts.md`: default vs full run, `slow` ≥ 5 s, parallel default and `-n 0`, `--slow-limit` (serial), golden files and their change rule, `PETSYS_CAL_DIR`; drop `scripts/*_check.py` as evidence.
 
   **Done when:** both files state each item once; `git diff --check` clean.
 
 - [ ] **T24 — Validation** (all FR).
 
-  **Done when:** `scripts/` holds no `*_check.py`; fresh clone on Windows: default run passes in < 120 s, full run passes with `--slow-limit 5`, `linux` skipped with reasons, `git status` unchanged; owner's PC with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: `-m real_data` passes, unset → skips with reasons; source scan: no `scripts_cornell`/`scripts_imas`/`gui_cornell` import; Cornell Linux PC (owner run): full run passes incl. `linux`/`gui`; `petsys_manager_linux_check.py --all` there gives the same count as `tests/test_manager_linux.py` (17), then it is deleted (kept from T14). FR walk recorded; Status → `shipped`.
+  **Done when:** `scripts/` holds no `*_check.py`; fresh clone on Windows: default run passes in < 120 s, full run passes in parallel and with `-n 0 --slow-limit 5`, `linux` skipped with reasons, `git status` unchanged; owner's PC with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: `-m real_data` passes, unset → skips with reasons; source scan: no `scripts_cornell`/`scripts_imas`/`gui_cornell` import; Cornell Linux PC (owner run, env updated with `pytest-xdist`): full run passes incl. `linux`/`gui`; `petsys_manager_linux_check.py --all` there gives the same count as `tests/test_manager_linux.py` (17), then it is deleted (kept from T14). FR walk recorded; Status → `shipped`.
 
 ## Bug fixes found by this spec (separate from 007, FR-10)
 

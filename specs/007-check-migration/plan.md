@@ -8,7 +8,7 @@ Owner-approved scope: [`spec.md`](spec.md) (approved 2026-10-07). One named task
 | FR-2 | Each migration task: run the script (per mode) → N, run the pytest selection → N, record both, delete the script |
 | FR-3 | `scripts/capture_golden_007.py` (local, untracked, one-off) runs the three `scripts_cornell/` oracles on helper fixtures → `tests/data/golden/<area>/` + `*.provenance.json`; `tests/test_golden_provenance.py` checks every golden file has provenance |
 | FR-4 | `real_cal_file` fixture (`PETSYS_CAL_DIR`) next to spec 006's `real_data_file`; T19 manifest + result baseline under `tests/data/baselines/`; constants inline for the other kept real checks |
-| FR-5 | `addopts` `-m "not real_data and not slow"`; `--slow-limit` option (conftest) fails any non-`slow` test ≥ 5 s, used at Validation; `test_infra.py` updated |
+| FR-5 | `addopts` `-m "not real_data and not slow"`; `--slow-limit` option (conftest) fails any non-`slow` test ≥ 5 s, used at Validation; `test_infra.py` updated. Parallel (T25): `pytest-xdist` in `process_petsys.yml`, `addopts` `-n auto --dist loadscope`; conftest refuses `--slow-limit` with workers |
 | FR-6 | `tests/manager_helpers.py`, `tests/ldat_helpers.py`; shared setup as mixins (non-`Test*` classes); GUI checks split per area |
 | FR-7 | `gui`/`linux` markers on moved tests; Windows + Cornell full runs (T24) |
 | FR-8 | `@pytest.mark.fr` ids copied from each script's docstrings/test names; task-only references mapped to their FR |
@@ -18,11 +18,12 @@ Owner-approved scope: [`spec.md`](spec.md) (approved 2026-10-07). One named task
 
 ## Run modes and markers
 
-- Default: `python -m pytest` → `-m "not real_data and not slow"`, budget 120 s.
+- Default: `python -m pytest` → `-m "not real_data and not slow" -n auto --dist loadscope`, budget 120 s.
 - Full: `python -m pytest -m "not real_data"`; Validation and Done-when cite it.
 - Real: `python -m pytest -m real_data` with `PETSYS_DATA_DIR` and `PETSYS_CAL_DIR`.
+- Serial: `-n 0` (a later `-n` replaces the default one): one file or test, `-s`/`pdb`, and `--slow-limit`.
 - A command-line `-m` replaces the default one (spec 006 decision), so the full run is one flag.
-- `--slow-limit 5` (new conftest option): after each call phase, a test without `slow` that took ≥ 5 s fails with its duration. Off by default, so a slow machine never breaks a normal run; on at Validation.
+- `--slow-limit 5` (new conftest option): after each call phase, a test without `slow` that took ≥ 5 s fails with its duration. Off by default, so a slow machine never breaks a normal run; on at Validation, with `-n 0`: under parallel workers CPU contention stretches 3–4 s tests past 5 s, so the conftest refuses it with workers.
 
 ## Layout
 
@@ -51,7 +52,8 @@ tests/
 - **Tracked January config.** LDAT fixture checks read `configs/cornell_full_system_old.yaml` (untracked). A tracked copy at `tests/data/configs/cornell_january.yaml` with `map_file: maps/cornell_map_full_system_old.yaml` (resolved against the processing root, i.e. the repo) serves the fixture tests; real tests may use it too.
 - **Spec 003 T19 real tests.** `scripts/petsys_manager_t19_baseline_jan2026.json` (operator manifest) becomes `tests/data/baselines/t19_jan2026_manifest.json` with paths relative to `PETSYS_DATA_DIR` and the January config; the newest Windows `real_baseline.json` (2026-10-05) becomes `t19_jan2026_result.json`. `petsys_manager_t19_baseline_cornell_f18.json` is retired with the other Cornell-PC real modes.
 - **Retired data.** `scripts/fixtures_cornell_slab_spectra.json` is used only by `cornell_slab_en_cal_check.py` and goes with it.
-- **Timing.** Every migration task runs its file with `--durations=0`; tests ≥ 5 s get `slow`. The 120 s default budget is checked at T24 on a fresh clone.
+- **Timing.** Every migration task runs its file with `--durations=0 -n 0`; tests ≥ 5 s get `slow`. The 120 s default budget is checked at T24 on a fresh clone.
+- **Parallel default (T25, owner 2026-10-07).** `-n auto --dist loadscope`: each unittest class (one `setUpClass`, serial order) or module runs on one worker, as in a serial run. Every test already writes into private fixture folders. Measured after T14 on 24 CPUs: default 87 → 33 s, full 516 → 220 s. `--dist load` gave 25 s but splits classes across workers, each repeating `setUpClass`, so it was rejected. xdist omits `deselected` from the summary; `test_infra.py` inner runs pass `-n 0` to keep it. A single small file pays about 2 s of worker start-up (`-n 0` avoids it). The Cornell PC needs the updated environment before T24.
 - **Order.** Leaves before dependents: helpers first, then the manager group from `artifact` (no deps) up to `gui`; the golden capture before the oracle-based checks; the LDAT group after; docs and validation last. **Deferred deletion** (owner 2026-10-07): a migrated script that a remaining script still imports at module level stays on disk, unchanged, until its last importer is migrated, and is deleted in that importer's task; lazy imports in aggregate runners (`petsys_manager_check.py`, `numeric_check` modes) do not defer. `tasks.md` records the deferral.
 - Rejected: moving test classes unchanged with cross-imports (double collection); live oracles behind an env var (owner chose golden files); one huge file per GUI check (owner chose per area).
 

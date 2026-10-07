@@ -27,3 +27,5 @@ dependencies:
       - reportlab==4.4.9  # Cornell QC missing-channel PDF (spec 003)
       - pytest==8.3.5  # tracked tests/ suite (spec 006)
       - exceptiongroup==1.2.2  # pytest dependency; newer needs typing-extensions>=4.6, tensorflow 2.13 needs <4.6
+      - pytest-xdist==3.8.0  # parallel default test run (spec 007)
+      - execnet==2.1.2  # pytest-xdist dependency

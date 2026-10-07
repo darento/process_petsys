@@ -4,8 +4,10 @@ testpaths = ["tests"]
 pythonpath = [".", "tests"]
 # Default run excludes real_data and slow (spec 007); a command-line -m replaces this one,
 # so -m "not real_data" is the full run.
+# Parallel (pytest-xdist), each test class or module on one worker; -n 0 runs serially.
 # No cacheprovider: pytest writes nothing into the repo tree.
-addopts = ["--strict-markers", "-m", "not real_data and not slow", "-p", "no:cacheprovider", "-p", "pytester"]
+addopts = ["--strict-markers", "-m", "not real_data and not slow", "-n", "auto", "--dist", "loadscope",
+           "-p", "no:cacheprovider", "-p", "pytester"]
 markers = [
     "real_data: needs acquisitions under PETSYS_DATA_DIR / calibrations under PETSYS_CAL_DIR; excluded by default",
     "gui: opens hidden Tk windows; skipped when no display is available",
