@@ -58,7 +58,7 @@ python exe_programs/PETsysManager.py [--profile /path/to/petsys_manager.yaml]
   - LM takes fixed coincidence files.
   - QC takes compact coincidence files.
   - The complete pipeline always converts to fixed coincidence.
-- **Hardware actions:** they need the PETsys tools and DAQ cards and run only on the Cornell Linux machine. They have not yet been accepted there, and the sibling `gui_cornell` stays in use until they are.
+- **Hardware actions:** they need the PETsys tools and DAQ cards and run only on the Cornell Linux machine. They were accepted there on 2026-10-06; PETsys Manager has replaced the sibling `gui_cornell`, which is retired.
 
 Prerequisites, the profile fields, the private input checklist, safety behaviour and the module map are in [`docs/petsys_manager.md`](docs/petsys_manager.md).
 

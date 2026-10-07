@@ -1,6 +1,6 @@
 # PETsys Manager: Cornell deployment
 
-PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration, list-mode (LM) and quality-control (QC) workflows from this repository. It is a separate application from LDAT Inspector and replaces the sibling `gui_cornell` GUI only after operator acceptance ([spec003](../specs/003-petsys-manager-migration/spec.md), FR-17/FR-18). Until then the sibling repository, its scripts and any desktop shortcuts stay as they are. Retiring them is a separate owner decision.
+PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration, list-mode (LM) and quality-control (QC) workflows from this repository. It is a separate application from LDAT Inspector. After operator acceptance on the Cornell machine (2026-10-06, [spec003](../specs/003-petsys-manager-migration/spec.md) FR-17/FR-18) it replaced the sibling `gui_cornell` GUI, which the owner has retired.
 
 ## Status
 
