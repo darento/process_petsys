@@ -22,9 +22,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 - ~~**T3 — Freeze Cornell maps**~~ Dropped 2026-10-07: the Cornell map is tracked in `maps/` (T0); no frozen copies.
 
-- [ ] **T4 — Migrate slab convention check** (FR-7, FR-8; cites `bug-cornell-slab-convention`, `002-FR-17`). `tests/test_cornell_slab.py` on `maps/cornell_map_full_system.yaml`.
+- [x] **T4 — Migrate slab convention check** (FR-7, FR-8; cites `bug-cornell-slab-convention`, `002-FR-17`). `tests/test_cornell_slab.py` on `maps/cornell_map_full_system.yaml`.
 
   **Done when:** `python scripts/cornell_slab_convention_check.py` → `PASS: 16/16` and `python -m pytest tests/test_cornell_slab.py` → `16 passed`, same run; `python -m pytest --fr bug-cornell-slab-convention` → `16 passed`, rest deselected. Then `scripts/cornell_slab_convention_check.py` deleted.
+
+  **Verified 2026-10-07 (Windows, env interpreter):** same session, same map file: `python -X utf8 scripts/cornell_slab_convention_check.py` → `PASS: 16/16`; `python -m pytest tests/test_cornell_slab.py` → **16 passed**; `--fr bug-cornell-slab-convention` → 16 passed, 14 deselected; `--fr 002-FR-17` → the same 16. Cases, geometry lookup, seeds (`random.seed(1)`, `np.random.seed(1)` per case and implementation) and 200 trials for the one-channel middle case are unchanged; the `check()` table became `parametrize` (8 cases × scalar/vectorized). Negative check: a scratchpad copy with the half-slab sign flipped and the p-1 case expecting slab 7 → 14 failed, 2 passed (the two unresolved cases have no x). Script deleted from `scripts/` (copy kept in the session scratchpad); no other script imports it; references in specs 001–004 stay as history. Full `python -m pytest -q` → 30 passed.
 
 - [ ] **T5 — read_compact tests** (FR-6, FR-7, FR-10). `tests/test_read_compact.py` using `write_ldat`.
 
