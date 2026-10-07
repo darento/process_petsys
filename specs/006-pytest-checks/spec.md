@@ -1,8 +1,8 @@
 # Spec 006 — Tracked pytest checks
 
-Status: `clarified`
+Status: `approved`
 
-Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). No implementation before spec 003 is closed (owner, 2026-10-06); spec 003 keeps its `scripts/*_check.py` checks until then. This spec changes the constitution's check rules (FR-9), so owner approval of the spec covers that change.
+Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). Spec 003 shipped 2026-10-06; owner approved this spec 2026-10-07. This spec changes the constitution's check rules (FR-9), so owner approval of the spec covers that change.
 
 ## Goal
 
@@ -17,7 +17,7 @@ Make every recorded check reproducible from a clone and rerunnable as one regres
 
 Clarify (2026-10-06):
 
-- Cornell maps: freeze copies of both `maps/cornell_map_full_system.yaml` and `maps/cornell_map_full_system_20260928.yaml` under `tests/data/`; `maps/` stays ignored. The two differ in SuperModule/port assignment of map entries 9–11, 15–20 and 25.
+- (Superseded 2026-10-07, see below.) Cornell maps: freeze copies of both `maps/cornell_map_full_system.yaml` and `maps/cornell_map_full_system_20260928.yaml` under `tests/data/`; `maps/` stays ignored. The two differ in SuperModule/port assignment of map entries 9–11, 15–20 and 25.
 - Real-data baselines (e.g. `petsys_manager_t19_baseline_*.json`) are tracked under `tests/data/`; acquisitions and calibrations stay under `PETSYS_DATA_DIR`.
 - Requirement ids: `NNN-FR-n` (e.g. `003-FR-21`); bug fixes `bug-<short-name>`.
 - A migrated script is deleted from `scripts/` as soon as the pass counts match; earlier `Verified:` lines stay as history.
@@ -25,9 +25,17 @@ Clarify (2026-10-06):
 - Default run excludes only `real_data`; `gui` and `slow` tests run by default.
 - The suite runs on Windows (`process_petsys` env) and on the Cornell Linux PC; `linux` tests run there.
 
+Clarify (2026-10-07, found while planning):
+
+- The committed `maps/{imas1DAQ,imas2DAQ,default,cpp,erc}_map.yaml` lack the mandatory `channels` key, so `map_factory` fails on a fresh clone. The owner commits the working-tree `channels:` lines as bug fix `bug-map-channels-key` before the fresh-clone check; tests use the tracked `maps/`.
+- `src/read_compact.py` truncated last record: the test asserts every complete pair is returned intact and the partial record yields no pair. Today it yields a phantom `([], [])` (data cut) or raises `struct.error` (header cut); the fix is bug fix `bug-read-compact-truncation`.
+- `KevConverter.convert_mu` with `mu == 0` returns 0 keV, which is a fabricated value. The test asserts no number is returned; the fix is bug fix `bug-kev-mu-zero`.
+- Cornell map: `maps/cornell_map_full_system.yaml` is the single Cornell full-system map; `cornell_map_full_system_20260928.yaml` was deleted by the owner. The owner force-adds `maps/cornell_map_full_system.yaml` to git in the same commit as `bug-map-channels-key`; tests read it from `maps/`, with no copy under `tests/data/`.
+- Until its bug fix lands, a test that exposes one of these defects is `xfail(strict=True)` citing the bug id, so the default run passes and the fix flips it to a pass.
+
 ## Data contract
 
-Tests only read `src/` and `exe_programs/`; they change no algorithm, cut, output format or GUI behavior. Synthetic LDAT fixtures follow the `src/read_compact.py` contract: coincidence records of two detectors, each a list of `(timestamp, channel energy, channel ID)` hits; no singles population. Maps come from the selected YAML (IMAS and Cornell layouts differ; the Cornell layouts are the frozen `tests/data/` copies); energies are PETsys a.u. unless a test names its calibration file. Baselines record which data, map, calibration and cuts produced them.
+Tests only read `src/` and `exe_programs/`; they change no algorithm, cut, output format or GUI behavior. Synthetic LDAT fixtures follow the `src/read_compact.py` contract: coincidence records of two detectors, each a list of `(timestamp, channel energy, channel ID)` hits; no singles population. Maps come from the selected YAML (IMAS and Cornell layouts differ; the Cornell layout is the tracked `maps/cornell_map_full_system.yaml`); energies are PETsys a.u. unless a test names its calibration file. Baselines record which data, map, calibration and cuts produced them.
 
 ## Requirements
 
@@ -38,8 +46,8 @@ Tests only read `src/` and `exe_programs/`; they change no algorithm, cut, outpu
 - **FR-5 — Spec traceability.** Each test SHALL cite the requirement it checks with `@pytest.mark.fr("NNN-FR-n")`; bug-fix regression tests cite `@pytest.mark.fr("bug-<short-name>")`; a test MAY cite several ids. A `--fr <id>` option SHALL select exactly the tests citing that id, so a `Validation` walk can rerun one requirement's checks.
 - **FR-6 — Shared fixtures.** `tests/conftest.py` SHALL provide the shared builders now duplicated across checks (synthetic compact LDAT writer with known pairs, timestamps, energies and channel IDs; map/config loaders; a `real_data_dir` fixture per FR-4). Tests SHALL share helpers only through `conftest.py` or a tracked helper module under `tests/`, never by importing another test file.
 - **FR-7 — First migration (pure `src`).**
-  - `scripts/cornell_slab_convention_check.py` SHALL become a parametrized test over the same eight cases for both `src.utils.get_slab_cornell` and `src.utils_fixed.get_slab_cornell_vectorized`, on the frozen copy of `cornell_map_full_system.yaml`, with the same seeds, giving 16 passing tests where the script reports `PASS: 16/16`. It cites `bug-cornell-slab-convention` (spec 002 B1) and `002-FR-17`.
-  - New synthetic tests SHALL cover: `src/read_compact.py` reading a written fixture back to the same pairs (including an empty file and a truncated last record); `src.mapping_generator.map_factory` on every tracked map and both frozen Cornell maps (each channel mapped once, SuperModule/minimodule ids and channel types consistent, IMAS and Cornell layouts distinct, the two Cornell maps differing only where their YAML differs); `src.utils.get_absolute_id` / `get_electronics_nums` round trip; `src.utils.KevConverter` on a small synthetic calibration file (known factor gives the known keV; a channel without a factor is never given a fabricated value).
+  - `scripts/cornell_slab_convention_check.py` SHALL become a parametrized test over the same eight cases for both `src.utils.get_slab_cornell` and `src.utils_fixed.get_slab_cornell_vectorized`, on the tracked `maps/cornell_map_full_system.yaml`, with the same seeds, giving 16 passing tests where the script reports `PASS: 16/16`. It cites `bug-cornell-slab-convention` (spec 002 B1) and `002-FR-17`.
+  - New synthetic tests SHALL cover: `src/read_compact.py` reading a written fixture back to the same pairs (including an empty file and a truncated last record); `src.mapping_generator.map_factory` on every tracked map, IMAS and Cornell (each channel mapped once, SuperModule/minimodule ids and channel types consistent, IMAS and Cornell layouts distinct); `src.utils.get_absolute_id` / `get_electronics_nums` round trip; `src.utils.KevConverter` on a small synthetic calibration file (known factor gives the known keV; a channel without a factor is never given a fabricated value).
 - **FR-8 — Gradual migration rule.** WHEN a later spec or bug fix changes an area covered by a `scripts/*_check.py` check, its tasks SHALL move that check to `tests/` first. A migrated test SHALL give the same pass count as the script on the same fixtures, recorded in that spec's `tasks.md`; the script SHALL then be deleted from `scripts/`. Its fixtures and baselines move to `tests/data/`. `unittest.TestCase` classes MAY be moved unchanged (pytest collects them); argparse mode flags become markers or `-k` selections. Until migrated, a script check remains valid evidence for the spec that recorded it.
 - **FR-9 — Constitution and workflow.** `AGENTS.md` and `docs/prompts.md` SHALL state that checks live in tracked `tests/`; that `Done when:` names a pytest node id or `--fr` selection; that `Verified:` records the command, platform and its `N passed, M skipped` line; that a bug fix adds a regression test; and that `scripts/` stays for local, untracked analysis and the shared `scripts/template.py`.
 - **FR-10 — No product change.** The spec SHALL NOT change behavior in `src/` or `exe_programs/`. WHEN a new test exposes a defect, it SHALL be recorded and fixed as a separate bug fix with its own regression test, not by adjusting the test's expected value.
