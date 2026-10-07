@@ -31,6 +31,7 @@ Clarify (2026-10-07, found while planning):
 - `src/read_compact.py` truncated last record: the test asserts every complete pair is returned intact and the partial record yields no pair. Today it yields a phantom `([], [])` (cut in detector 1), a half record with detector-1 hits and an empty detector 2 (cut in detector 2) or raises `struct.error` (header cut); the fix is bug fix `bug-read-compact-truncation`.
 - `KevConverter.convert_mu` with `mu == 0` returns 0 keV, which is a fabricated value. The test asserts no number is returned; the fix is bug fix `bug-kev-mu-zero`.
 - Cornell map: `maps/cornell_map_full_system.yaml` is the single Cornell full-system map; `cornell_map_full_system_20260928.yaml` was deleted by the owner. The owner force-adds `maps/cornell_map_full_system.yaml` to git in the same commit as `bug-map-channels-key`; tests read it from `maps/`, with no copy under `tests/data/`.
+- Cornell maps (owner, later 2026-10-07): `maps/cornell_map_full_system.yaml` is the September layout and `maps/cornell_map_full_system_old.yaml` the January one (they differ in `mod_feb_map` entries 9–11, 15–20, 25). The January map is tracked too, so January acquisitions and their `encal_files/` calibrations stay readable from a clone; `configs/cornell_full_system_old.yaml` selects it.
 - Until its bug fix lands, a test that exposes one of these defects is `xfail(strict=True)` citing the bug id, so the default run passes and the fix flips it to a pass.
 
 ## Data contract

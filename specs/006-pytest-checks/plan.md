@@ -36,7 +36,7 @@ tests/
 ## Data shapes
 
 - **Synthetic LDAT** (`helpers.write_ldat(path, pairs)`): `pairs` is a list of `(det1, det2)`, each a list of `(timestamp:int, energy:float, channel_id:int)`; written as `struct.pack("2B", len(det1), len(det2))` then `"qfi"` per hit, the `read_compact.read_binary_file` layout. At most 255 hits per detector (header byte). Coincidence records only; no singles population.
-- **Maps:** tracked `maps/*.yaml`: IMAS 1DAQ/2DAQ, default, cpp, erc and Cornell `cornell_map_full_system.yaml` (force-added in T0). `map_factory` returns `(local_map, sm_mM_map, chtype_map, fem)`.
+- **Maps:** tracked `maps/*.yaml`: IMAS 1DAQ/2DAQ, default, cpp, erc and Cornell `cornell_map_full_system.yaml` (September, force-added in T0) and `cornell_map_full_system_old.yaml` (January, force-added 2026-10-07). `map_factory` returns `(local_map, sm_mM_map, chtype_map, fem)`.
 - **Calibration fixture:** written to `tmp_path` per test: `mu` type TSV `ID\tmu`, `cornell` type `ID(t_ch, slab)\tmu\tsigma`. Energies in PETsys a.u.; expected keV is `511 / mu × energy`.
 
 ## Tests and expected outcomes

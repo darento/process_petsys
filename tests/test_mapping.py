@@ -18,7 +18,7 @@ from src.mapping_generator import ChannelType, map_factory
 from src.utils import get_electronics_nums
 
 MAP_FILES = ["imas1DAQ_map.yaml", "imas2DAQ_map.yaml", "default_map.yaml", "cpp_map.yaml",
-             "erc_map.yaml", "cornell_map_full_system.yaml"]
+             "erc_map.yaml", "cornell_map_full_system.yaml", "cornell_map_full_system_old.yaml"]
 TIME, ENERGY = ChannelType.TIME, ChannelType.ENERGY
 
 
