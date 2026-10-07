@@ -1,0 +1,2 @@
+# Golden files are compared byte for byte with their recorded SHA-256 (spec 007 FR-3): no line-ending conversion.
+tests/data/golden/** -text

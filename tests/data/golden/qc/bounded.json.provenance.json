@@ -1,0 +1,67 @@
+{
+ "bytes": 50,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "QCFixtures.at(root); 4 x compact(f'copy_{i}.ldat', records(600, seed=7))",
+  "seeds": {
+   "records": [
+    7,
+    7,
+    7,
+    7
+   ]
+  }
+ },
+ "golden": "qc/bounded.json",
+ "helpers": [
+  "QCFixtures",
+  "QC_SPECS"
+ ],
+ "inputs": [
+  {
+   "bytes": 134128,
+   "name": "copy_0.ldat",
+   "sha256": "1e71671f6092fa65b228748de53a071ad527a2875da7d290567a8b32e9b2fc04"
+  },
+  {
+   "bytes": 134128,
+   "name": "copy_1.ldat",
+   "sha256": "1e71671f6092fa65b228748de53a071ad527a2875da7d290567a8b32e9b2fc04"
+  },
+  {
+   "bytes": 134128,
+   "name": "copy_2.ldat",
+   "sha256": "1e71671f6092fa65b228748de53a071ad527a2875da7d290567a8b32e9b2fc04"
+  },
+  {
+   "bytes": 134128,
+   "name": "copy_3.ldat",
+   "sha256": "1e71671f6092fa65b228748de53a071ad527a2875da7d290567a8b32e9b2fc04"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {1: [0, 0, 0], 2: [2, 0, 0]}",
+  "sha256": "87181925c5e9de422342058998b27b3bb6c6d1dd80e400023bfc7e70ae621eec"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_system_validation.py",
+  "sha256": "3c1b9c57d41de8aabeb63fb6145dae43c4c6d83efbce3053d6da9e15138e1607"
+ },
+ "replaces": [
+  "scripts/petsys_manager_qc_check.py::QCChecks.test_qc_bounded_storage_and_incremental_merge"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "en_min_ch": 0.2,
+  "min_ch": 4,
+  "pools": "inline map (get_context patched)",
+  "random.seed": 5,
+  "sum_rows_cols": true
+ },
+ "sha256": "f714b9bd0716d1270f42feb11a42dbb2896f1c34d47887b70aeddaf273cc924e",
+ "spec": "007-FR-3"
+}

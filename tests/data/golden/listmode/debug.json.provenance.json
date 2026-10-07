@@ -1,0 +1,63 @@
+{
+ "bytes": 110327,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "ListmodeFixtures.at(root); inputs()",
+  "seeds": {
+   "records": [
+    7,
+    8
+   ]
+  }
+ },
+ "golden": "listmode/debug.json",
+ "helpers": [
+  "ListmodeFixtures",
+  "LISTMODE_SPECS",
+  "METADATA",
+  "PAIRS"
+ ],
+ "inputs": [
+  {
+   "bytes": 1285004,
+   "name": "acq_coinc_2.ldat",
+   "sha256": "9a95c9f92b56d8ce2df6638e72c119d5f9340679cf00522b97054c81be20c17a"
+  },
+  {
+   "bytes": 1285004,
+   "name": "acq_coinc_10.ldat",
+   "sha256": "409670b1716ce6b0196c4ab7eccd1f277c3f907b6f3352846c7f894a0c5adb8a"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {7: [0, 0, 0], 21: [2, 0, 0]}",
+  "sha256": "40f4b41f46dff2154c69022318c13cda8ad50f315896507775823e7377df5ee3"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_listmode_cog_fixed_position.py",
+  "sha256": "f7adbaf8cef6677ac01ebb312562822ee9a284e9450a7af26b81160641311f81"
+ },
+ "replaces": [
+  "scripts/petsys_manager_listmode_check.py::ListmodeChecks.test_listmode_debug_summaries_match_reference_and_stay_bounded"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "batch_size": 1000,
+  "debug": true,
+  "en_min_ch": 0.2,
+  "energy_range_kev": [
+   357,
+   665
+  ],
+  "metadata": "manager_helpers.METADATA",
+  "min_ch": 4,
+  "np.random.seed": 3,
+  "num_regions": 5
+ },
+ "sha256": "ef1246f6f3d3ece92d307f0e736102ba31769ce6503cc383971e01e244f241ab",
+ "spec": "007-FR-3"
+}

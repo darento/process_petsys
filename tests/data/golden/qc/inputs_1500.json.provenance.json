@@ -1,0 +1,60 @@
+{
+ "bytes": 466362,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "QCFixtures.at(root); inputs()",
+  "seeds": {
+   "records": [
+    7,
+    8
+   ]
+  }
+ },
+ "golden": "qc/inputs_1500.json",
+ "helpers": [
+  "QCFixtures",
+  "QC_SPECS"
+ ],
+ "inputs": [
+  {
+   "bytes": 335352,
+   "name": "qc_with_source_coincCompact_1.ldat",
+   "sha256": "38bfd40103ce005d7f86977226c592ebbde6c5fee59dffefd79ec0569e64f733"
+  },
+  {
+   "bytes": 335352,
+   "name": "qc_with_source_coincCompact_2.ldat",
+   "sha256": "39bb0d486e5fa81af6ea0ef1a8bedacbc40436e429a0d1637c5ea3029eb76f96"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {1: [0, 0, 0], 2: [2, 0, 0]}",
+  "sha256": "87181925c5e9de422342058998b27b3bb6c6d1dd80e400023bfc7e70ae621eec"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_system_validation.py",
+  "sha256": "3c1b9c57d41de8aabeb63fb6145dae43c4c6d83efbce3053d6da9e15138e1607"
+ },
+ "replaces": [
+  "scripts/petsys_manager_qc_check.py::QCChecks.test_qc_histograms_fits_occupancy_floods_match_reference"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "en_min_ch": 0.2,
+  "fit_cb": {
+   "minimodule": 12,
+   "slab": 10
+  },
+  "fit_pk_finder": "peak",
+  "min_ch": 4,
+  "pools": "inline map (get_context patched)",
+  "random.seed": 5,
+  "sum_rows_cols": true
+ },
+ "sha256": "154aa2c3780b79edecfb96a1d885c599000b01bc1a14a60f03898bbf0418541f",
+ "spec": "007-FR-3"
+}

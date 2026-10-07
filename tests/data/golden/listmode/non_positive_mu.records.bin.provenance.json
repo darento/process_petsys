@@ -1,0 +1,87 @@
+{
+ "bytes": 22920,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "ListmodeFixtures.at(root); inputs(); slab keys of ((7, 0), 2) regions 1-2: three rows mu -2878.171, one row mu 0",
+  "seeds": {
+   "records": [
+    7,
+    8
+   ]
+  }
+ },
+ "golden": "listmode/non_positive_mu.records.bin",
+ "helpers": [
+  "ListmodeFixtures",
+  "LISTMODE_SPECS",
+  "METADATA",
+  "PAIRS"
+ ],
+ "inputs": [
+  {
+   "bytes": 1285004,
+   "name": "acq_coinc_2.ldat",
+   "sha256": "9a95c9f92b56d8ce2df6638e72c119d5f9340679cf00522b97054c81be20c17a"
+  },
+  {
+   "bytes": 1285004,
+   "name": "acq_coinc_10.ldat",
+   "sha256": "409670b1716ce6b0196c4ab7eccd1f277c3f907b6f3352846c7f894a0c5adb8a"
+  },
+  {
+   "bytes": 450,
+   "name": "cog_limits.txt",
+   "sha256": "2996769d4222a997260692160c923c652a6fc8dcab250881affad25994365b1e"
+  },
+  {
+   "bytes": 678,
+   "name": "doi_limits.txt",
+   "sha256": "2b74b67f9915a5c7430034253a834bde56041568ec94a7221d5a3bc1e30b8583"
+  },
+  {
+   "bytes": 48,
+   "name": "pairs_map_cornell.txt",
+   "sha256": "b338df7e0d1291530c3b1f5a4e5ee86642e4364fd72cb80cbd96d27520370c7f"
+  },
+  {
+   "bytes": 1987,
+   "name": "position_5regions.encal",
+   "sha256": "5f4c2b2c03a369b0aa03189d7679842372360a40ad0c563c6454ecbd5fd50491"
+  },
+  {
+   "bytes": 644,
+   "name": "region_sm_mm_map.tsv",
+   "sha256": "af0b415ef0087fc331fd1d8d762b6f28313265b565037392eda51431a19bf377"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {7: [0, 0, 0], 21: [2, 0, 0]}",
+  "sha256": "40f4b41f46dff2154c69022318c13cda8ad50f315896507775823e7377df5ee3"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_listmode_cog_fixed_position.py",
+  "sha256": "f7adbaf8cef6677ac01ebb312562822ee9a284e9450a7af26b81160641311f81"
+ },
+ "replaces": [
+  "scripts/petsys_manager_listmode_check.py::ListmodeChecks.test_listmode_non_positive_mu_is_no_factor_like_the_reference"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "batch_size": 1000,
+  "en_min_ch": 0.2,
+  "energy_range_kev": [
+   357,
+   665
+  ],
+  "metadata": "manager_helpers.METADATA",
+  "min_ch": 4,
+  "np.random.seed": 3,
+  "num_regions": 5
+ },
+ "sha256": "cdd093aca62b1a49afb946f4a6d9b2cff32c2503ddaf7b2c443dac14b21551c9",
+ "spec": "007-FR-3"
+}

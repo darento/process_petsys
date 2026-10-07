@@ -1,0 +1,60 @@
+{
+ "bytes": 1168,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "CalibrationFixtures(root); pairs(sides_for(fx.geometry, P1_SPECS, seed=11)), first and second half as two compact files (p1)",
+  "seeds": {
+   "sides_for": 11
+  }
+ },
+ "golden": "calibration/p1_limit700.json",
+ "helpers": [
+  "CalibrationFixtures",
+  "sides_for",
+  "pairs",
+  "P1_SPECS"
+ ],
+ "inputs": [
+  {
+   "bytes": 622438,
+   "name": "p1_compact_0.ldat",
+   "sha256": "1014b4c20572d64ea56749efaf7cfc89a51182f481004f1c16edc81bd78df74d"
+  },
+  {
+   "bytes": 625992,
+   "name": "p1_compact_1.ldat",
+   "sha256": "864c3a5a0bb66b3b8b0bb727f35bbbb7b4fae91cec8209571dfd11fbb29552a8"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map()",
+  "sha256": "ff3b10c131d91cdecbda653ef6fc4afef7d0bb16ed231374251b05ca3a6f2624"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_slab_en_cal.py",
+  "sha256": "822dda23efbf2ced9f8887ce7d9d2f0d7209549e08167289da05786ee06b8af5"
+ },
+ "replaces": [
+  "scripts/petsys_manager_calibration_check.py::CalibrationChecks.test_passing_event_limit_matches_reference_semantics",
+  "scripts/petsys_manager_calibration_check.py::CalibrationChecks.test_coverage_reports_sides_per_key"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "data_format": "compact",
+  "en_min_ch": 0.2,
+  "energy_range": [
+   357,
+   665
+  ],
+  "min_ch": 4,
+  "passing_event_limit": "700 (reference literal 10000000 replaced)",
+  "population": "coincidence",
+  "positions": 1
+ },
+ "sha256": "9a306822aca2e8b8ca3aa85165e08cfcf0897d143f707dc7c92ecb21e0cab108",
+ "spec": "007-FR-3"
+}

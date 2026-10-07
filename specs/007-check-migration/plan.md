@@ -36,7 +36,7 @@ tests/
   ldat_helpers.py        # fixture_files, write_pairs, build, CONFIGS, RECOVERY_CASES, side/ldat writers
   data/
     configs/cornell_january.yaml     # tracked copy of the January Cornell config (map_file → maps/..._old.yaml)
-    golden/{calibration,listmode,qc,reference}/   # golden outputs + *.provenance.json
+    golden/{calibration,listmode,qc}/   # golden outputs + *.provenance.json
     baselines/t19_jan2026_manifest.json, t19_jan2026_result.json
   test_manager_*.py      # one per migrated manager script (gui split per area)
   test_ldat_*.py         # one per migrated LDAT script (views split per area)

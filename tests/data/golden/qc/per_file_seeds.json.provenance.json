@@ -1,0 +1,67 @@
+{
+ "bytes": 417493,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "QCFixtures.at(root); inputs(count=900, names=('par_coinc_1.ldat', 'par_coinc_2.ldat', 'par_coinc_3.ldat'))",
+  "seeds": {
+   "file_seeds": [
+    16823399,
+    3796490668,
+    3226123765
+   ],
+   "qc_seed": 5,
+   "records": [
+    7,
+    8,
+    9
+   ]
+  }
+ },
+ "golden": "qc/per_file_seeds.json",
+ "helpers": [
+  "QCFixtures",
+  "QC_SPECS"
+ ],
+ "inputs": [
+  {
+   "bytes": 201224,
+   "name": "par_coinc_1.ldat",
+   "sha256": "b4f88b9ab73d6f9d71285d31ec566ccec94b259f30f60e9c0e6c9df015f3a68c"
+  },
+  {
+   "bytes": 201224,
+   "name": "par_coinc_2.ldat",
+   "sha256": "59f81a79760f62bc3cb45fba8ef74dd5b5e8c5b3de145e0b47f62e539ce9fbaa"
+  },
+  {
+   "bytes": 201224,
+   "name": "par_coinc_3.ldat",
+   "sha256": "d18f343f4f20e4ba7c696620943d800949ec394070e638523327e29bc80f1df1"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {1: [0, 0, 0], 2: [2, 0, 0]}",
+  "sha256": "87181925c5e9de422342058998b27b3bb6c6d1dd80e400023bfc7e70ae621eec"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_system_validation.py",
+  "sha256": "3c1b9c57d41de8aabeb63fb6145dae43c4c6d83efbce3053d6da9e15138e1607"
+ },
+ "replaces": [
+  "scripts/petsys_manager_qc_check.py::QCChecks.test_qc_parallel_files_with_per_file_seeds"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "en_min_ch": 0.2,
+  "min_ch": 4,
+  "pools": "inline map (get_context patched)",
+  "random.seed": "per file: qc.file_seed(5, index)",
+  "sum_rows_cols": true
+ },
+ "sha256": "c09a054cfbcb998ff0c5d4297f52adffa744c29528258e1a7bad371849869a1c",
+ "spec": "007-FR-3"
+}

@@ -1,0 +1,6 @@
+{
+ "reference_raises": {
+  "exception": "TypeError",
+  "message": "'int' object is not iterable"
+ }
+}

@@ -1,0 +1,55 @@
+{
+ "bytes": 3367,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "QCFixtures.at(root); inputs(count=800)",
+  "seeds": {
+   "records": [
+    7,
+    8
+   ]
+  }
+ },
+ "golden": "qc/options.json",
+ "helpers": [
+  "QCFixtures",
+  "QC_SPECS"
+ ],
+ "inputs": [
+  {
+   "bytes": 178848,
+   "name": "qc_with_source_coincCompact_1.ldat",
+   "sha256": "f8606d6e9bf21d89acc99dc673246fb66bb1aaf963e88db8a4f30e55901948e1"
+  },
+  {
+   "bytes": 178848,
+   "name": "qc_with_source_coincCompact_2.ldat",
+   "sha256": "75bf0218363d54cc05af9cf47d495478fd5cfef207efd052dcf6ab64d29567f4"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {1: [0, 0, 0], 2: [2, 0, 0]}",
+  "sha256": "87181925c5e9de422342058998b27b3bb6c6d1dd80e400023bfc7e70ae621eec"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_system_validation.py",
+  "sha256": "3c1b9c57d41de8aabeb63fb6145dae43c4c6d83efbce3053d6da9e15138e1607"
+ },
+ "replaces": [
+  "scripts/petsys_manager_qc_check.py::QCChecks.test_qc_option_combinations_and_reference_output_types"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "en_min_ch": 0.2,
+  "min_ch": 4,
+  "pools": "inline map (get_context patched)",
+  "random.seed": 5,
+  "sum_rows_cols": true
+ },
+ "sha256": "1798742d17e0f565dbe31f2fc25f687ef0a1a8f2637c278980f3115ed985f760",
+ "spec": "007-FR-3"
+}

@@ -1,0 +1,87 @@
+{
+ "bytes": 42,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "ListmodeFixtures.at(root); inputs(); row (5, 4) set to 3.2-3.2 in doi_limits",
+  "seeds": {
+   "records": [
+    7,
+    8
+   ]
+  }
+ },
+ "golden": "listmode/zero_width_doi.json",
+ "helpers": [
+  "ListmodeFixtures",
+  "LISTMODE_SPECS",
+  "METADATA",
+  "PAIRS"
+ ],
+ "inputs": [
+  {
+   "bytes": 1285004,
+   "name": "acq_coinc_2.ldat",
+   "sha256": "9a95c9f92b56d8ce2df6638e72c119d5f9340679cf00522b97054c81be20c17a"
+  },
+  {
+   "bytes": 1285004,
+   "name": "acq_coinc_10.ldat",
+   "sha256": "409670b1716ce6b0196c4ab7eccd1f277c3f907b6f3352846c7f894a0c5adb8a"
+  },
+  {
+   "bytes": 439,
+   "name": "cog_limits.txt",
+   "sha256": "3e9c15a4dabfa506a29f450c94b4a3c46a1975efcc2efa9e13f0fe28eb32fed0"
+  },
+  {
+   "bytes": 648,
+   "name": "doi_limits.txt",
+   "sha256": "fa46e65ffe930c94c6f13863f56a7e2cbad89e8a13702a4524d4051e19ae5d80"
+  },
+  {
+   "bytes": 48,
+   "name": "pairs_map_cornell.txt",
+   "sha256": "b338df7e0d1291530c3b1f5a4e5ee86642e4364fd72cb80cbd96d27520370c7f"
+  },
+  {
+   "bytes": 1978,
+   "name": "position_5regions.encal",
+   "sha256": "b6ebbfab4402f33ec13989239140c7a2fc23de1ae63ab8bfa6001c2ec16b7ad7"
+  },
+  {
+   "bytes": 644,
+   "name": "region_sm_mm_map.tsv",
+   "sha256": "af0b415ef0087fc331fd1d8d762b6f28313265b565037392eda51431a19bf377"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {7: [0, 0, 0], 21: [2, 0, 0]}",
+  "sha256": "40f4b41f46dff2154c69022318c13cda8ad50f315896507775823e7377df5ee3"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_listmode_cog_fixed_position.py",
+  "sha256": "f7adbaf8cef6677ac01ebb312562822ee9a284e9450a7af26b81160641311f81"
+ },
+ "replaces": [
+  "scripts/petsys_manager_listmode_check.py::ListmodeChecks.test_listmode_zero_width_limits_fall_out_of_range_like_the_reference"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "batch_size": 1000,
+  "en_min_ch": 0.2,
+  "energy_range_kev": [
+   357,
+   665
+  ],
+  "metadata": "manager_helpers.METADATA",
+  "min_ch": 4,
+  "np.random.seed": 3,
+  "num_regions": 5
+ },
+ "sha256": "1e61731fc5f9c2a6affdbca302ead3b08db175b8c7e9695ef9ecbd804c815c39",
+ "spec": "007-FR-3"
+}

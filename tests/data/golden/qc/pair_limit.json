@@ -1,0 +1,19 @@
+{
+ "cases": [
+  {
+   "accepted_pairs": 3,
+   "counter_start": 999998,
+   "records_read": 4
+  },
+  {
+   "accepted_pairs": 2,
+   "counter_start": 999999,
+   "records_read": 3
+  },
+  {
+   "accepted_pairs": 1,
+   "counter_start": 1000000,
+   "records_read": 2
+  }
+ ]
+}

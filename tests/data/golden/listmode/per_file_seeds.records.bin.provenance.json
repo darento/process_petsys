@@ -1,0 +1,99 @@
+{
+ "bytes": 22824,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "ListmodeFixtures.at(root); inputs(names=('par_coinc_1.ldat', 'par_coinc_2.ldat', 'par_coinc_3.ldat'), count=1200)",
+  "seeds": {
+   "file_seeds": [
+    16823399,
+    3796490668,
+    3226123765
+   ],
+   "lm_seed": 5,
+   "records": [
+    7,
+    8,
+    9
+   ]
+  }
+ },
+ "golden": "listmode/per_file_seeds.records.bin",
+ "helpers": [
+  "ListmodeFixtures",
+  "LISTMODE_SPECS",
+  "METADATA",
+  "PAIRS"
+ ],
+ "inputs": [
+  {
+   "bytes": 616804,
+   "name": "par_coinc_1.ldat",
+   "sha256": "a39dc66bcfa802a51504b35a22c2145b488c903d71169d27777dc419785ca205"
+  },
+  {
+   "bytes": 616804,
+   "name": "par_coinc_2.ldat",
+   "sha256": "ed309d00d6cc1f678e601706c2c4400c05bd072fcb60d3be5e0c8af825509c94"
+  },
+  {
+   "bytes": 616804,
+   "name": "par_coinc_3.ldat",
+   "sha256": "c1246d325f05f617573064791df8925a3e0b1481a90a6bcff933cd7bd4390229"
+  },
+  {
+   "bytes": 450,
+   "name": "cog_limits.txt",
+   "sha256": "2996769d4222a997260692160c923c652a6fc8dcab250881affad25994365b1e"
+  },
+  {
+   "bytes": 664,
+   "name": "doi_limits.txt",
+   "sha256": "78080615c9556ca7460470b7cbf405ecbac5336bad1053225d829e91dedeecc6"
+  },
+  {
+   "bytes": 48,
+   "name": "pairs_map_cornell.txt",
+   "sha256": "b338df7e0d1291530c3b1f5a4e5ee86642e4364fd72cb80cbd96d27520370c7f"
+  },
+  {
+   "bytes": 1978,
+   "name": "position_5regions.encal",
+   "sha256": "b6ebbfab4402f33ec13989239140c7a2fc23de1ae63ab8bfa6001c2ec16b7ad7"
+  },
+  {
+   "bytes": 644,
+   "name": "region_sm_mm_map.tsv",
+   "sha256": "af0b415ef0087fc331fd1d8d762b6f28313265b565037392eda51431a19bf377"
+  }
+ ],
+ "map": {
+  "builder": "manager_helpers.fixture_map() with mod_feb_map {7: [0, 0, 0], 21: [2, 0, 0]}",
+  "sha256": "40f4b41f46dff2154c69022318c13cda8ad50f315896507775823e7377df5ee3"
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_listmode_cog_fixed_position.py",
+  "sha256": "f7adbaf8cef6677ac01ebb312562822ee9a284e9450a7af26b81160641311f81"
+ },
+ "replaces": [
+  "scripts/petsys_manager_listmode_check.py::ListmodeChecks.test_listmode_parallel_files_with_per_file_seeds"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "batch_size": 1000,
+  "en_min_ch": 0.2,
+  "energy_range_kev": [
+   357,
+   665
+  ],
+  "metadata": "manager_helpers.METADATA",
+  "min_ch": 4,
+  "np.random.seed": "per file: lm.file_seed(5, index)",
+  "num_regions": 5
+ },
+ "sha256": "f3a68bf89ba37bce8ff4283e7328861fe826b4d427eb2ee76aadd2f3b9863a68",
+ "spec": "007-FR-3"
+}

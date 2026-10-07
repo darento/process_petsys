@@ -1,0 +1,32 @@
+{
+ "bytes": 176,
+ "capture_script": {
+  "path": "scripts/capture_golden_007.py",
+  "sha256": "d629256886299de7c712d2c07f8e7f3dc13e454db8bef7ebd0bd89dc14f715f3"
+ },
+ "captured": "2026-10-07",
+ "fixture": {
+  "builder": "none",
+  "seeds": {}
+ },
+ "golden": "listmode/legacy_header.bin",
+ "helpers": [],
+ "inputs": [],
+ "map": {
+  "builder": "manager_helpers.fixture_map()",
+  "sha256": null
+ },
+ "oracle": {
+  "path": "scripts_cornell/cornell_listmode_cog_fixed_position.py",
+  "sha256": "f7adbaf8cef6677ac01ebb312562822ee9a284e9450a7af26b81160641311f81"
+ },
+ "replaces": [
+  "scripts/petsys_manager_listmode_check.py::ListmodeChecks.test_listmode_legacy_metadata_header_bytes_equal_reference"
+ ],
+ "repo_commit": "335691b7b34b8e5660edf497279bc3c6c133014b",
+ "settings": {
+  "write_header": "np.linspace(0, 51.61, 101) for x and y"
+ },
+ "sha256": "97e3b83afe15a220e5fceb5d3635a08ff74c577981d4be61c2df0f178177d584",
+ "spec": "007-FR-3"
+}

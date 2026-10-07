@@ -1,0 +1,15 @@
+{
+ "records_written": [
+  490
+ ],
+ "reference_raises": {
+  "partial_decompression_limits": {
+   "exception": "IndexError",
+   "message": "boolean index did not match indexed array along dimension 0; dimension is 372 but corresponding boolean dimension is 687"
+  },
+  "short_region_map": {
+   "exception": "IndexError",
+   "message": "index 21009 is out of bounds for axis 0 with size 21009"
+  }
+ }
+}
