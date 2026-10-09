@@ -384,7 +384,10 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
     - Fresh clone `/tmp/pp_t24` (`git status` clean): 33 failed, 889 passed, 3 errors in 227 s. Causes:
       - **Env drift:** `pypdf` missing (3 collection errors, 29 failures), and `reportlab` 4.4.10 installed while `process_petsys.yml` pins 4.4.9 (`test_cli_declared_dependencies_cover_actual_imports`).
       - **Test defect, fixed:** `test_manager_gui_shell.py::ShellChecks::test_prerequisite_reasons_without_private_paths` looks for `/home/sie` in the window text, but on that PC the fixture folder (`~/.cache/process_petsys`) and the checkout are under `/home/sie`. The test now blanks out those two shown paths before the check, and the source scan is unchanged. On Windows, with `PRIVATE` patched to the home folder, the old test fails (`'C:\\Users\\dsanchez' unexpectedly found`) and the new one passes.
-      - **Open:** `test_manager_qc.py::QCChecks::test_qc_histograms_fits_occupancy_floods_match_reference` gives a fitted `(mu, sigma)` of `(94.36550746887796, 9.58511964039157)` against the golden `(94.36550746902468, 9.585119640871293)`, a relative difference of 1.6e-12 and 5e-11. Pending the numpy/scipy versions there.
+      - **Platform rounding:** `test_manager_qc.py::QCChecks::test_qc_histograms_fits_occupancy_floods_match_reference` gives a fitted `(mu, sigma)` of `(94.36550746887796, 9.58511964039157)` against the golden `(94.36550746902468, 9.585119640871293)`, a relative difference of 1.6e-12 and 5e-11. Cornell has the pinned numpy 1.24.3 and scipy 1.12.0.
+        - Owner: compare mu, sigma and resolution with a relative 1e-9 (spec Clarify T24). Resolution is included because it was checked against an absolute 1e-12 and would have failed next.
+        - The test passes on Windows; the golden files are unchanged.
+      - Owner installed `pypdf==6.0.0` and `reportlab==4.4.9` on Cornell. Cornell had matplotlib 3.8.2 and openpyxl 3.1.5.
   - **Cornell PC steps** (owner):
     1. Pull the commit.
     2. `conda install -n process_petsys pytest-xdist=3.8.0 execnet=2.1.2`, or update the env from `process_petsys.yml`.

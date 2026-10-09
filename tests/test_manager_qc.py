@@ -141,8 +141,11 @@ class QCChecks(QCFixtures, PrivateOutput, unittest.TestCase):
                     self.assertAlmostEqual(entry.sample_std, sigma, delta=1e-9 * abs(sigma) + 1e-12)
                 else:
                     self.assertEqual(entry.status, "fitted", entry)
-                    self.assertEqual((entry.mu, abs(entry.sigma)), (mu, abs(sigma)))
-                    self.assertAlmostEqual(entry.resolution_percent, abs(res), delta=1e-12)
+                    # Relative 1e-9: the same numpy/scipy fit on Linux differs from the Windows golden by
+                    # 1.6e-12 (mu) and 5e-11 (sigma) (owner, spec 007 T24).
+                    self.assertAlmostEqual(entry.mu, mu, delta=1e-9 * abs(mu))
+                    self.assertAlmostEqual(abs(entry.sigma), abs(sigma), delta=1e-9 * abs(sigma))
+                    self.assertAlmostEqual(entry.resolution_percent, abs(res), delta=1e-9 * abs(res))
         self.assertGreater(statuses["fitted"], 0)
         self.assertGreater(statuses["sparse"], 0)
         floods = energies(reference["flood_points"])
