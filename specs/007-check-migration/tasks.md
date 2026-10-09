@@ -345,11 +345,11 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
   - Stale pointers (Clarify T23): `docs/petsys_manager.md` names `tests/test_manager_*.py` and the checkout test; three comments in `src/ldat_inspector/engine.py` and `fastread.py` name `tests/test_ldat_scale.py` (comment-only, FR-10). `git grep` finds no other `*_check.py` reference outside `specs/` and `tests/` docstrings (history).
   - `git diff --check` clean.
 
-- [ ] **T24 — Validation** (all FR).
+- [x] **T24 — Validation** (all FR).
 
   **Done when:** `scripts/` holds no `*_check.py`; fresh clone on Windows: default run passes in < 120 s, full run passes in parallel and with `-n 0 --slow-limit 5`, `linux` skipped with reasons, `git status` unchanged; owner's PC with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: `-m real_data` passes, unset → skips with reasons; source scan: no `scripts_cornell`/`scripts_imas`/`gui_cornell` import; Cornell Linux PC (owner run, env updated with `pytest-xdist`): full run passes incl. `linux`/`gui`; `petsys_manager_linux_check.py --all` there gives the same count as `tests/test_manager_linux.py` (17), then it is deleted (kept from T14). FR walk recorded; Status → `shipped`.
 
-  Windows part verified 2026-10-09; **open: the Cornell Linux run** (owner), then `petsys_manager_linux_check.py` deletion and `shipped`.
+  Verified 2026-10-09 on Windows and on the Cornell Linux PC (owner runs); spec `shipped`.
   - **Fresh clone** of `329b0cc` plus the T23/T24 working changes to docs, specs and `tests/test_manager_formats.py`. The `src/ldat_inspector` comment edits were left out of the clone: `test_manager_gui_shell.py::ShellChecks::test_inspector_independent` asserts `git diff --quiet HEAD -- src/ldat_inspector …`, and the checkout audit skips while closure files differ from HEAD, so both pass only once the edits are committed.
   - **Default run:** `python -m pytest` → 875 passed, 18 skipped in 61 s, then 64 s in a second fresh clone; both under 120 s.
     - The first run, before the `src` edits were taken out of the clone, gave 2 failed, 870 passed, 21 skipped in 110 s.
@@ -392,12 +392,14 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
         - Owner: a relative 1e-6 (`FIT_RTOL`, spec Clarify T24), since `curve_fit` stops within its default `xtol`/`ftol` of 1.49e-8. It applies to both tests; the Excel rows' keys stay exact.
         - Windows: both tests pass. Negative: golden mu and the Excel Mu shifted by 1e-5 relative make both fail on the tolerance assertion. The golden files are unchanged.
       - Owner installed `pypdf==6.0.0` and `reportlab==4.4.9` on Cornell. Cornell had matplotlib 3.8.2 and openpyxl 3.1.5.
-  - **Cornell PC steps** (owner):
-    1. Pull the commit.
-    2. `conda install -n process_petsys pytest-xdist=3.8.0 execnet=2.1.2`, or update the env from `process_petsys.yml`.
-    3. With a display: `python -m pytest -m "not real_data" -rs`, expecting no skips except those with reasons.
-    4. `python -m pytest tests/test_manager_linux.py -m "not real_data"` → 17 passed, and `python scripts/petsys_manager_linux_check.py --all` → 17 checks (spec 003 T22).
-    5. Delete the script.
+  - **Cornell run 3** (`/tmp/pp_t24` at `ed0d7f9`, `git status` clean before and after; desktop session; `pypdf` 6.0.0, `reportlab` 4.4.9):
+    - `python -m pytest -m "not real_data" -rfEs` → 1024 passed in 225 s, with no skip and no failure. That covers all 1006 + 18 Windows tests, including `linux` and `gui`.
+  - **Linux check script deleted** on Windows after the count match (17 = 17, Cornell run 1); the owner deletes the Cornell copy. `scripts/` now holds no `*_check.py`: `capture_golden_007.py`, `motor_crystal_limits.py`, `template.py`.
+  - **Process notes:**
+    - The Cornell runs used a fresh clone. The working tree there has the 5 tracked `configs/*.yaml` deleted locally and was left as it is.
+    - The Cornell env had drifted from `process_petsys.yml` (`pypdf` missing, `reportlab` 4.4.10).
+  - **FR-7:** passes on Windows (`linux` skipped with reason) and on Cornell (all run).
+  - **Verdict:** every completion criterion passes. `Status: shipped` 2026-10-09. No `exe_programs/` behavior changed (FR-10), so there is no version bump or CHANGELOG entry.
 
 ## Bug fixes found by this spec (separate from 007, FR-10)
 
