@@ -1,6 +1,6 @@
 # Spec 005 — PETsys Manager GUI usability
 
-Status: `clarified` (2026-10-09)
+Status: `approved` (2026-10-09)
 
 Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). Builds on spec 003 ([`../003-petsys-manager-migration/spec.md`](../003-petsys-manager-migration/spec.md)), shipped 2026-10-06 as PETsys Manager 1.0.0. This spec ships as PETsys Manager 1.1.0.
 
