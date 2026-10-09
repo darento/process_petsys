@@ -194,7 +194,38 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
   - **Order-dependent T13 test.** The first serial full run had 1 failure: `test_manager_cli.py::test_cli_declared_dependencies_cover_actual_imports` → `'llvmlite' not found … imported by ['src/ldat_inspector/fastread.py']`. The test scanned every `src/` module in the process's `sys.modules`. The script ran in its own process, which loaded only the CLI's modules. In a serial pytest run, the new LDAT tests load `src/ldat_inspector` first; in parallel runs that module happened to be on another worker. The test now loads its own imports in a fresh interpreter and scans those. It passes alone and after the LDAT tests. Negative (scratch copy): `import llvmlite` in `src/cornell/cli.py` → fails, naming it. Not changed: `fastread.py` imports `llvmlite`, which `process_petsys.yml` does not declare (it is installed with `numba`).
   - **Deleted** (backups in the session scratchpad): `ldat_revision_check.py`, `ldat_ports_check.py` (no importer). **`ldat_inspector_check.py` kept: deletion deferred to T21** (the gui, issue and pair_choices scripts import `fixture_files` and `write_pairs` at module level).
   - **Suites** (T18 + T19): `python -m pytest` → 646 passed, 18 skipped in 47–55 s (+92 tests, +5 `test_infra.py` scan items); `-m "not real_data"` → 678 passed, 18 skipped in 173 s; `-m "not real_data" -n 0 --slow-limit 5` → 678 passed, 18 skipped. Fixture folders 908 before and after; `git diff --check` clean.
-- [ ] **T20 — migrate `ldat_processing_check` (17) and `ldat_gui_check` (29)** (`gui`; Linux close-child part `linux`).
+- [x] **T20 — migrate `ldat_processing_check` (17) and `ldat_gui_check` (29)** (`gui`; Linux close-child part `linux`).
+
+  Verified 2026-10-09 (Windows):
+  - **Scripts.** Processing → `PASS: 17/17 processing checks passed`; GUI → `PASS: 29/29 hidden-GUI checks passed`. With Cornell `fixture_files` on the January config (scratch copies) the GUI script also gives `PASS: 29/29`.
+  - **Tests.** `python -m pytest tests/test_ldat_processing.py tests/test_ldat_gui.py -m "not real_data"` → 46 passed (17 + 29).
+    - **Processing:** 9 engine tests on a module fixture (four copies of the IMAS mixed fixture). The fast reader's cancel and progress globals are reset after each test.
+    - **Processing GUI:** 7 tests read `gui_run`, which runs the script's steps once in order on one hidden window with real workers: estimate, decline, whole-file run, Cancel.
+    - **Close mid-run:** the child is `python -c` calling `ldat_helpers.close_child`; spawn workers import `ldat_helpers.slow_reader`.
+    - **GUI:** 1 tab test, then 14 steps × 2 systems on one shared window, as in the script. `run` replays the steps per system and records each step's observations, or the exception it raised, which the step's test re-raises.
+  - **Linux marker not applied.** The task named a Linux-only close-child part, but the script runs it on Windows and it passes there (3.7 s of the 5 s limit). It stays unmarked and runs on both platforms (FR-7).
+  - **Waiting.** The script waited with a new `BooleanVar` per wait. In a closure cycle, that variable was collected on a worker thread (2 `RuntimeError: main thread is not in main loop` warnings; the script shows 0). The test waits with `ldat_helpers.pump` → 0.
+  - **Helpers.** Added to `ldat_helpers`: `fixture_pairs`/`unmapped_channel`, used by processing and scale; the slow reader; `pump`; `workbench`; `console`; `close_child`. AST (underscore prefixes dropped, `_app` → `workbench`, `_log` → `console`): 6 of 7 identical; `slow_reader` imports `fastread` locally, so the module imports without numba.
+  - **Citations:** processing `002-FR-2`, plus `002-FR-3` (progress, worker memory, more than 2 workers) and `002-FR-4` (both cancels, close), 3 each. GUI `001-FR-15`, plus one FR per step (FR-1, 4, 6, 7, 11–13, 19, 21–24; status `002-FR-5`). `--fr 002-FR-2` → 17, `001-FR-15` → 29, `001-FR-22` → 6.
+  - **Durations.** Setup: GUI `run` 7.9–10.1 s (IMAS) and 5.6–6.6 s (Cornell); processing `gui_run` 6.6–6.9 s. The tests on those fixtures are marked `slow` (28 + 7). Default run: 11 of 46 (9 engine, close 3.7 s, tabs).
+  - **Negatives** (scratch copies):
+    - "upper bound" estimate label removed: 1 fails;
+    - "previous dataset kept" log text changed: the Cancel test fails;
+    - `_close` without setting the cancel event: the close test fails (workers run on);
+    - flood empty bins black instead of white: 2 fail.
+  - **Parallel full runs** (spec Clarify T20). The first runs after this migration failed intermittently.
+    - **Close test:** it took 6.2–7.3 s under load against its 5 s bound; alone it takes 3.7 s. Owner: the bound is asserted only outside xdist workers. The exit and exit code 0 are always asserted.
+    - **`OSError: [Errno 22]`:** 2 of 4 runs failed with it in a listmode child of existing tests, T14 checkout and T13 workflow. Those requests had `workers: 22` and 2 inputs, and `segments/` stayed empty, so the child died while its workers were spawning.
+    - **Cause:** sampling `FreeVirtualMemory` showed free commit falling from 34 GB to 0.07 GB within 4 s of the run starting (67.8 GB limit, 64 GB RAM). Without the two T20 files it fell to 0.03 GB as well, so the suite was already at the limit; T20's extra spawned processes made the failure visible.
+    - **Per process:** numpy commits 756 MiB, `src.cornell.listmode` 1,568 MiB (OpenBLAS, 24 threads); with one thread, 18 and 90 MiB.
+    - **Fix:** `conftest.py` sets `OPENBLAS/OMP/MKL_NUM_THREADS=1` with `setdefault` (owner). `test_infra.py` gains 2 cases: a parallel worker and its child see `1`; an explicit `OPENBLAS_NUM_THREADS=4` is kept. Negative: without the `setdefault` loop → both fail.
+  - **Deleted** (backups in the session scratchpad): `ldat_processing_check.py` (only its own `--close-child` referred to it), `ldat_gui_check.py` (no importer).
+  - **Suites:**
+    - `python -m pytest` → 661 passed, 18 skipped in 52 s;
+    - `-m "not real_data"` → 728 passed, 18 skipped in 175–181 s, twice;
+    - `-m "not real_data" -n 0 --slow-limit 5` → 728 passed, 18 skipped in 621 s.
+
+    Free commit stayed at or above 27.2 GB through the default and both parallel runs. Fixture folders 908 before and after; `git diff --check` clean.
 - [ ] **T21 — migrate `ldat_scale_check` (65 + `--real` T9 counts), `ldat_unpopulated_check` (6 + `--real`), `ldat_issue_check` (8, fixture only), `ldat_pair_choices_check` (15, fixture only)**; retired real modes listed (`--whole`, issue probe, pair_choices `--real`).
 - [ ] **T22 — migrate `ldat_views_check`** (171; `--real` retired) → `tests/test_ldat_views_{status,supermodule,overview,coincidences,…}.py` (`gui`), split at existing section boundaries.
 

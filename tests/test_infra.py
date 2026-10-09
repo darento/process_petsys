@@ -239,6 +239,33 @@ def test_default_run_keeps_each_class_on_one_worker(project, monkeypatch, tmp_pa
         assert len(used) == 1 and next(iter(used)).startswith("gw"), (cls, used)
 
 
+BLAS_TESTS = """
+import os
+import subprocess
+import sys
+
+def test_threads():
+    child = subprocess.run([sys.executable, "-c", "import os; print(os.environ['OPENBLAS_NUM_THREADS'])"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    names = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+    values = [os.environ.get("PYTEST_XDIST_WORKER", "serial")[:2]] + [os.environ[name] for name in names] + [child]
+    with open(os.environ["BLAS_LOG"], "w") as log:
+        log.write(" ".join(values))
+"""
+
+
+@pytest.mark.fr("007-FR-5")
+@pytest.mark.parametrize("explicit, expected", [(None, "gw 1 1 1 1"), ("4", "gw 4 1 1 4")])
+def test_parallel_workers_and_their_children_use_one_blas_thread(project, monkeypatch, tmp_path, explicit, expected):
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(name, raising=False)      # this process already has them from the suite's conftest
+    if explicit:
+        monkeypatch.setenv("OPENBLAS_NUM_THREADS", explicit)
+    monkeypatch.setenv("BLAS_LOG", str(tmp_path / "blas.txt"))
+    project(BLAS_TESTS).parallel().assert_outcomes(passed=1)
+    assert (tmp_path / "blas.txt").read_text() == expected    # worker, its three variables, a child's
+
+
 @pytest.mark.fr("006-FR-3", "006-FR-11")
 def test_linux_marker_skips_elsewhere_with_reason(project):
     result = project("import pytest\n\n@pytest.mark.linux\ndef test_x(): pass\n"

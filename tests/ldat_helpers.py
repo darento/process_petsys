@@ -1,14 +1,17 @@
-"""Shared LDATInspector test builders (spec 007 FR-6, T18).
+"""Shared LDATInspector test builders (spec 007 FR-6, T18, T20).
 
 Copied from the LDAT scripts: ``fixture_files``/``write_pairs`` (``ldat_inspector_check``),
-``CONFIGS``/``RECOVERY_CASES`` and the side/LDAT writers (``ldat_scale_check``), ``build``
-(``ldat_views_check``). Cornell fixtures use the tracked January config (spec 007 Clarify, T18).
+``CONFIGS``/``RECOVERY_CASES``/``fixture_pairs`` and the side/LDAT writers (``ldat_scale_check``),
+``build`` (``ldat_views_check``), the slow reader, workbench and close-child body
+(``ldat_processing_check``). Cornell fixtures use the tracked January config (spec 007 Clarify, T18).
+GUI helpers import Tk lazily, so the module imports without a display.
 
 Import as ``from ldat_helpers import ...``; ``pyproject.toml`` puts ``tests/`` on the path.
 """
 
 from collections import Counter
 import struct
+import time
 
 import numpy as np
 import yaml
@@ -95,6 +98,56 @@ def side(setup, sm, mm, time, energy, stamp, extra=()):
     return hits + [(stamp + 2000, value, ch) for ch, value in extra]
 
 
+def unmapped_channel(setup):
+    return next(ch for ch in range(1, 10_000_000) if ch not in setup.channel_types)
+
+
+def fixture_pairs(system, setup):
+    """(name, count, expected outcome, builder) for the main mixed fixture file.
+
+    Settings: >= 4 energy channels, >= 0.2 a.u. per channel. Det1 is on SM 0,
+    det2 on SM 1, both minimodule 0 unless stated.
+    """
+    full = [30.0, 20.0, 10.0, 5.0]
+    bad = unmapped_channel(setup)
+
+    def pair(det1_time, det1_energy=full, det1_extra=(), det2_time=None,
+             det2_energy=full, det2_extra=(), det1_mm1=None):
+        def build(i):
+            stamp = 1_000_000_000_000 + i * 5_000_000
+            det1 = side(setup, 0, 0, det1_time, det1_energy, stamp, det1_extra)
+            if det1_mm1 is not None:
+                det1 += side(setup, 0, 1, *det1_mm1, stamp + 7)
+            det2 = side(setup, 1, 0, det2_time or {3: 12.0, 2: 5.0}, det2_energy,
+                         stamp + 1_234 + i % 7, det2_extra)
+            return det1, det2
+        return build
+
+    fixtures = [
+        ("adjacent neighbour p-1", 3, "accepted", pair({3: 12.0, 2: 5.0})),
+        ("adjacent neighbour p+1", 3, "accepted", pair({3: 12.0, 4: 5.0})),
+        ("one time channel, middle", 3, "accepted", pair({3: 12.0})),
+        ("one time channel, edge 0", 3, "accepted", pair({0: 12.0})),
+        ("two time channels, edge 7", 3, "accepted", pair({7: 12.0, 6: 5.0})),
+        ("second minimodule weaker", 3, "accepted",
+         pair({3: 12.0, 2: 5.0}, det1_mm1=({3: 20.0}, [10.0, 5.0]))),
+        ("second minimodule stronger, too few channels", 3, "ValueError",
+         pair({3: 12.0, 2: 5.0}, det1_mm1=({3: 20.0}, [40.0, 30.0]))),
+        ("unmapped channel on det1", 3, "KeyError", pair({3: 12.0, 2: 5.0}, det1_extra=((bad, 50.0),))),
+        ("unmapped channel on det2", 3, "KeyError", pair({3: 12.0, 2: 5.0}, det2_extra=((bad, 50.0),))),
+        ("three energy channels on det1", 3, "min channels", pair({3: 12.0, 2: 5.0}, det1_energy=full[:3])),
+        ("per-channel cut leaves three", 3, "min channels", pair({3: 12.0, 2: 5.0}, det1_energy=[30.0, 20.0, 10.0, 0.1])),
+        ("energy channels only (sum rows/cols boundary)", 3, "min channels", pair({})),
+    ]
+    if system == "CORNELL":
+        fixtures += [
+            ("non-adjacent top two", 3, "unresolved Cornell slab", pair({3: 12.0, 6: 6.0})),
+            ("non-adjacent top two, neighbour fired", 3, "unresolved Cornell slab",
+             pair({3: 12.0, 6: 6.0, 2: 3.0})),
+        ]
+    return fixtures
+
+
 def write_ldat(path, pairs, *, tail=b""):
     """``helpers.write_ldat``, then ``tail`` (e.g. a truncated record)."""
     helpers.write_ldat(path, pairs)
@@ -122,6 +175,60 @@ RECOVERY_CASES = [
 
 
 # --- hidden LDATWorkbench ---------------------------------------------------
+
+def slow_reader(path, settings, index=0):
+    """Stand-in worker that runs until cancelled (at most 60 s); spawn workers import it from here."""
+    import src.ldat_inspector.fastread as ldat_fastread
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if ldat_fastread.cancelled():
+            return FileResult(index, str(path), error="Cancelled")
+        time.sleep(0.05)
+    return FileResult(index, str(path), error="slow reader timed out")
+
+
+def pump(app, until, timeout):
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        app.update()
+        if until():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def workbench(settings, paths):
+    """A withdrawn LDATWorkbench set up for raw IMAS processing of ``paths``."""
+    from exe_programs.ldat_inspector_gui import LDATWorkbench
+
+    app = LDATWorkbench()
+    app.withdraw()
+    app.config_path = settings.config_path
+    app.system.set("IMAS")
+    app.calibrated.set(False)
+    app.min_channels.set("4")
+    app.min_channel_energy.set("0.2")
+    app.files = [str(p) for p in paths]
+    return app
+
+
+def console(app):
+    return app.console.get("1.0", "end")
+
+
+def close_child(config, file):
+    """Child-process body: start a slow run, close the window mid-run, exit."""
+    settings = Settings(config, "", "IMAS", max_pairs=None, calibrated=False)
+    app = workbench(settings, [file])
+    app._reader = slow_reader
+    app.whole_files.set(True)
+    app._start_processing()
+    pump(app, lambda: app._pool is not None and "worker processes" in console(app), 30)
+    pump(app, lambda: False, 1.5)  # workers running
+    print("CLOSING", flush=True)
+    app._close()
+
 
 def destroy(app):
     """Cancel the window's pending ``after`` jobs, then destroy it. The test process keeps pumping

@@ -14,6 +14,14 @@ import pytest
 DATA_ENV = "PETSYS_DATA_DIR"
 CAL_ENV = "PETSYS_CAL_DIR"
 
+# OpenBLAS (numpy, scipy) commits a buffer per thread: ~1.5 GB per process with 24 threads. 24 parallel
+# workers then reach the Windows commit limit, and a child process spawned meanwhile fails to start
+# (OSError: [Errno 22]). One thread per test process, inherited by workers and children (spec 007 T20);
+# set before numpy loads, and an explicit environment value wins.
+BLAS_THREADS = {name: "1" for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")}
+for _name, _value in BLAS_THREADS.items():
+    os.environ.setdefault(_name, _value)
+
 
 def pytest_addoption(parser):
     parser.addoption("--fr", action="append", default=[], metavar="ID",
