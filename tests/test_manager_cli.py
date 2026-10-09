@@ -583,3 +583,86 @@ class CLIChecks(CLIFixtures, unittest.TestCase):
         added = [line for line in after if line not in before]
         self.assertEqual([line for line in before if line not in after], [])
         self.assertEqual([re.sub(r"\s+#.*", "", line).strip() for line in added], [f"- reportlab=={reportlab.Version}"])
+
+
+# Spec 005 T2: per-file progress slots in the ordered pool --------------------------------------
+
+def report_half_then_done(folder, index):
+    """Pool task: report 50, wait until the parent has seen it (marker), report 100."""
+    import time
+    from src.cornell.parallel import report_progress
+    report_progress(index, 50)
+    marker, deadline = Path(folder) / f"seen-{index}", time.monotonic() + 30
+    while not marker.exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"the parent never saw task {index}'s intermediate progress")
+        time.sleep(0.01)
+    report_progress(index, 100)
+    return index * 10
+
+
+def _no_init(event):
+    pass
+
+
+@pytest.mark.fr("005-FR-1")
+@pytest.mark.parametrize("workers", [1, 2])
+def test_pool_slots_show_progress_before_results(tmp_path, workers):
+    from src.cornell.parallel import OrderedPool
+    ticks, results, order = [], [], []
+
+    def on_tick(values):
+        ticks.append(tuple(values))
+        order.append("tick")
+        for index, value in enumerate(values):
+            if value == 50:
+                (tmp_path / f"seen-{index}").touch()
+
+    tasks = [(str(tmp_path), index) for index in range(3)]
+    with OrderedPool(workers, _no_init, (), None, progress_slots=3) as pool:
+        pool.run(report_half_then_done, tasks,
+                 lambda index, value: (results.append((index, value)), order.append("result")), on_tick=on_tick)
+    assert results == [(0, 0), (1, 10), (2, 20)]
+    assert ticks[-1] == (100, 100, 100)
+    assert order[-1] == "tick"      # a final tick after the last result was delivered
+    for index in range(3):
+        assert any(tick[index] == 50 for tick in ticks)
+
+
+def report_and_return(index):
+    from src.cornell.parallel import report_progress
+    report_progress(index, 7)
+    return index
+
+
+@pytest.mark.fr("005-FR-1")
+@pytest.mark.parametrize("workers", [1, 2])
+def test_pool_slots_absent_reports_are_ignored(workers):
+    from src.cornell.parallel import OrderedPool
+    with OrderedPool(1, _no_init, (), None, progress_slots=2) as pool:   # an earlier run with slots
+        pool.run(report_and_return, [(0,), (1,)], lambda index, value: None)
+    results = []
+    with OrderedPool(workers, _no_init, (), None) as pool:
+        pool.run(report_and_return, [(index,) for index in range(5)],
+                 lambda index, value: results.append(value), on_tick=lambda values: results.append(values))
+    assert results == [0, 1, 2, 3, 4]
+
+
+def cancel_after_report(folder, index):
+    import time
+    from src.cornell.parallel import report_progress
+    report_progress(index, 1)
+    (Path(folder) / "cancel").touch()
+    time.sleep(0.5)
+    return index
+
+
+@pytest.mark.fr("005-FR-1")
+@pytest.mark.parametrize("workers", [1, 2])
+def test_pool_slots_cancellation_still_raises(tmp_path, workers):
+    from src.cornell.parallel import OrderedPool, PoolCancelled
+    cancel = tmp_path / "cancel"
+    with pytest.raises(PoolCancelled):
+        with OrderedPool(workers, _no_init, (), cancel.exists, progress_slots=4) as pool:
+            pool.run(cancel_after_report, [(str(tmp_path), index) for index in range(4)],
+                     lambda index, value: None, on_tick=lambda values: None)

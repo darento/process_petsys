@@ -5,6 +5,11 @@ stage merging them in order gives the same output for any worker count. Workers
 are ``spawn`` processes (as the LDAT Inspector's pool); each receives the shared
 cancellation event as the first initializer argument, so a STOP reaches running
 workers at their next batch. One worker runs everything in-process (no pool).
+
+Progress slots (spec 005 FR-1): with ``progress_slots=n`` a task reports its own
+counter with ``report_progress(index, value)``; the parent's ``on_tick(values)``
+sees all slots from the wait loop (pool) or at each report (in-process), and
+once after the last result. Slots are counters only, never data.
 """
 
 from __future__ import annotations
@@ -15,6 +20,29 @@ import os
 import threading
 
 POLL_S = 0.2
+_SLOTS = None   # this process's progress slots: a shared array in a worker, _LocalSlots in-process
+
+
+class _LocalSlots(list):
+    """In-process slots: the task blocks the parent's thread, so each report ticks at once."""
+    on_tick = None
+
+    def __setitem__(self, index, value):
+        super().__setitem__(index, value)
+        if self.on_tick is not None:
+            self.on_tick(tuple(self))
+
+
+def report_progress(index, value):
+    """Set task ``index``'s progress counter; a no-op when the pool has no slots."""
+    if _SLOTS is not None:
+        _SLOTS[index] = value
+
+
+def _init_with_slots(slots, initializer, event, *initargs):
+    global _SLOTS
+    _SLOTS = slots
+    initializer(event, *initargs)
 
 
 class PoolCancelled(Exception):
@@ -35,39 +63,63 @@ class OrderedPool:
     value)`` is called in input order. A worker exception is raised in the parent (the lowest-index one among
     the tasks finished so far); pending tasks are cancelled and running ones see the event."""
 
-    def __init__(self, workers, initializer, initargs=(), cancelled=None):
+    def __init__(self, workers, initializer, initargs=(), cancelled=None, progress_slots=0):
         self.workers, self.initializer, self.initargs, self.cancelled = workers, initializer, tuple(initargs), cancelled
-        self.executor = self.event = None
+        self.progress_slots = progress_slots
+        self.executor = self.event = self.slots = None
+        self._previous_slots = None
 
     def __enter__(self):
+        global _SLOTS
         if self.workers > 1:
             context = multiprocessing.get_context("spawn")
             self.event = context.Event()
+            initializer, initargs = self.initializer, (self.event, *self.initargs)
+            if self.progress_slots:
+                self.slots = context.Array("q", self.progress_slots, lock=False)
+                initializer, initargs = _init_with_slots, (self.slots, initializer, *initargs)
             self.executor = ProcessPoolExecutor(max_workers=self.workers, mp_context=context,
-                                                initializer=self.initializer, initargs=(self.event, *self.initargs))
+                                                initializer=initializer, initargs=initargs)
         else:
             self.event = threading.Event()
+            if self.progress_slots:
+                self.slots, self._previous_slots = _LocalSlots([0] * self.progress_slots), _SLOTS
+                _SLOTS = self.slots
             self.initializer(self.event, *self.initargs)
         return self
 
     def __exit__(self, kind, value, traceback):
+        global _SLOTS
         if kind is not None:
             self.event.set()
         if self.executor is not None:
             self.executor.shutdown(wait=True, cancel_futures=True)
+        elif self.slots is not None:
+            _SLOTS = self._previous_slots
         return False
+
+    def _tick(self, on_tick):
+        if on_tick is not None and self.slots is not None:
+            on_tick(tuple(self.slots[:]))
 
     def _check(self):
         if self.cancelled is not None and self.cancelled():
             self.event.set()
             raise PoolCancelled("Cancelled")
 
-    def run(self, fn, tasks, on_result):
+    def run(self, fn, tasks, on_result, on_tick=None):
         tasks = list(tasks)
         if self.executor is None:
-            for index, task in enumerate(tasks):
-                self._check()
-                on_result(index, fn(*task))
+            if self.slots is not None:
+                self.slots.on_tick = on_tick
+            try:
+                for index, task in enumerate(tasks):
+                    self._check()
+                    on_result(index, fn(*task))
+            finally:
+                if self.slots is not None:
+                    self.slots.on_tick = None
+            self._tick(on_tick)
             return
         futures = [self.executor.submit(fn, *task) for task in tasks]
         position = {future: index for index, future in enumerate(futures)}
@@ -76,6 +128,7 @@ class OrderedPool:
             while delivered < len(futures):
                 self._check()
                 finished, pending = wait(pending, timeout=POLL_S, return_when=FIRST_COMPLETED)
+                self._tick(on_tick)
                 failed = sorted((position[f] for f in finished if f.exception() is not None))
                 if failed:
                     # STOP sends SIGTERM to the whole process group: a worker killed by it is the cancellation.
@@ -89,3 +142,4 @@ class OrderedPool:
             for future in pending:
                 future.cancel()
             raise
+        self._tick(on_tick)

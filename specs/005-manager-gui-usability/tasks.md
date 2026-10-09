@@ -33,7 +33,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - Seam: a new phase restarts the clock at the previous event, not at its own first event, which already carries work (plan updated). `update` before `start` starts the clock at that event. Overshooting counters give fraction 1.0 and 0 s; extra converter splits give 0 s.
   - Negatives (scratch copies of `progress.py`), each failing: gate `or` → `and` (4 failed); phase restarts at `now`; no 1-split rule; no split clamp; no fraction clamp; total 0 treated as known; `import tkinter`; no-start branch removed (1 failed each).
 
-- [ ] **T2 — Pool progress slots** (FR-1). `src/cornell/parallel.py` `OrderedPool(progress_slots=n)` keeps a shared `'q'` array (spawn context; a plain array in-process) that workers reach through the wrapping initializer. `run(..., on_tick=None)` calls `on_tick(slots)` from the `POLL_S` loop and once after the last result. Existing callers stay unchanged.
+- [x] **T2 — Pool progress slots** (FR-1). `src/cornell/parallel.py` `OrderedPool(progress_slots=n)` keeps a shared `'q'` array (spawn context; a plain array in-process) that workers reach through the wrapping initializer. `run(..., on_tick=None)` calls `on_tick(slots)` from the `POLL_S` loop and once after the last result. Existing callers stay unchanged.
 
   **Done when:** `python -m pytest tests/test_manager_cli.py -k pool_slots` passes, covering:
   - `workers=1` and `workers=2`: tasks write their index slot, `on_tick` sees intermediate values before the last result, and the final tick sees every slot;
@@ -41,6 +41,12 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - cancellation still raises `PoolCancelled`.
 
   The full run passes.
+
+  Verified 2026-10-09 (Windows), test-first. Seam: `progress_slots`, `run(..., on_tick)`, module-level `report_progress(index, value)`.
+  - Red → green: `test_pool_slots_show_progress_before_results` (`workers` 1 and 2), failing first with `TypeError: unexpected keyword 'progress_slots'`. It makes no timing assumptions: each task waits until the parent has seen its 50 (marker file, 30 s deadline).
+  - Guards, green at once and proven by broken copies: `test_pool_slots_absent_reports_are_ignored` (also after an in-process pool with slots, which needs `_SLOTS` restored on exit) and `test_pool_slots_cancellation_still_raises`.
+  - `python -m pytest tests/test_manager_cli.py tests/test_manager_calibration.py -m "not real_data" -n 0 --slow-limit 5` → 42 passed, 1 deselected. Full run `-m "not real_data"` → 1024 passed, 23 skipped.
+  - Negatives (scratch copies of `parallel.py`), each failing: no tick in the pool loop (timeout); no final tick, which first survived, so an order assertion was added ("tick after the last result"); in-process slots not ticking; `_SLOTS` not restored; workers not given the slots; in-process loop ignoring cancellation.
 
 - [ ] **T3 — Byte progress in the CLI** (FR-1). Calibration `_Reader`, LM `_chunks` and QC `read_pairs` report the consumed offset per batch, through a hook that writes to the slot or calls progress directly in the serial path.
   - `cli.Events` keeps per-file bytes (a finished file counts whole), `bytes_total` from the input sizes at request start, and `phases`: calibration from `once`, LM and QC `["read"]`.
