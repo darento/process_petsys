@@ -16,7 +16,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
 ## Progress and time remaining
 
-- [ ] **T1 — Estimates** (FR-1). New `src/petsys_manager/progress.py` (no Tk import):
+- [x] **T1 — Estimates** (FR-1). New `src/petsys_manager/progress.py` (no Tk import):
   - `RateEstimate`: phase start, `update(now, done, total)` returning fraction and remaining or `None`, with the 5 s / 1 % gate. A new phase restarts it; a `None`/0 total is unknown.
   - `SplitEstimate(splits, split_durations_s)`.
 
@@ -26,6 +26,12 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - splits = 1 → `None`; 0 closed → `None`; durations [10, 20] of 5 splits → 45 s; 5/5 closed → 0.
 
   The module imports in a subprocess without `tkinter`.
+
+  Verified 2026-10-09 (Windows), test-first: 9 red → green cycles, each test failing before its code (ImportError; gate ×2; unknown total ×2; phase; no start; split ×3; split clamp; fraction clamp), then the no-Tk guard.
+  - `python -m pytest tests/test_manager_progress.py -n 0 --slow-limit 5 -m "not real_data"` → 16 passed; `--fr 005-FR-1` → 16 passed.
+  - Full run `-m "not real_data"` → 1018 passed, 23 skipped.
+  - Seam: a new phase restarts the clock at the previous event, not at its own first event, which already carries work (plan updated). `update` before `start` starts the clock at that event. Overshooting counters give fraction 1.0 and 0 s; extra converter splits give 0 s.
+  - Negatives (scratch copies of `progress.py`), each failing: gate `or` → `and` (4 failed); phase restarts at `now`; no 1-split rule; no split clamp; no fraction clamp; total 0 treated as known; `import tkinter`; no-start branch removed (1 failed each).
 
 - [ ] **T2 — Pool progress slots** (FR-1). `src/cornell/parallel.py` `OrderedPool(progress_slots=n)` keeps a shared `'q'` array (spawn context; a plain array in-process) that workers reach through the wrapping initializer. `run(..., on_tick=None)` calls `on_tick(slots)` from the `POLL_S` loop and once after the last result. Existing callers stay unchanged.
 
