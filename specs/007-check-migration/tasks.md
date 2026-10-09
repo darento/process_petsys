@@ -385,8 +385,12 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
       - **Env drift:** `pypdf` missing (3 collection errors, 29 failures), and `reportlab` 4.4.10 installed while `process_petsys.yml` pins 4.4.9 (`test_cli_declared_dependencies_cover_actual_imports`).
       - **Test defect, fixed:** `test_manager_gui_shell.py::ShellChecks::test_prerequisite_reasons_without_private_paths` looks for `/home/sie` in the window text, but on that PC the fixture folder (`~/.cache/process_petsys`) and the checkout are under `/home/sie`. The test now blanks out those two shown paths before the check, and the source scan is unchanged. On Windows, with `PRIVATE` patched to the home folder, the old test fails (`'C:\\Users\\dsanchez' unexpectedly found`) and the new one passes.
       - **Platform rounding:** `test_manager_qc.py::QCChecks::test_qc_histograms_fits_occupancy_floods_match_reference` gives a fitted `(mu, sigma)` of `(94.36550746887796, 9.58511964039157)` against the golden `(94.36550746902468, 9.585119640871293)`, a relative difference of 1.6e-12 and 5e-11. Cornell has the pinned numpy 1.24.3 and scipy 1.12.0.
-        - Owner: compare mu, sigma and resolution with a relative 1e-9 (spec Clarify T24). Resolution is included because it was checked against an absolute 1e-12 and would have failed next.
-        - The test passes on Windows; the golden files are unchanged.
+        - Owner first chose a relative 1e-9 for mu, sigma and resolution. Resolution is included because it was checked against an absolute 1e-12 and would have failed next.
+        - **Cornell run 2** (`/tmp/pp_t24`, `git status` clean, after installing `pypdf`/`reportlab`): 2 failed, 1022 passed, 0 skipped in 227 s.
+          - Another fit's sigma differed by 1.18e-9 (`8.577866846357809` vs `8.577866856454474`).
+          - `test_qc_pdf_excel_and_plot_content_match_reference` compares the same fitted values in the Excel rows exactly.
+        - Owner: a relative 1e-6 (`FIT_RTOL`, spec Clarify T24), since `curve_fit` stops within its default `xtol`/`ftol` of 1.49e-8. It applies to both tests; the Excel rows' keys stay exact.
+        - Windows: both tests pass. Negative: golden mu and the Excel Mu shifted by 1e-5 relative make both fail on the tolerance assertion. The golden files are unchanged.
       - Owner installed `pypdf==6.0.0` and `reportlab==4.4.9` on Cornell. Cornell had matplotlib 3.8.2 and openpyxl 3.1.5.
   - **Cornell PC steps** (owner):
     1. Pull the commit.
