@@ -378,6 +378,13 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
     - FR-9: `--fr 007-FR-9` gives 60. The four bug ids give 3 + 1 + 1 + 1, all passing since their fixes (`465e373`, `032092a`).
     - FR-10: since `ac94ba1`, only those two bug-fix commits touch `src/`/`exe_programs/`; the T23 `src` edits are comment-only.
     - FR-11: T23.
+  - **Cornell run 1** (owner, 2026-10-09, `4e540bd`, `platform linux -- Python 3.10.14, pytest-8.3.5`, desktop session: no `gui` skip):
+    - Linux count matches: `tests/test_manager_linux.py` → 17 passed; `petsys_manager_linux_check.py --all` → `PASS: 17 Linux dummy-process checks`.
+    - In the working tree: 63 failed, 810 passed, 52 errors. That PC has the 5 tracked `configs/*.yaml` deleted locally (78 × `FileNotFoundError: Select an existing config`), so this run doesn't count.
+    - Fresh clone `/tmp/pp_t24` (`git status` clean): 33 failed, 889 passed, 3 errors in 227 s. Causes:
+      - **Env drift:** `pypdf` missing (3 collection errors, 29 failures), and `reportlab` 4.4.10 installed while `process_petsys.yml` pins 4.4.9 (`test_cli_declared_dependencies_cover_actual_imports`).
+      - **Test defect, fixed:** `test_manager_gui_shell.py::ShellChecks::test_prerequisite_reasons_without_private_paths` looks for `/home/sie` in the window text, but on that PC the fixture folder (`~/.cache/process_petsys`) and the checkout are under `/home/sie`. The test now blanks out those two shown paths before the check, and the source scan is unchanged. On Windows, with `PRIVATE` patched to the home folder, the old test fails (`'C:\\Users\\dsanchez' unexpectedly found`) and the new one passes.
+      - **Open:** `test_manager_qc.py::QCChecks::test_qc_histograms_fits_occupancy_floods_match_reference` gives a fitted `(mu, sigma)` of `(94.36550746887796, 9.58511964039157)` against the golden `(94.36550746902468, 9.585119640871293)`, a relative difference of 1.6e-12 and 5e-11. Pending the numpy/scipy versions there.
   - **Cornell PC steps** (owner):
     1. Pull the commit.
     2. `conda install -n process_petsys pytest-xdist=3.8.0 execnet=2.1.2`, or update the env from `process_petsys.yml`.

@@ -172,6 +172,9 @@ class ShellChecks(GUIBase):
             self.assertIn("unavailable:", text, key)
             self.assertTrue(text.splitlines()[1].startswith("  • "), key)
         joined = "\n".join(texts(app.root) + [self.log(app)])
+        # The fixture folder and the checkout are shown on purpose; on the Cornell PC both are under /home/sie (T24).
+        for shown in (str(self.output), str(REPO)):
+            joined = joined.replace(shown, "<shown>")
         for private in PRIVATE:
             self.assertNotIn(private, joined)
         source = "\n".join(Path(gui.__file__).read_text(encoding="utf-8").splitlines() +
