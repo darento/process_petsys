@@ -191,4 +191,4 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
 | `src/cornell/qc.py`, `src/cornell/qc_report.py` | QC analysis and its PDF/Excel/plot reports |
 | shared `src/` modules | Readers, mapping (`mapping_generator.py`), fits and helpers reused from the package |
 
-`scripts/`, `scripts_cornell/` and `scripts_imas/` are local and untracked; the runtime never imports them. Development checks for the manager live there (`scripts/petsys_manager_*check.py`). For example, `python scripts/petsys_manager_checkout_check.py --tracked-runtime` audits that a copy of only the tracked runtime files imports and processes fixtures without private settings.
+`scripts/`, `scripts_cornell/` and `scripts_imas/` are local and untracked; the runtime never imports them. The manager's development checks are the tracked `tests/test_manager_*.py` (see `AGENTS.md`). For example, `python -m pytest tests/test_manager_checkout.py -m "not real_data"` audits that a copy of only the tracked runtime files imports and processes fixtures without private settings.

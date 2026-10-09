@@ -38,7 +38,7 @@ SLAB_RULES = {"legacy": "legacy (non-adjacent rejected)",
 TIMESTAMP_SECONDS = 1e-12
 _HIT = struct.Struct("qfi")
 _HEADER = struct.Struct("2B")
-# ModuleEvents attributes shared with spec 001 (compared by scripts/ldat_scale_check.py).
+# ModuleEvents attributes shared with spec 001 (compared by tests/test_ldat_scale.py).
 _COLUMNS = {
     "energy": "d", "raw_energy": "d", "partner_energy": "d", "partner_raw_energy": "d",
     "calibration_key": "q", "partner_calibration_key": "q",
@@ -417,7 +417,7 @@ def process_file_reference(path: str, settings: Settings, index: int = 0) -> Fil
     """Decode raw coincidence sides once; a corrupt file contributes no prefix.
 
     Spec 001's per-pair Python reader. Spec 002 keeps it unchanged as the
-    oracle that the fast reader is compared against (scripts/ldat_scale_check.py).
+    oracle that the fast reader is compared against (tests/test_ldat_scale.py).
     """
     result = FileResult(index=index, path=str(path))
     try:

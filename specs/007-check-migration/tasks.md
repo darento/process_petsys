@@ -325,7 +325,7 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
     - report "Fitted minimodules" line changed: 2 fail;
     - fitted-only plot title changed: 1 fails.
   - **Deleted** (backups in the session scratchpad): `ldat_views_check.py`; `ldat_scale_check.py` (deferred from T21). `scripts/` now holds only `petsys_manager_linux_check.py` (kept until T24).
-  - **Not removed:** 389 `%TEMP%\ldat_*` folders left by earlier script runs since 2026-10-02. This session's own script runs' folders were removed.
+  - **Leaked folders:** 389 `%TEMP%\ldat_*` folders left by earlier script runs since 2026-10-02 (prefixes `ldat_limits`, `ldat_origins`, `ldat_slab_rule`, `ldat_t12_pdf`, all the script's `mkdtemp`); removed with owner approval at T23. The tests leave none.
   - **Suites** (T21 + T22):
     - `python -m pytest` → 875 passed, 18 skipped in 63 s (+214: 94 T21, 104 T22, 4 recorder, 12 scan items);
     - `-m "not real_data"` → 1006 passed, 18 skipped in 214–217 s, twice after the poll-gap change (before it: 1 failed, 1005 passed);
@@ -335,13 +335,55 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 ## Close
 
-- [ ] **T23 — Docs** (FR-11). `AGENTS.md`, `docs/prompts.md`: default vs full run, `slow` ≥ 5 s, parallel default and `-n 0`, `--slow-limit` (serial), golden files and their change rule, `PETSYS_CAL_DIR`; drop `scripts/*_check.py` as evidence.
+- [x] **T23 — Docs** (FR-11). `AGENTS.md`, `docs/prompts.md`: default vs full run, `slow` ≥ 5 s, parallel default and `-n 0`, `--slow-limit` (serial), golden files and their change rule, `PETSYS_CAL_DIR`; drop `scripts/*_check.py` as evidence, including the stale pointers in `docs/petsys_manager.md` and the `src/ldat_inspector/{engine,fastread}.py` comments (Clarify T23).
 
   **Done when:** both files state each item once; `git diff --check` clean.
+
+  Verified 2026-10-09 (Windows):
+  - `AGENTS.md` "Environment and checks" states each item once: the parallel default run without `real_data`/`slow`, `-m "not real_data"` as the full run, `-n 0`, `slow` at 5 s (setup or call, serial), `--slow-limit` serial, wall-clock bounds serial only (T20 rule), `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR` relative paths and skip reasons, golden files and baselines with provenance and their change rule. The "old `scripts/*_check.py` stay valid evidence" sentence is removed.
+  - `docs/prompts.md` Validation step runs the full suite (plus `real_data` when the spec touches real-data results) and points to `AGENTS.md` for the commands; nothing is repeated.
+  - Stale pointers (Clarify T23): `docs/petsys_manager.md` names `tests/test_manager_*.py` and the checkout test; three comments in `src/ldat_inspector/engine.py` and `fastread.py` name `tests/test_ldat_scale.py` (comment-only, FR-10). `git grep` finds no other `*_check.py` reference outside `specs/` and `tests/` docstrings (history).
+  - `git diff --check` clean.
 
 - [ ] **T24 — Validation** (all FR).
 
   **Done when:** `scripts/` holds no `*_check.py`; fresh clone on Windows: default run passes in < 120 s, full run passes in parallel and with `-n 0 --slow-limit 5`, `linux` skipped with reasons, `git status` unchanged; owner's PC with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: `-m real_data` passes, unset → skips with reasons; source scan: no `scripts_cornell`/`scripts_imas`/`gui_cornell` import; Cornell Linux PC (owner run, env updated with `pytest-xdist`): full run passes incl. `linux`/`gui`; `petsys_manager_linux_check.py --all` there gives the same count as `tests/test_manager_linux.py` (17), then it is deleted (kept from T14). FR walk recorded; Status → `shipped`.
+
+  Windows part verified 2026-10-09; **open: the Cornell Linux run** (owner), then `petsys_manager_linux_check.py` deletion and `shipped`.
+  - **Fresh clone** of `329b0cc` plus the T23/T24 working changes to docs, specs and `tests/test_manager_formats.py`. The `src/ldat_inspector` comment edits were left out of the clone: `test_manager_gui_shell.py::ShellChecks::test_inspector_independent` asserts `git diff --quiet HEAD -- src/ldat_inspector …`, and the checkout audit skips while closure files differ from HEAD, so both pass only once the edits are committed.
+  - **Default run:** `python -m pytest` → 875 passed, 18 skipped in 61 s, then 64 s in a second fresh clone; both under 120 s.
+    - The first run, before the `src` edits were taken out of the clone, gave 2 failed, 870 passed, 21 skipped in 110 s.
+    - The inspector-independence failure and the 3 extra skips (checkout) were the uncommitted `src` diff.
+    - `test_manager_gui_conversion.py::ConversionChecks::test_conversion_request_format_population_and_exact_outputs` also failed once; its traceback was not kept. It did not recur: it passed alone, in 2 concurrent default runs (875 passed each, 119 s), in 16 concurrent serial runs of the conversion file (96 of 96 passed) and in every later run.
+  - **Full run, parallel:** `-m "not real_data"` → the first run gave 1 failed, 1005 passed, 18 skipped in 202 s.
+    - The failure was `test_manager_formats.py::ValidationSpeedChecks::test_compiled_validation_is_fast_bounded_and_releases_the_gil`: median main-thread GIL hand-offs 0.31 of idle, bound > 0.5. The record-by-record control was 0.0006, so the compiled validation still released the GIL.
+    - Serially it measures 0.95. Following the T20 rule, the 0.5 bound is now asserted only in serial runs; `old < 0.2` stays in every run.
+    - After the change: 1006 passed, 18 skipped, twice (198 s, 203 s).
+  - **Full run, serial:** `-m "not real_data" -n 0 --slow-limit 5` → 1006 passed, 18 skipped, 25 deselected in 730 s.
+  - **Linux tests:** 18 skipped with `linux: runs only on Linux (Cornell PC), not win32` (17 in `test_manager_linux.py`, 1 artifacts symlink test).
+  - **Clean state:** `git status --short` was the same before and after every run. Fixture folders stayed at 908 and no `%TEMP%\ldat_*` folder appeared.
+  - **Real data** (`PETSYS_DATA_DIR=C:\Users\dsanchez\Desktop\data`, `PETSYS_CAL_DIR=<repo>\encal_files`): `-m real_data` → 25 passed in 1337 s; the T19 QC test alone took 1175 s.
+    - Unset: 25 skipped, each reason naming the variable (`PETSYS_DATA_DIR is not set` or `PETSYS_CAL_DIR is not set`).
+  - **Source scan:** an AST scan of the 57 tracked `tests/*.py` finds no import of `scripts*`, `gui_cornell` or a PETsys source. The two `sys.path.insert` lines are inside child-process source strings (checkout copy, relocated launcher); the `test_infra.py` scan passes.
+  - **Every test cites a requirement:** a collection hook found 0 of 1049 items without `fr`.
+  - **FR walk** (counts are from `--collect-only --fr <id>`; "full" means `-m "not real_data"`):
+    - FR-1: the per-task deletions T1–T22. `scripts/` holds `capture_golden_007.py`, `motor_crystal_limits.py`, `template.py` and `petsys_manager_linux_check.py`, which is pending the Cornell count.
+    - FR-2: the script versus test counts recorded in T4–T22, with retired modes listed.
+    - FR-3: `--fr 007-FR-3` gives 59 in the full run (golden comparisons + provenance). Since `ac94ba1`, golden and baseline files changed only in the T8 and T17 commits.
+    - FR-4: `--fr 007-FR-4` gives 23 `real_data` + 3 in the full run; the real-data runs above.
+    - FR-5: `--fr 007-FR-5` gives 8; the default-run times and the serial `--slow-limit` run above.
+    - FR-6: `--fr 007-FR-6` gives 22; the `test_infra.py` scans.
+    - FR-7: Windows full run above; Cornell pending.
+    - FR-8: the collection hook (1049 of 1049 cite an id).
+    - FR-9: `--fr 007-FR-9` gives 60. The four bug ids give 3 + 1 + 1 + 1, all passing since their fixes (`465e373`, `032092a`).
+    - FR-10: since `ac94ba1`, only those two bug-fix commits touch `src/`/`exe_programs/`; the T23 `src` edits are comment-only.
+    - FR-11: T23.
+  - **Cornell PC steps** (owner):
+    1. Pull the commit.
+    2. `conda install -n process_petsys pytest-xdist=3.8.0 execnet=2.1.2`, or update the env from `process_petsys.yml`.
+    3. With a display: `python -m pytest -m "not real_data" -rs`, expecting no skips except those with reasons.
+    4. `python -m pytest tests/test_manager_linux.py -m "not real_data"` → 17 passed, and `python scripts/petsys_manager_linux_check.py --all` → 17 checks (spec 003 T22).
+    5. Delete the script.
 
 ## Bug fixes found by this spec (separate from 007, FR-10)
 

@@ -3,7 +3,7 @@
 ``process_file_fast`` returns the same ``FileResult`` as
 ``src.ldat_inspector.engine.process_file_reference``: identical accepted-pair and
 rejection counts, channel counters and retained columns, compared by
-``scripts/ldat_scale_check.py``. It follows the reference's steps and their
+``tests/test_ldat_scale.py``. It follows the reference's steps and their
 order:
 
 1. per-channel energy cut (``>= min_channel_energy``);
