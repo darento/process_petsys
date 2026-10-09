@@ -20,7 +20,7 @@ import pytest
 
 from helpers import DATA, REPO
 from manager_helpers import METADATA, PAIRS, ListmodeFixtures, PrivateOutput, encode_compact, encode_fixed
-from src.cornell import listmode as lm
+from src.cornell import calibration as cal, listmode as lm
 from src.cornell.inputs import InputError, load_calibration, load_limits
 from src.petsys_manager.contracts import InputDescriptor
 from src.petsys_manager.settings import LMMetadata, ProfileError
@@ -279,6 +279,42 @@ class ListmodeChecks(ListmodeFixtures, PrivateOutput, unittest.TestCase):
         self.assertEqual((first[11], second[11]), (-123, -123))              # dt follows pair orientation
         self.assertEqual(first[1:3], second[1:3])                            # energies ordered by the pair
         self.assertEqual(first[4:10], second[4:10])
+
+    def test_listmode_region_clipping_versus_calibration_exclusion(self):
+        """Spec 007 T16 (from petsys_manager_reference_check): 5 regions with edge regions 1.8 times a centre
+        one; the calibration has no region outside [0, 1], the listmode clips to [0, 0.999]."""
+        expected = [0, 3 / 11, 14 / 33, 19 / 33, 8 / 11, 1]
+        boundaries = cal.create_region_boundaries(5)
+        np.testing.assert_allclose(boundaries, expected, rtol=0, atol=1e-14)
+        for count, small in ((1, [0, 1]), (2, [0, 0.5, 1])):
+            np.testing.assert_array_equal(cal.create_region_boundaries(count), small)
+        points = np.array([-0.01, 0, 0.1, 3 / 11 - 1e-4, 3 / 11 + 1e-4, 14 / 33 + 1e-4, 19 / 33 + 1e-4,
+                           8 / 11 + 1e-4, 1, 1.01])
+        channels, slabs = np.full(len(points), 4, dtype=np.int32), np.full(len(points), 6, dtype=np.int32)
+        left, right = np.zeros((5, 16), dtype=np.float32), np.ones((5, 16), dtype=np.float32)
+        regions, missing = cal.region_ids(points, channels, slabs, left, right, boundaries)
+        np.testing.assert_array_equal(regions, [-1, 0, 0, 0, 1, 2, 3, 4, 4, -1])
+        self.assertFalse(missing.any())
+        np.testing.assert_array_equal(lm.compute_region_vectorized(points, channels, slabs, left, right, boundaries, 5),
+                                      [0, 0, 0, 0, 1, 2, 3, 4, 4, 4])
+
+    def test_listmode_does_not_apply_the_channel_energy_cut(self):
+        """Spec 007 T16 (from petsys_manager_reference_check): the reference listmode reads en_min_ch but never
+        applies it, so a hit below it still counts towards min_ch (QC drops it: test_manager_qc)."""
+        _, maps = self.inputs(count=40)
+        g = self.geometry
+        rng = np.random.default_rng(2)                         # a side whose Y and DOI are inside the limits
+        a = g.side(rng, (7, 0), 2, +1, 100.0, energy_channels=3, timestamp=5000)
+        used = {hit[2] for hit in a}
+        low = next(channel for channel, _ in g.energy[(7, 0)].values() if channel not in used)
+        a.append((5009, 0.125, low))                          # fourth energy channel, below en_min_ch
+        b = g.side(rng, (21, 9), 4, +1, 85.0, timestamp=5123)
+        self.assertEqual((self.config.values["min_ch"], self.config.values["en_min_ch"]), (4, 0.2))
+        for name, side, written in (("low", a, 1), ("three", a[:-1], 0)):
+            with self.subTest(name):
+                result = self.generate([self.ldat(f"{name}_coinc_0.ldat", [(side, b)])], maps, self.lm_parent / name)
+                self.assertEqual(result.records, written, result.totals("rejected"))
+                self.assertEqual(result.totals("rejected")["min_channels"], 1 - written)
 
     @pytest.mark.fr("007-FR-3")  # golden files
     def test_listmode_loaders_and_calibration_array_match_reference_parsers(self):

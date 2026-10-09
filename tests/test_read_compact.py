@@ -4,9 +4,11 @@ Records are coincidences of two detectors, each a list of (timestamp, energy a.u
 channel ID) hits; there is no singles population. Energies are float32-exact.
 """
 
+import struct
+
 import pytest
 
-from helpers import write_ldat
+from helpers import HIT, write_ldat
 from src.read_compact import read_binary_file
 
 PAIRS = [
@@ -72,3 +74,17 @@ def test_truncated_last_record_yields_no_pair(tmp_path, cut):
         for record in read_binary_file(str(path)):
             got.append(record)
     assert _as_lists(got) == _as_lists(complete)
+
+
+@pytest.mark.fr("003-FR-16")  # spec 007 T16, from petsys_manager_reference_check
+def test_group_round_trip_has_no_second_detector(tmp_path):
+    groups = [PAIRS[0][0], PAIRS[1][0], PAIRS[2][1]]
+    path = tmp_path / "groups.ldat"
+    with open(path, "wb") as handle:
+        for hits in groups:
+            handle.write(struct.pack("B", len(hits)))
+            for hit in hits:
+                handle.write(struct.pack(HIT, *hit))
+    got = list(read_binary_file(str(path), group_events=True))
+    assert [[tuple(h) for h in det1] for det1, _ in got] == groups
+    assert all(det2 == [] for _, det2 in got)

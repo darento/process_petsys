@@ -1,0 +1,24 @@
+{
+ "schema_version": 1,
+ "dataset": "Cornell full system, 2026-01-19, two Na-22 sources axially separated, 300 s, compact splits 3-8",
+ "provenance": "Spec 007 T17. The operator manifest scripts/petsys_manager_t19_baseline_jan2026.json (sha256 b95f93a51820fac34dc699d09412b9f093b6d7ad16ecc486411e30dd0b7146f4) as reduced for its compact-only 2026-10-05 run, recorded in t19_jan2026_result.json (baseline.value): no fixed or listmode inputs (fixed format discontinued, spec 007 Clarify). Acquisitions and COG limits are relative to PETSYS_DATA_DIR, the reference-written calibration files to PETSYS_CAL_DIR, the config to the repository. The 2026-10-05 run read configs/cornell_full_system.yaml when its map was the January layout; since 2026-10-07 that layout is maps/cornell_map_full_system_old.yaml, selected by tests/data/configs/cornell_january.yaml.",
+ "config": "tests/data/configs/cornell_january.yaml",
+ "compact_inputs": [
+  "Cornell/full_system/20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_00000003.ldat",
+  "Cornell/full_system/20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_00000004.ldat",
+  "Cornell/full_system/20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_00000005.ldat",
+  "Cornell/full_system/20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_00000006.ldat",
+  "Cornell/full_system/20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_00000007.ldat",
+  "Cornell/full_system/20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_00000008.ldat"
+ ],
+ "cog_limits": "Cornell/files_for_listmode/cog_limits_fullSystem.txt",
+ "reference_outputs": {
+  "per_slab_encal": "20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_resolved.encal",
+  "per_slab_status": "20260119_2NaSourcesAxialSeparated_vBiasCompDiscCalibAdjusted2hits_300s_coincCompact11s_resolved_status.txt"
+ },
+ "positions": 5,
+ "position_oracle_event_limit": 400000,
+ "seeds": {
+  "qc": 19
+ }
+}
