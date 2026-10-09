@@ -20,6 +20,14 @@ Use `conda run -n process_petsys --no-capture-output python ...` or the correspo
 
 Checks live in the tracked `tests/` suite: `conda run -n process_petsys --no-capture-output python -m pytest` from the repo root. The default run uses only tracked files and synthetic fixtures, runs in parallel workers (pytest-xdist) and excludes `real_data` and `slow` tests; `-m "not real_data"` is the full run and `-n 0` runs serially. Mark a test `slow` when its setup or call takes 5 s or more serially; `-n 0 --slow-limit 5` fails an unmarked test whose call does, and wall-clock bounds are asserted only in serial runs. `real_data` tests name acquisitions relative to `PETSYS_DATA_DIR` and calibrations relative to `PETSYS_CAL_DIR`, never by absolute path, and skip with a reason naming a missing variable or file. Expected values once computed by untracked reference scripts are golden files under `tests/data/golden/`, and real-data baselines are under `tests/data/baselines/`, each with a provenance record; tests never import the references, and such a file changes only in a commit citing the requirement or bug id that authorizes the output change. Each test cites its requirement with `@pytest.mark.fr("NNN-FR-n")` (bug fixes: `"bug-<short-name>"`), and `--fr <id>` reruns that requirement's tests. A defect found by a new test gets a strict `xfail` citing its bug id until the separate fix lands; never edit the expected value to pass.
 
+Which run:
+
+- While coding: the default run; `-m "not real_data" --fr <id>` reruns one requirement with its `slow` tests.
+- Before committing a `src/` or `exe_programs/` change: the full run. The default run skips the `slow` tests, which hold the bounded-memory, end-to-end and report checks.
+- After adding or changing tests: `-m "not real_data" -n 0 --slow-limit 5`.
+- When real-data results change (calibration, LM, QC numbers, LDAT counts) and in a spec's Validation: the full run plus `-m real_data`.
+- When Linux-only parts change (process groups, DAQD, acquisition, PETsys Python) and before deploying a Manager release to Cornell: the full run on the Cornell PC. Run it from a terminal in its desktop session, because `gui` tests skip without a display. Use a clean checkout and an env matching `process_petsys.yml`.
+
 Before modifying files, check `git status --short`; never overwrite existing user changes. Do not run release/build commands as a side effect of implementation.
 
 Each `exe_programs/` program carries its own SemVer `__version__`; when its spec ships, bump it and add the entry by following [`CHANGELOG.md`](CHANGELOG.md).
