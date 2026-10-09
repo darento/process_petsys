@@ -538,9 +538,17 @@ class CLIChecks(CLIFixtures, unittest.TestCase):
 
     def test_cli_declared_dependencies_cover_actual_imports(self):
         declared = declared_dependencies()
+        # This module's imports, loaded in a fresh interpreter as the script's own process did: in-process
+        # sys.modules also holds what earlier tests imported (src/ldat_inspector in a serial full run).
+        code = ("import sys, manager_helpers\n"
+                "from src.cornell import calibration, cli, listmode, qc, qc_report\n"
+                "from src.petsys_manager.contracts import SourceMode\n"
+                "print('\\n'.join(getattr(m, '__file__', None) or '' for m in list(sys.modules.values())))")
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(REPO), str(REPO / "tests")]))
+        loaded = subprocess.run([sys.executable, "-c", code], cwd=REPO, env=env, capture_output=True, text=True,
+                                check=True).stdout.splitlines()
         files = set()
-        for module in list(sys.modules.values()):
-            name = getattr(module, "__file__", None) or ""
+        for name in loaded:
             path = Path(name).resolve() if name else None
             if path and path.suffix == ".py" and path.is_relative_to(REPO.resolve() / "src"):
                 files.add(path)

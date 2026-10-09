@@ -148,11 +148,52 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
 
 ## LDAT group (specs 001, 002)
 
-- [ ] **T18 — LDAT helpers and tracked January config** (FR-6). `tests/ldat_helpers.py` (`fixture_files`, `write_pairs`, `build`, `CONFIGS`, `RECOVERY_CASES`, side/LDAT writers); `tests/data/configs/cornell_january.yaml` (added in T15).
+- [x] **T18 — LDAT helpers and tracked January config** (FR-6). `tests/ldat_helpers.py` (`fixture_files`, `write_pairs`, `build`, `CONFIGS`, `RECOVERY_CASES`, side/LDAT writers); `tests/data/configs/cornell_january.yaml` (added in T15).
 
   **Done when:** helpers import; `CONFIGS` resolves IMAS (tracked `configs/imas_1DAQ.yaml`) and Cornell (tracked copy) on a fresh clone; smoke test writes one fixture per system.
 
-- [ ] **T19 — migrate `ldat_inspector_check --selftest` (59), `ldat_revision_check` (14), `ldat_ports_check` (12)**.
+  Verified 2026-10-09 (Windows):
+  - **Helpers.**
+    - `CONFIGS`: IMAS `configs/imas_1DAQ.yaml`, Cornell `tests/data/configs/cornell_january.yaml`, a verbatim copy of the local `configs/cornell_full_system_old.yaml`. The local `imas_1DAQ.yaml` differs from HEAD only in line endings.
+    - Copied from the scripts: `fixture_files`, `write_pairs` (inspector); `module_channels`, `side`, `RECOVERY_CASES` (scale); `BASE`, `cases`, `is_time`, `build` (views).
+    - New: `write_ldat`, which is `helpers.write_ldat` plus the scale script's `tail` bytes; `destroy`, which cancels a hidden window's pending `after` jobs before destroying it, as in T15.
+    - Left in the scripts for T21/T22 (each has one user): scale `_fixture_pairs`, `_expected`, `_unmapped_channel`; views `EXPECTED_ROW`, `_expected_states`.
+  - **AST** (underscore prefixes dropped): 7 of 9 definitions identical.
+    - `fixture_files` reads `CONFIGS`. For Cornell it read `configs/cornell_1cassettes.yaml`: untracked, a 1-cassette map outside the data contract (spec Clarify T18, T19).
+    - `is_time` imports at module level.
+  - **Tests.** `python -m pytest tests/test_ldat_helpers.py` → 8 passed:
+    - imports without Tk;
+    - both configs and their maps are tracked (`git ls-files`);
+    - `fixture_files` per system loads with its calibration, picks channels on SM 0 and 1, and its 3 records read back;
+    - `side` and `write_ldat` with `RECOVERY_CASES` plus a tail (file size);
+    - `build` per system (the half-populated case is Cornell-only).
+  - **Negative.** Cornell `CONFIGS` → the untracked `configs/cornell_full_system_old.yaml` → the tracked test fails.
+
+- [x] **T19 — migrate `ldat_inspector_check --selftest` (59), `ldat_revision_check` (14), `ldat_ports_check` (12)**.
+
+  Verified 2026-10-09 (Windows):
+  - **Scripts.**
+    - Inspector `--selftest` → `PASS: 59/59`. With Cornell `fixture_files` on the January config (scratch copy) → `PASS: 59/59`.
+    - Revision → `PASS: 14 revision checks`.
+    - Ports → `FAIL 11/12`: the Cornell `Dataset.sm_ports` (January config) is compared with `maps/cornell_map_full_system.yaml`, which has held the September layout since 2026-10-07; `mod_feb_map` differs for 10 of 30 SMs. With the January map name (scratch copy) → `PASS 12/12`. The test compares with the map the config selects (spec Clarify T18, T19).
+  - **Tests.** `python -m pytest tests/test_ldat_inspector.py tests/test_ldat_revision.py tests/test_ldat_ports.py -m "not real_data"` → 85 passed (59 + 14 + 12). Each script `check` or `checks += 1` block is one test.
+    - **Inspector:** a module fixture builds each system's files once; 25 tests per system, 2 Cornell-only tests, and 7 fit tests sharing one seeded generator in the script's draw order.
+    - **Revision:** 3 engine tests and 4 GUI steps per system. The GUI steps run in order on one hidden window, so a module fixture runs them once and records what each step saw. One window per system (the script reused one).
+    - **Ports:** 3 synthetic, 3 map, 3 overview (`gui`) and 3 report tests. The unpopulated-tile test is now unconditional: the January config declares half-populated SMs.
+    - **Fixture roots:** `tempfile`, as in the scripts. The report wraps provenance lines at 118 characters; under `tmp_path_factory` the module-PDF provenance tests failed on the longer paths.
+  - **Citations:** inspector and revision `001-FR-15` plus one FR per check (FR-2–5, 7–13, 16, 19–24, 26; channel status `002-FR-5`); ports `002-FR-23`. In these files `--fr 001-FR-15` → 73, `001-FR-23` → 14, `001-FR-22` → 12, `002-FR-23` → 12.
+  - **Durations:** the Cornell full report takes 6.2 s with the 30 SMs of the January map (3 SMs in the script's 1-cassette map), so it is marked `slow`; all others ≤ 1.5 s. The default run selects 84.
+  - **Negatives** (scratch copies):
+    - `TIMESTAMP_SECONDS` 1e-12 → 1e-9: 2 timing tests fail;
+    - "Observed timestamp spans" title changed: 2 module-PDF tests fail;
+    - raw energy range 300 → 400: 4 revision GUI tests fail;
+    - "Unavailable calibrated energy" text changed: 2 tests fail;
+    - "SLAVE" → "Slave": 2 ports tests fail.
+    - A "No singles" text change was not caught: the phrase is also on another page of the same report.
+  - **Tk:** a destroyed window's pending `after` jobs ran in the next window (7 `invalid command name` lines; the script shows 0, with one window until exit). `ldat_helpers.destroy` cancels them → 0.
+  - **Order-dependent T13 test.** The first serial full run had 1 failure: `test_manager_cli.py::test_cli_declared_dependencies_cover_actual_imports` → `'llvmlite' not found … imported by ['src/ldat_inspector/fastread.py']`. The test scanned every `src/` module in the process's `sys.modules`. The script ran in its own process, which loaded only the CLI's modules. In a serial pytest run, the new LDAT tests load `src/ldat_inspector` first; in parallel runs that module happened to be on another worker. The test now loads its own imports in a fresh interpreter and scans those. It passes alone and after the LDAT tests. Negative (scratch copy): `import llvmlite` in `src/cornell/cli.py` → fails, naming it. Not changed: `fastread.py` imports `llvmlite`, which `process_petsys.yml` does not declare (it is installed with `numba`).
+  - **Deleted** (backups in the session scratchpad): `ldat_revision_check.py`, `ldat_ports_check.py` (no importer). **`ldat_inspector_check.py` kept: deletion deferred to T21** (the gui, issue and pair_choices scripts import `fixture_files` and `write_pairs` at module level).
+  - **Suites** (T18 + T19): `python -m pytest` → 646 passed, 18 skipped in 47–55 s (+92 tests, +5 `test_infra.py` scan items); `-m "not real_data"` → 678 passed, 18 skipped in 173 s; `-m "not real_data" -n 0 --slow-limit 5` → 678 passed, 18 skipped. Fixture folders 908 before and after; `git diff --check` clean.
 - [ ] **T20 — migrate `ldat_processing_check` (17) and `ldat_gui_check` (29)** (`gui`; Linux close-child part `linux`).
 - [ ] **T21 — migrate `ldat_scale_check` (65 + `--real` T9 counts), `ldat_unpopulated_check` (6 + `--real`), `ldat_issue_check` (8, fixture only), `ldat_pair_choices_check` (15, fixture only)**; retired real modes listed (`--whole`, issue probe, pair_choices `--real`).
 - [ ] **T22 — migrate `ldat_views_check`** (171; `--real` retired) → `tests/test_ldat_views_{status,supermodule,overview,coincidences,…}.py` (`gui`), split at existing section boundaries.
