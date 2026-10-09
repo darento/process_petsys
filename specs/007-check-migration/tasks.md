@@ -226,8 +226,112 @@ Spec: [`spec.md`](spec.md). Plan: [`plan.md`](plan.md). Owner approved 2026-10-0
     - `-m "not real_data" -n 0 --slow-limit 5` → 728 passed, 18 skipped in 621 s.
 
     Free commit stayed at or above 27.2 GB through the default and both parallel runs. Fixture folders 908 before and after; `git diff --check` clean.
-- [ ] **T21 — migrate `ldat_scale_check` (65 + `--real` T9 counts), `ldat_unpopulated_check` (6 + `--real`), `ldat_issue_check` (8, fixture only), `ldat_pair_choices_check` (15, fixture only)**; retired real modes listed (`--whole`, issue probe, pair_choices `--real`).
-- [ ] **T22 — migrate `ldat_views_check`** (171; `--real` retired) → `tests/test_ldat_views_{status,supermodule,overview,coincidences,…}.py` (`gui`), split at existing section boundaries.
+- [x] **T21 — migrate `ldat_scale_check` (65 + `--real` T9 counts), `ldat_unpopulated_check` (6 + `--real`), `ldat_issue_check` (8, fixture only), `ldat_pair_choices_check` (15, fixture only)**; retired real modes listed (`--whole`, issue probe, pair_choices `--real`).
+
+  Verified 2026-10-09 (Windows):
+  - **Scripts.**
+    - Scale `--selftest` → `PASS: 65/65`; `--real` → `PASS: 15/15` (30 s).
+    - Unpopulated → `PASS: 6/6`; `--real` → `PASS: 8/8`.
+    - Pair choices → `PASS: 15/15`; issue → `PASS: 8/8`.
+    - Scale and unpopulated already read `configs/cornell_full_system_old.yaml`, of which the January config is a verbatim copy. Issue and pair choices took `fixture_files` from the inspector script (1-cassette config). With `ldat_helpers.fixture_files` (scratch harness) they give 8/8 and 15/15.
+  - **Tests.** `python -m pytest tests/test_ldat_scale.py tests/test_ldat_unpopulated.py tests/test_ldat_pair_choices.py tests/test_ldat_issue.py -m "not real_data"` → 94 passed (65 + 6 + 15 + 8). Each `check` is one test.
+    - **Scale:** a module fixture writes each system's fixture files and runs the reference reader on them once. Per system: 8 (IMAS) or 9 (Cornell) reference tests, 6 T3 storage tests, 7 fast = reference tests; T16 adds 2 for IMAS and 19 for Cornell; plus "fast reader available".
+    - **Unpopulated:** reads `CONFIGS["CORNELL"]`.
+    - **Pair choices:** `gui` records its 6 consecutive window steps.
+    - **Issue:** `steps` runs its 6 window steps in order and records each step's exception. The fit-stability and PDF-line tests run on their own.
+  - **Real data** (`PETSYS_DATA_DIR`, January compact splits, January map, raw a.u., ≥ 4 channels, ≥ 0.2 a.u.): scale 15 passed, unpopulated 2 passed. Unset → skipped `real_data: PETSYS_DATA_DIR is not set`.
+    - **Scale `TestRealCornell`:** the T9 reference results on the six 80,000-pair prefixes are computed once (6 workers): 6 reference, 6 fast, 200,000-pair equality, 2 T16.
+    - **Unpopulated:** the 300,000-pair prefix of `00000003` is read once.
+  - **AST** (underscore prefixes dropped):
+    - Identical: scale `compare`, `cornell_settings`, `expected`, `reindexed`; issue `comparison_overlay`, `descendant`, `gaussian_overlay`; unpopulated `expected`.
+    - Differ:
+      - `fast_reader` imports the fast reader without the script's `None` fallback; "fast reader available" asserts it.
+      - Issue `popup` and `uniformity_colours` import `customtkinter`/`ttk` locally.
+      - `single_module_dataset`'s docstring is rewrapped.
+  - **Citations:**
+    - Scale: `002-FR-1`; T3 `002-FR-2/11`; T16 `002-FR-19`; real `007-FR-4`.
+    - Unpopulated: `bug-unpopulated-minimodules` (spec 002 B3), `002-FR-5`.
+    - Pair choices: `002-FR-22`.
+    - Issue: `001-FR-15`, plus `001-FR-8/10/12/16/17/18/20/27` per check.
+    - Counts: `--fr 002-FR-22` → 15, `bug-unpopulated-minimodules` → 8, `001-FR-17` → 2.
+  - **Durations.** Fixture setups ≤ 1.4 s; no default-run test is `slow`.
+    - Real: the 200,000-pair test 14.5 s (`slow`).
+    - Real setups: T9 reference 6.8 s, T16 6.0 s, unpopulated prefix 21 s.
+  - **Negatives** (scratch copies):
+    - fast reader's `ZeroDivisionError` label changed: 2 scale tests fail;
+    - a malformed `unpopulated_minimodules` ignored: 1 fails;
+    - whole-file cap raised by 100: 1 fails;
+    - `_raise_dialog` without `transient`: 2 fail;
+    - two uniformity fills equal: 1 fails.
+  - **Tk:** 0 `invalid command name` or main-thread lines.
+  - **Retired or not migrated:** scale `--whole`, issue `--real`, pair choices `--real` (spec Clarify); issue `--visible` (owner 2026-10-09, spec Clarify T21, T22).
+  - **Deleted** (backups in the session scratchpad):
+    - `ldat_unpopulated_check.py`, `ldat_issue_check.py`, `ldat_pair_choices_check.py`;
+    - `ldat_inspector_check.py` (deferred from T19; its last importers were the issue and pair-choices scripts).
+    - **`ldat_scale_check.py` kept until T22:** the views script imports it inside two functions.
+- [x] **T22 — migrate `ldat_views_check`** (171; `--real` retired) → `tests/test_ldat_views_{status,supermodule,overview,coincidences,…}.py` (`gui`), split at existing section boundaries.
+
+  Verified 2026-10-09 (Windows):
+  - **Script.** `PASS: 171/171` in 103 s (with `PYTHONIOENCODING=utf-8`: piped under cp1252, a θ in a label raised `UnicodeEncodeError` after 34 checks). Each run left 9 `%TEMP%\ldat_*` folders (`tempfile.mkdtemp`, never removed).
+  - **Labels.** An instrumented run recorded each `check` label per section: 18 section functions plus the checks inline in `main`.
+  - **Owner files in the default run** (spec Clarify T21, T22). Three checks read untracked files:
+    - the list-mode limits copies → `real_data` (`PETSYS_DATA_DIR`);
+    - the resolved `.encal` and its status sidecar → `real_data` (`PETSYS_CAL_DIR`);
+    - the gitignored repo-root limits files → retired.
+  - **Tests.** `python -m pytest tests/test_ldat_views_*.py -m "not real_data"` → 168 passed = 171 − 2 `real_data` − 1 retired. Files, split at the script's sections:
+
+    | File | Tests |
+    |---|---|
+    | `status` | 29: findings 16, geometry 2, Channel Status tab 11 |
+    | `overview` | 35: layout 11, metrics 5, composite 6, tab 13 |
+    | `supermodule` | 16 |
+    | `coincidences` | 16: 6 engine, 10 tab |
+    | `limits` | 30: 8 engine, 18 GUI, 4 report; + 1 `real_data` |
+    | `origins` | 18: 9 engine, 7 GUI, 2 report; + 1 `real_data` |
+    | `slab_rule` | 9: 7 GUI, 2 report |
+    | `report` | 15 |
+
+    With `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR` set → the 2 `real_data` tests pass; unset → skipped, naming each variable.
+  - **Structure.**
+    - Each section function is the script's, copied by a generator (session scratchpad). The only edits:
+      - underscore prefixes dropped;
+      - `destroy(app)`;
+      - a `tmp` argument from a `TemporaryDirectory` replaces `tempfile.mkdtemp` (tests leave no `ldat_*` folder);
+      - the `--png` branches removed;
+      - the owner-file parts moved or retired;
+      - `scripts.ldat_scale_check` imports → `ldat_helpers`.
+    - `main`'s inline checks are `findings_checks`.
+    - AST (renames normalised): 21 of 35 functions identical; the 14 others differ only by those edits, reviewed in a diff, plus the overview poll-gap bound below.
+    - `EXPECTED_ROW`, `SELECTION`, `metrics_dataset` and `time_channels_by_position` moved to `ldat_helpers` (AST-identical).
+  - **Recorder.** `ldat_helpers.Checks` runs a section once in a module fixture and records its checks. Each check is one test (`parametrize` over check ids), so a GUI section's steps still run in order on one window.
+    - An exception is re-raised by every check the section did not reach.
+    - A label not listed, or recorded twice, fails every check of the section, so the test count stays the script's.
+    - `test_ldat_helpers.py` gains 4 recorder tests.
+  - **Citations:** module `002-FR-15`; per section the task's FRs:
+    - findings `002-FR-5/7`, geometry `002-FR-6`;
+    - layout and overview `002-FR-8/21` (tab adds `002-FR-9/23`), metrics `002-FR-8/13`;
+    - SuperModule `002-FR-10/13`, coincidences `002-FR-11/12`;
+    - limits `002-FR-16/17/18` (GUI and report add `002-FR-14`), origins `002-FR-20`;
+    - slab rule `002-FR-19`, report `002-FR-5/13/14`;
+    - real data adds `007-FR-4`.
+    - Counts in the T21 + T22 files: `--fr 002-FR-19` → 32, `002-FR-20` → 19, `002-FR-14` → 41.
+  - **Durations.** A section's time is its fixture's setup. Sections ≥ 5 s are `slow` (64 tests): report 55 s, SuperModule tab 10.6 s, origins report 8.8 s, overview tab 6.4–6.6 s, limits GUI 5.00–5.04 s (3 runs). The others ≤ 3.1 s. The default run gets 104 of the 168.
+  - **Parallel failure** (first full run): the overview "slow background job never blocks `_poll_events`" check bounds the longest poll gap at 0.4 s wall clock; under parallel load it was 0.59 s. Following the T20 rule, the bound is asserted only in serial runs; the other conditions (more than 20 polls, job off the Tk thread, one cancelled job, one cache entry) always are.
+  - **Negatives** (scratch copies):
+    - findings LOW `<` → `<=`: 6 fail;
+    - `pair_dt` sign reversed: 5 fail;
+    - duplicate limits keys accepted: 1 fails;
+    - overview click text without the port address: 1 fails;
+    - report "Fitted minimodules" line changed: 2 fail;
+    - fitted-only plot title changed: 1 fails.
+  - **Deleted** (backups in the session scratchpad): `ldat_views_check.py`; `ldat_scale_check.py` (deferred from T21). `scripts/` now holds only `petsys_manager_linux_check.py` (kept until T24).
+  - **Not removed:** 389 `%TEMP%\ldat_*` folders left by earlier script runs since 2026-10-02. This session's own script runs' folders were removed.
+  - **Suites** (T21 + T22):
+    - `python -m pytest` → 875 passed, 18 skipped in 63 s (+214: 94 T21, 104 T22, 4 recorder, 12 scan items);
+    - `-m "not real_data"` → 1006 passed, 18 skipped in 214–217 s, twice after the poll-gap change (before it: 1 failed, 1005 passed);
+    - `-m "not real_data" -n 0 --slow-limit 5` → 1006 passed, 18 skipped in 728 s (the limits GUI setup took 4.63 s in this run; it stays `slow` from the 3 runs above).
+
+    Free commit stayed at or above 28.07 GB. Fixture folders 908 before and after; `git diff --check` clean.
 
 ## Close
 

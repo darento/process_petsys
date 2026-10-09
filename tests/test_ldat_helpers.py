@@ -1,4 +1,5 @@
-"""tests/ldat_helpers.py smoke tests (spec 007 FR-6, T18): tracked configs, one fixture per system."""
+"""tests/ldat_helpers.py smoke tests (spec 007 FR-6, T18, T22): tracked configs, one fixture per system,
+the ``Checks`` recorder."""
 
 import os
 import subprocess
@@ -7,7 +8,7 @@ import sys
 import pytest
 
 from helpers import REPO
-from ldat_helpers import CONFIGS, RECOVERY_CASES, build, fixture_files, side, write_ldat, write_pairs
+from ldat_helpers import CONFIGS, RECOVERY_CASES, Checks, build, fixture_files, side, write_ldat, write_pairs
 from src.ldat_inspector.engine import Settings, load_setup
 from src.read_compact import read_binary_file
 
@@ -61,3 +62,38 @@ def test_build_assigns_every_case(system):
     dataset, assignment, truth, _ = build(system)
     assert set(assignment.values()) == set(truth) <= set(dataset.expected_time)
     assert ("half-populated" in assignment) == (system == "CORNELL")
+
+
+def section(check, *, stop=False, extra=None):
+    check("first", True)
+    check("second", False, "second's detail")
+    if stop:
+        raise KeyError("section stopped")
+    check("third", True)
+    if extra:
+        check(extra, True)
+
+
+LABELS = {"a": "first", "b": "second", "c": "third"}
+
+
+def test_checks_records_each_check_once():
+    checks = Checks(LABELS).run(section)
+    checks.verdict("a")
+    checks.verdict("c")
+    with pytest.raises(AssertionError, match="second's detail"):
+        checks.verdict("b")
+
+
+def test_checks_reraise_the_section_error_for_checks_not_reached():
+    checks = Checks(LABELS).run(section, stop=True)
+    checks.verdict("a")
+    with pytest.raises(KeyError, match="section stopped"):
+        checks.verdict("c")
+
+
+@pytest.mark.parametrize("extra", ["unlisted", "first"])
+def test_checks_fail_every_verdict_on_an_unlisted_or_repeated_check(extra):
+    checks = Checks(LABELS).run(section, extra=extra)
+    with pytest.raises(AssertionError, match="unlisted checks|repeated"):
+        checks.verdict("a")

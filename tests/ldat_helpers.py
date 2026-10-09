@@ -1,15 +1,18 @@
-"""Shared LDATInspector test builders (spec 007 FR-6, T18, T20).
+"""Shared LDATInspector test builders (spec 007 FR-6, T18, T20, T22).
 
 Copied from the LDAT scripts: ``fixture_files``/``write_pairs`` (``ldat_inspector_check``),
 ``CONFIGS``/``RECOVERY_CASES``/``fixture_pairs`` and the side/LDAT writers (``ldat_scale_check``),
-``build`` (``ldat_views_check``), the slow reader, workbench and close-child body
-(``ldat_processing_check``). Cornell fixtures use the tracked January config (spec 007 Clarify, T18).
-GUI helpers import Tk lazily, so the module imports without a display.
+``build``, ``EXPECTED_ROW``, ``SELECTION``, ``metrics_dataset`` and ``time_channels_by_position``
+(``ldat_views_check``), the slow reader, workbench and close-child body (``ldat_processing_check``).
+``Checks`` records a views section's checks for one test each. Cornell fixtures use the tracked
+January config (spec 007 Clarify, T18). GUI helpers import Tk lazily, so the module imports without
+a display.
 
 Import as ``from ldat_helpers import ...``; ``pyproject.toml`` puts ``tests/`` on the path.
 """
 
 from collections import Counter
+from dataclasses import replace
 import struct
 import time
 
@@ -18,7 +21,8 @@ import yaml
 
 import helpers
 from helpers import DATA, REPO
-from src.ldat_inspector.engine import FileResult, Settings, SideTable, load_setup, merge_results, unpopulated_minimodules
+from src.ldat_inspector.engine import (FileResult, Selection, Settings, SideTable, load_setup, merge_results,
+                                       unpopulated_minimodules)
 from src.mapping_generator import ChannelType, map_factory
 
 CONFIGS = {"IMAS": REPO / "configs" / "imas_1DAQ.yaml",
@@ -263,8 +267,100 @@ def cases(expected_t, expected_e):
     }
 
 
+EXPECTED_ROW = {"mixed": "NOT OBSERVED", "high": "HIGH", "low": "LOW", "ok": "OK",
+                "few sides": "INSUFFICIENT EVENTS", "low median": "INSUFFICIENT EVENTS",
+                "zero median": "NOT OBSERVED", "no data": "NO DATA", "half-populated": "OK"}
+SELECTION = Selection(400.0, 650.0, 0.1, 0.9, 10.0, 90.0, 0.0, 102.0)
+
+
 def is_time(setup, ch):
     return ChannelType.TIME in setup.channel_types[ch]
+
+
+def metrics_dataset(calibrated):
+    """Cornell SMs 0, 1 and 2 with known per-minimodule sides; pairs stay inside one minimodule."""
+    settings = Settings(str(CONFIGS["CORNELL"]), "", "CORNELL", max_pairs=None, calibrated=False)
+    setup = load_setup(settings)
+    rng = np.random.default_rng(8)
+    columns = {name: [] for name in ("raw_energy", "doi", "x", "y", "sm", "mm")}
+    for sm in (0, 1, 2):
+        mms = sorted(merge_results(settings, [], setup).expected_mm[sm])
+        for mm in mms:
+            pairs = 12 if (sm, mm) == (1, 3) else 0 if (sm, mm) == (1, 7) else 300 + 40 * mm
+            n = 2 * pairs
+            peak = 470 + 5 * mm + 20 * sm
+            energy = np.where(rng.random(n) < 0.75, rng.normal(peak, 0.06 * peak, n), rng.uniform(100, 800, n))
+            columns["raw_energy"].append(energy)
+            columns["doi"].append(rng.uniform(0, 1, n))
+            columns["x"].append(rng.uniform(0, 102, n))
+            columns["y"].append(rng.uniform(0, 102, n))
+            columns["sm"].append(np.full(n, sm))
+            columns["mm"].append(np.full(n, mm))
+    columns = {k: np.concatenate(v) for k, v in columns.items()}
+    n = len(columns["sm"])
+    table = SideTable.from_pairs(0, raw_energy=columns["raw_energy"], calibration_key=np.zeros(n, np.int32),
+                                 x=columns["x"], y=columns["y"], doi=columns["doi"],
+                                 timestamp=np.arange(n, dtype=np.int64), sm=columns["sm"].astype(np.int16),
+                                 mm=columns["mm"].astype(np.int8), random_slab=np.zeros(n, bool))
+    dataset = merge_results(settings, [FileResult(0, "synthetic", n // 2, n // 2, table=table)], setup)
+    if calibrated:  # the synthetic energies stand for keV
+        dataset = replace(dataset, settings=replace(dataset.settings, calibrated=True))
+    return dataset, columns
+
+
+def time_channels_by_position(setup, sm, mm):
+    """{position within the minimodule (0-7): time channel} from the map."""
+    return {setup.coordinates[ch][2]: ch for ch, (s, m) in setup.channel_modules.items()
+            if s == sm and m == mm and ChannelType.TIME in setup.channel_types[ch]}
+
+
+class Checks:
+    """One script section's ``check(label, ok, detail)`` calls, recorded for one test per check.
+
+    ``labels`` maps each test id to its check label. ``run`` runs the section once; an exception it
+    raises is kept, and every check it did not reach re-raises it. ``verdict(id)`` fails with the
+    check's detail, and also when the section ran a check not in ``labels`` or ran one twice, so the
+    test count stays the script's check count.
+    """
+
+    def __init__(self, labels):
+        self.labels, self.results, self.repeated, self.error = dict(labels), {}, [], None
+
+    def __call__(self, label, ok, detail=""):
+        if label in self.results:
+            self.repeated.append(label)
+        self.results[label] = (bool(ok), detail)
+
+    def run(self, section, *args, **kwargs):
+        try:
+            section(self, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised by each check the section did not reach
+            self.error = exc
+        return self
+
+    def verdict(self, check_id):
+        unlisted = sorted(set(self.results) - set(self.labels.values()))
+        assert not unlisted and not self.repeated, f"unlisted checks {unlisted}; repeated {self.repeated}"
+        label = self.labels[check_id]
+        if label not in self.results:
+            if self.error is not None:
+                raise self.error
+            raise AssertionError(f"check not run: {label}")
+        ok, detail = self.results[label]
+        assert ok, detail
+
+
+def require_display():
+    """Skip, naming the reason, when Tk cannot open a window."""
+    import tkinter as tk
+
+    import pytest
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"gui: no display available ({exc})")
+    root.destroy()
 
 
 def build(system):

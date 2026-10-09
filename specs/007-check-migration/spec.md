@@ -40,6 +40,9 @@ Clarify (2026-10-07):
 - T20 (owner 2026-10-09):
   - **BLAS threads.** Test processes use one BLAS thread (`OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` = 1, set by `conftest.py` unless already set). The bundled OpenBLAS of numpy and scipy commits about 1.5 GB per process with 24 threads, so a parallel run reached the Windows commit limit and children spawned meanwhile failed (`OSError: [Errno 22]`).
   - **Timing bounds.** A wall-clock bound such as the LDATInspector's 5 s close is asserted only in serial runs (`-n 0`). This is the same reasoning as `--slow-limit`.
+- T21, T22 (owner 2026-10-09):
+  - **Not migrated.** `ldat_issue_check --visible` (1 check) maps four dialogs on the desktop and asserts stacking and keyboard focus, which depend on the OS focus policy. The 8 hidden-window checks keep the parent and transient coverage.
+  - **Owner files in `ldat_views_check`'s default run.** The list-mode limits copies (`PETSYS_DATA_DIR/Cornell/files_for_listmode/`) and the resolved `.encal` with its status sidecar (`PETSYS_CAL_DIR`) become `real_data` tests. The check pinning the gitignored repo-root `cog_limits_full_system.txt`/`doi_limits_full_system.txt` key counts is retired: it inventories a local file, and the list-mode check already loads real limits files.
 - `petsys_manager_gui_check.py` (2193 lines) and `ldat_views_check.py` (2535 lines) are split into one test file per GUI area, sharing builders through the helper modules; pass counts are compared per script mode.
 
 ## Data contract
