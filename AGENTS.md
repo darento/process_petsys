@@ -24,6 +24,7 @@ Which run:
 
 - While coding: the default run; `-m "not real_data" --fr <id>` reruns one requirement with its `slow` tests.
 - Before committing a `src/` or `exe_programs/` change: the full run. The default run skips the `slow` tests, which hold the bounded-memory, end-to-end and report checks.
+- Cosmetic-only GUI changes (styling, labels, layout; no logic): the default run and the affected `gui` test file.
 - After adding or changing tests: `-m "not real_data" -n 0 --slow-limit 5`.
 - When real-data results change (calibration, LM, QC numbers, LDAT counts) and in a spec's Validation: the full run plus `-m real_data`.
 - When Linux-only parts change (process groups, DAQD, acquisition, PETsys Python) and before deploying a Manager release to Cornell: the full run on the Cornell PC. Run it from a terminal in its desktop session, because `gui` tests skip without a display. Use a clean checkout and an env matching `process_petsys.yml`.
