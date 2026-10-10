@@ -63,6 +63,7 @@ class RunView:
     remaining_s: float | None   # None: no estimate
     finished: bool
     stages: tuple = ()          # StageRow per stage of a multi-stage run (FR-2); empty for a single stage
+    idle: bool = False          # no run requested yet this session
 
 
 class RunTracker:
@@ -161,7 +162,8 @@ class RunTracker:
         if self._status is not None:
             title += f" {self._status}"
         rows = self._overview.rows(end) if self._overview is not None else ()
-        return RunView(title, self._fraction, self._counter, elapsed, self._remaining, self._ended is not None, rows)
+        return RunView(title, self._fraction, self._counter, elapsed, self._remaining, self._ended is not None, rows,
+                       idle=not self._action)
 
 
 @dataclass(frozen=True)

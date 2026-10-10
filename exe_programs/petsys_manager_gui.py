@@ -24,6 +24,7 @@ then stops the owned DAQD, while the window keeps polling.
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import replace
 from datetime import datetime
 import os
@@ -53,6 +54,8 @@ TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processin
 LOGO = Path(__file__).resolve().parent / "assets" / "onco_logo.jpeg"  # optional, module-relative
 POLL_MS = 100
 PANEL_REFRESH_S = 0.25   # the run panel redraws at most this often (spec 005 FR-1)
+BREATH_PERIOD_S, BREATH_STEP_MS = 3.0, 100   # the idle panel's empty bar fades in and out
+IDLE_TITLE, IDLE_HINT = "● Ready", "Pick a tab, set inputs, press START."
 MAX_EVENTS_PER_POLL = 200
 CHECK_DELAY_MS = 400
 SHUTDOWN_TIMEOUT_S = 60.0
@@ -512,8 +515,16 @@ class RunPanel(ctk.CTkFrame):
         self.stage_row = ctk.CTkFrame(self, fg_color="transparent")   # multi-stage runs only (FR-2)
         self.stage_labels = []
         self._running = False   # the indeterminate animation
+        self._trough = tuple(ctk.ThemeManager.theme["CTkProgressBar"]["fg_color"])
+        self._glow = tuple(ctk.ThemeManager.theme["CTkProgressBar"]["progress_color"])
+        self._breath = None     # after() id while the idle bar breathes
+        self._breath_step = 0
 
     def show(self, view):
+        if view.idle:
+            self._show_idle()
+            return
+        self._stop_breathing()
         self.title.configure(text=view.title)
         self.counter.configure(text=view.counter)
         timing = f"Elapsed {format_elapsed(view.elapsed_s)}"
@@ -531,6 +542,34 @@ class RunPanel(ctk.CTkFrame):
             self.bar.set(view.fraction or 0.0)
         self._running = indeterminate
         self._show_stages(view)
+
+    def _show_idle(self):
+        """Before the first run: a still, empty bar whose colour slowly breathes; nothing spins."""
+        self.title.configure(text=IDLE_TITLE)
+        self.counter.configure(text=IDLE_HINT)
+        self.timing.configure(text="")
+        if self._breath is None:
+            self._breath = self.after(BREATH_STEP_MS, self._breathe)
+
+    def _breathe(self):
+        self._breath_step += 1
+        level = (1 - math.cos(2 * math.pi * self._breath_step * BREATH_STEP_MS / 1000 / BREATH_PERIOD_S)) / 2
+        self.bar.configure(fg_color=tuple(self._mix(low, high, 0.6 * level) for low, high in zip(self._trough, self._glow)))
+        self._breath = self.after(BREATH_STEP_MS, self._breathe)
+
+    def _mix(self, low, high, level):
+        low, high = (self.winfo_rgb(colour) for colour in (low, high))
+        return "#" + "".join(f"{round((a + (b - a) * level) / 257):02x}" for a, b in zip(low, high))
+
+    def _stop_breathing(self):
+        if self._breath is not None:
+            self.after_cancel(self._breath)
+            self._breath, self._breath_step = None, 0
+            self.bar.configure(fg_color=self._trough)
+
+    def destroy(self):
+        self._stop_breathing()
+        super().destroy()
 
     def _show_stages(self, view):
         if not view.stages:

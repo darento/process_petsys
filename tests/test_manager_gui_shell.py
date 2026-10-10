@@ -537,6 +537,24 @@ class RunPanelChecks(RunPanelBase):
                         panel.title.cget("text"))
         self.assertEqual((panel.bar.cget("mode"), panel.timing.cget("text")), ("determinate", "Elapsed 0.0 s"))
 
+    def test_run_panel_idle_before_the_first_run_breathes_without_spinning(self):
+        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
+        panel = app.run_panel
+        trough = tuple(gui.ctk.ThemeManager.theme["CTkProgressBar"]["fg_color"])
+        self.assertTrue(pump(app.root, lambda: panel.title.cget("text") == "● Ready"), panel.title.cget("text"))
+        self.assertEqual((panel.counter.cget("text"), panel.timing.cget("text")),
+                         ("Pick a tab, set inputs, press START.", ""))
+        self.assertEqual(panel.bar.cget("mode"), "determinate")
+        self.assertEqual(panel.bar.get(), 0.0)
+        self.assertTrue(pump(app.root, lambda: tuple(panel.bar.cget("fg_color")) != trough), "the empty bar never breathed")
+        self.now = 100.0
+        app.clock = lambda: self.now
+        app.session.start_workflow = lambda *args, **kwargs: 1
+        app._start(app.session.profile, Action.CALIBRATE, None, app.cal_status, "Starting...")
+        self.assertTrue(pump(app.root, lambda: panel.title.cget("text") == "Energy calibration"), panel.title.cget("text"))
+        self.assertFalse(pump(app.root, lambda: tuple(panel.bar.cget("fg_color")) != trough, timeout=0.5),
+                         "the bar still breathes during a run")
+
     def test_run_panel_acquisition_step_shows_the_raw_size(self):
         app = self.begin(Action.QC, ("acquisition", "conversion", "qc"))
         self.now = 104.0
