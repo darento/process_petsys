@@ -4,7 +4,8 @@ Estimates use only the running stage's own counters and rate (FR-1); the GUI
 supplies its monotonic clock as ``now``. ``RunTracker`` turns RunEvents into what
 the run panel shows and ``StageOverview`` lists a multi-stage run's stages (FR-2).
 ``Banners`` holds the warning banners above the tabs (FR-7) and ``GrowthBanner`` the acquisition's RAW
-growth banner (FR-8). Nothing here imports Tk.
+growth banner (FR-8). ``changed_fields`` counts an Advanced section's non-default values (FR-5).
+Nothing here imports Tk.
 """
 
 from __future__ import annotations
@@ -320,3 +321,21 @@ class GrowthBanner:
         remaining = None if self._duration is None else max(0.0, self._duration - elapsed)
         since = now - self._grew if self._state == "stalled" else None
         return GrowthView(self._state, self._run_name, elapsed, remaining, self._size, self._rate, since)
+
+
+def changed_fields(values, defaults):
+    """Names in ``values`` whose value differs from ``defaults[name]``, in ``values`` order (FR-5).
+
+    Text is compared stripped, with None as empty; two numbers compare by value, so "45" equals
+    "45.0". Other values (booleans) compare as they are."""
+    def same(value, default):
+        if not isinstance(value, str) or not isinstance(default, (str, type(None))):
+            return value == default
+        value, default = value.strip(), (default or "").strip()
+        if value == default:
+            return True
+        try:
+            return float(value) == float(default)
+        except ValueError:
+            return False
+    return tuple(name for name, value in values.items() if not same(value, defaults[name]))

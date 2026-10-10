@@ -8,7 +8,8 @@ import sys
 import pytest
 
 from helpers import REPO
-from src.petsys_manager.progress import Banners, GrowthBanner, GrowthView, Progress, RateEstimate, StageOverview, split_remaining
+from src.petsys_manager.progress import (Banners, GrowthBanner, GrowthView, Progress, RateEstimate, StageOverview,
+                                        changed_fields, split_remaining)
 
 
 @pytest.mark.fr("005-FR-1")
@@ -307,3 +308,27 @@ def test_growth_banner_reset_forgets_the_previous_run():
     banner.event(50.0, "acquisition_attempt_started", "acquisition", {"attempt": 1})
     banner.event(55.0, "acquisition_growth_passed", "acquisition", {})
     assert banner.view(56.0).run_name == ""
+
+
+# Advanced sections (spec 005 T15) ---------------------------------------------------------------
+
+@pytest.mark.fr("005-FR-5")
+def test_changed_fields_lists_the_names_that_differ_in_field_order():
+    defaults = {"cards": "/dev/psdaq1, /dev/psdaq0", "hit_limit": "16", "debug": True, "mode": "target"}
+    assert changed_fields(dict(defaults), defaults) == ()
+    values = {"mode": "reference", "cards": "/dev/psdaq1, /dev/psdaq0", "debug": False, "hit_limit": "20"}
+    assert changed_fields(values, defaults) == ("mode", "debug", "hit_limit")
+
+
+@pytest.mark.fr("005-FR-5")
+@pytest.mark.parametrize("value, default", [(" 16 ", "16"), ("", None), ("  ", None), ("45", "45.0"),
+                                            ("2e7", "20000000"), ("0.10", ".1")])
+def test_changed_fields_same_value_written_differently_is_unchanged(value, default):
+    assert changed_fields({"field": value}, {"field": default}) == ()
+
+
+@pytest.mark.fr("005-FR-5")
+@pytest.mark.parametrize("value, default", [("17", "16"), ("/lim/cog.txt", None), ("abc", "16"), ("16", ""),
+                                            ("Target", "target"), (False, True)])
+def test_changed_fields_different_or_unreadable_values_are_changed(value, default):
+    assert changed_fields({"field": value}, {"field": default}) == ("field",)

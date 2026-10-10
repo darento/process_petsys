@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import textwrap
 import threading
+import tkinter
 
 import pytest
 
@@ -813,3 +814,165 @@ class RecentRunsChecks(GUIBase):
             self.assertEqual(app.ask_offer(offers), expected)
             app.root.after_cancel(guard)
         self.assertEqual(stuck, [])
+
+
+
+def bound(widget, variable):
+    """Every widget below ``widget`` showing or setting the Tk ``variable``."""
+    found = []
+    for item in widget.winfo_children():
+        for option in ("textvariable", "variable"):
+            try:
+                if item.cget(option) is variable:
+                    found.append(item)
+            except (ValueError, KeyError, tkinter.TclError, AttributeError):
+                pass
+        found.extend(bound(item, variable))
+    return found
+
+
+def inside(widget, parent):
+    return str(widget).startswith(str(parent) + ".")
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-5")  # spec 005 T15
+class AdvancedChecks(GUIBase):
+    fixture_prefix = "pm-gui-advanced-"
+    SECTIONS = {   # the spec's field list, by tab
+        "setup": (0, ("daq_type", "cards", "socket_path", *(f"safety.{name}" for name in gui.SAFETY_FIELDS))),
+        "conversion": (1, ("hit_limit",)),
+        "calibration": (2, ("cog_limits_file", "positions", "limit_mode", "target_per_key", "workers")),
+        "lm": (3, ("cog_limits_file", "doi_limits_file", "pair_map_file", "lm_debug")),
+    }
+    ROUTINE = ("acq_time", "acq_name", "hw_trigger", "raw_input", "splits", "convert_duration", "qc_source",
+               "qc_plots", "qc_slabs")
+    # The fixture profile against MachineProfile() and the window's own initial values.
+    FIRST = {"setup": "4 changed from default", "conversion": None, "calibration": "2 changed from default",
+             "lm": "3 changed from default"}
+
+    def window(self):
+        root = self.base / "w"
+        self.path = save_profile(world(root), self.base / "profile.yaml")
+        return self.open(self.path, repo_root=root)
+
+    @staticmethod
+    def variable(app, name):
+        group, _, field = name.partition(".")
+        if field:
+            return {"safety": app.safety_vars, "lm_metadata": app.lm_vars}[group][field]
+        return app.vars[name] if name in app.vars else getattr(app, name)
+
+    def values(self, app):
+        names = (*app.vars, *(f"safety.{name}" for name in app.safety_vars),
+                 *(f"lm_metadata.{name}" for name in app.lm_vars), *self.ROUTINE,
+                 "hit_limit", "positions", "limit_mode", "target_per_key", "workers", "lm_debug")
+        return {name: self.variable(app, name).get() for name in names}
+
+    def header(self, app, key):
+        return app.advanced[key].header.cget("text")
+
+    def headers(self, app):
+        return {key: self.header(app, key) for key in self.SECTIONS}
+
+    def expected(self, counts, arrow="\u25b8"):
+        return {key: f"{arrow} Advanced" + (f": {count}" if count else "") for key, count in counts.items()}
+
+    def collapsed(self, app):
+        return {key: app.advanced[key].body.winfo_manager() == "" for key in self.SECTIONS}
+
+    def test_advanced_fields_in_each_tab_section_only(self):
+        app = self.window()
+        self.assertEqual(set(app.advanced), set(self.SECTIONS))           # QC: none
+        bodies = [section.body for section in app.advanced.values()]
+        for key, (tab, names) in self.SECTIONS.items():
+            section = app.advanced[key]
+            self.assertTrue(inside(section, app.tabs[tab]), key)
+            self.assertEqual(tuple(section.fields), names, key)
+            for name in names:
+                shown = [widget for widget in bound(app.root, self.variable(app, name)) if inside(widget, section.body)]
+                self.assertTrue(shown, (key, name))
+        advanced = {name for _, names in self.SECTIONS.values() for name in names}
+        for name in advanced:      # never also shown outside a section
+            for widget in bound(app.root, self.variable(app, name)):
+                self.assertTrue(any(inside(widget, body) for body in bodies), (name, str(widget)))
+        routine = set(self.values(app)) - advanced
+        self.assertIn("lm_metadata.isotope", routine)
+        self.assertIn("calibration_dir", routine)
+        for name in routine:
+            widgets = bound(app.root, self.variable(app, name))
+            self.assertTrue(widgets, name)
+            for widget in widgets:
+                self.assertFalse(any(inside(widget, body) for body in bodies), (name, str(widget)))
+
+    def test_advanced_toggle_keeps_every_value(self):
+        app = self.window()
+        self.assertEqual(self.collapsed(app), dict.fromkeys(self.SECTIONS, True))
+        self.assertEqual(self.headers(app), self.expected(self.FIRST))
+        for variable, value in ((app.hit_limit, "20"), (app.safety_vars["startup_timeout_s"], "60"),
+                                (app.limit_mode, "reference"), (app.lm_debug, False), (app.splits, "3"),
+                                (app.vars["doi_limits_file"], str(self.base / "w" / "lim" / "regions.txt")),
+                                (app.lm_vars["isotope"], "Na22"), (app.workers, "4")):
+            variable.set(value)
+        self.settle(app)
+        values, profile, loaded, saved = self.values(app), app.profile_from_ui(), app.session.profile, self.path.read_bytes()
+        self.assertNotEqual(profile, loaded)
+        headers = self.headers(app)
+        for key, section in app.advanced.items():
+            section.header.invoke()
+            pump(app.root, timeout=0.1)
+            self.assertEqual(section.body.winfo_manager(), "grid", key)
+            self.assertEqual(self.header(app, key), headers[key].replace("\u25b8", "\u25be"), key)
+            section.header.invoke()
+            pump(app.root, timeout=0.1)
+            self.assertEqual(section.body.winfo_manager(), "", key)
+            self.assertEqual(self.header(app, key), headers[key], key)
+        for section in app.advanced.values():   # left open: a later edit still counts
+            section.header.invoke()
+        self.settle(app)
+        self.assertEqual(self.values(app), values)
+        self.assertEqual(app.profile_from_ui(), profile)
+        self.assertEqual(app.session.profile, loaded)
+        self.assertEqual(self.path.read_bytes(), saved)
+        self.assertIn("unsaved edits", app.profile_status.cget("text"))
+        app.hit_limit.set("16")
+        self.assertEqual(self.header(app, "conversion"), "\u25be Advanced")
+
+    def test_advanced_count_of_non_default_values(self):
+        app = self.window()
+        counts = dict(self.FIRST)
+        for variable, value, changes in (
+                (app.hit_limit, "20", {"conversion": "1 changed from default"}),
+                (app.hit_limit, "16", {"conversion": None}),
+                (app.limit_mode, "reference", {"calibration": "3 changed from default"}),
+                (app.lm_debug, False, {"lm": "4 changed from default"}),
+                (app.safety_vars["startup_timeout_s"], "45", {"setup": "3 changed from default"}),
+                (app.vars["socket_path"], "/tmp/other.sock", {"setup": "4 changed from default"}),
+                (app.vars["cog_limits_file"], "", {"calibration": "2 changed from default",
+                                                   "lm": "3 changed from default"}),
+                (app.splits, "7", {}),                                # routine fields are not counted
+                (app.lm_vars["isotope"], "Na22", {}),
+                (app.vars["calibration_dir"], "", {})):
+            variable.set(value)
+            counts.update(changes)
+            self.assertEqual(self.headers(app), self.expected(counts), (value, changes))
+        self.assertEqual(self.collapsed(app), dict.fromkeys(self.SECTIONS, True))
+        app.reload_profile()                                          # profile fields back to the file's
+        counts.update(setup="4 changed from default", calibration="3 changed from default",
+                      lm="4 changed from default")
+        self.assertEqual(self.headers(app), self.expected(counts))
+        self.settle(app)
+
+    def test_advanced_readiness_names_hidden_fields(self):
+        app = self.window()
+        app.target_per_key.set("abc")
+        self.assertTrue(pump(app.root, lambda: app._check_id is None and app._awaiting is None))
+        self.assertIn("Target sides per histogram (T) must be a positive integer", self.reasons(app)["calibrate"])
+        self.edit(app, app.target_per_key, "3000")
+        self.edit(app, app.vars["cog_limits_file"], str(self.base / "w" / "lim" / "absent.txt"))
+        for key in ("calibrate", "listmode"):
+            self.assertIn("COG Limits File: ", self.reasons(app)[key], key)
+        self.edit(app, app.vars["cog_limits_file"], str(self.base / "w" / "lim" / "cog.txt"))
+        self.edit(app, app.hit_limit, "many")
+        self.assertIn("Max Hits per Side must be a positive integer", self.reasons(app)["convert_coincidence"])
+        self.assertEqual(self.collapsed(app), dict.fromkeys(self.SECTIONS, True))

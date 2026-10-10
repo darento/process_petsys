@@ -283,7 +283,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
 ## Advanced settings
 
-- [ ] **T15 — Advanced sections** (FR-5). `progress.changed_fields(values, defaults)` and an `AdvancedSection` widget, collapsed at start, on Setup (DAQ fields and safety limits), Conversion (max hits per side), Calibration (COG limits file, positions per slab, event-limit mode, target T, workers) and LM (COG/DOI limits, pair map, LM debug plots). No section on QC.
+- [x] **T15 — Advanced sections** (FR-5). `progress.changed_fields(values, defaults)` and an `AdvancedSection` widget, collapsed at start, on Setup (DAQ fields and safety limits), Conversion (max hits per side), Calibration (COG limits file, positions per slab, event-limit mode, target T, workers) and LM (COG/DOI limits, pair map, LM debug plots). No section on QC.
 
   **Done when:**
   - `python -m pytest tests/test_manager_progress.py -k changed_fields` passes.
@@ -294,6 +294,17 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
     - readiness still names a field inside a collapsed section.
 
   All existing `gui` tests pass. The full run passes.
+
+  Verified 2026-10-10 (Windows), test-first. Seams: `progress.changed_fields`, the window (`app.advanced[key]` with `fields`, `header`, `body`).
+  - `changed_fields(values, defaults)` returns the differing names in field order. Text is compared stripped with None as empty, two numbers by value ("45" = "45.0"), other values (the LM debug flag) as they are.
+  - `AdvancedSection(parent, "Advanced", {name: (variable, default)})`: a header button over a body shown with `grid`/`grid_remove`, collapsed at start; the header reads "▸ Advanced" or "▸ Advanced: n changed from default" (▾ when open) and is recomputed on every write to its variables. `ADVANCED` holds the spec's field list. Setup: a "DAQ" frame (type, cards, socket) and the Acquisition Safety Limits frame; Conversion: Max Hits per Side; Calibration: COG limits file, positions per slab (with its note), event-limit mode, T, workers; LM: COG/DOI limits, pair map, debug plots. The event-limit plan line and the start buttons stay outside. QC has none; its Workers note now says "(LDAT Processing tab, Advanced)".
+  - Defaults: `profile_texts(MachineProfile())` and the window's initial hit limit, positions, mode and debug flag. `profile_texts` is now also what `_show_profile` shows, so a profile field and its default are formatted by one rule. On a configured profile the counts are expected to be non-zero (paths and cards differ from an empty profile).
+  - `python -m pytest tests/test_manager_progress.py -k changed_fields` → 13 passed.
+  - `python -m pytest tests/test_manager_gui_shell.py -k advanced` → 4 passed: each section's fields equal the spec's list and are shown only in their tab's section body, and every routine field (other profile paths, LM header metadata, Acq. Time/Name, splits, duration, QC options) only outside; with unsaved edits inside and outside, opening and closing each section leaves every Tk variable, `profile_from_ui()`, `session.profile` and the profile file unchanged and "unsaved edits" shown; the fixture profile shows 4/0/2/3 changed, and edits move each count (hit limit 20 → 1, back to 16 → none; mode, debug, "45" for a 45.0 limit, socket, an emptied COG file counted in both Calibration and LM; routine edits not counted), Reload brings the profile fields back; T "abc", a missing COG file and hit limit "many" are named in readiness while every section is collapsed.
+  - Serial run of the progress file and the Manager GUI files with `-n 0 --slow-limit 5` → 117 passed.
+  - Full run `-m "not real_data"` → 1151 passed, 23 skipped.
+  - Screenshots of each tab with its section open checked the layout (offscreen fixture window).
+  - Negatives (scratch copies; unmodified copies passed), each failing: `changed_fields` without stripping, without numeric comparison, with None as "None", sorted, case-insensitive; section open at start; no variable trace; count hidden when open; toggling resetting values; Max Hits, LM debug, DAQ frame or COG file outside their sections; a QC section; a routine field inside a section; defaults equal to the current values; safety limits left out of `ADVANCED`; the count of all fields; `_show_profile` skipping safety limits or LM metadata. One equivalent mutant: defaults from `session.profile` at construction, which is `MachineProfile()` until `open()`.
 
 ## Validation
 

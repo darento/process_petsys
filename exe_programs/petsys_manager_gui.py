@@ -46,12 +46,12 @@ import customtkinter as ctk
 from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, Population, ResultStatus,
                                           SourceMode)
-from src.petsys_manager.progress import Banners, GrowthBanner, RunTracker
+from src.petsys_manager.progress import Banners, GrowthBanner, RunTracker, changed_fields
 from src.petsys_manager.recent import (OFFER_LABELS, Offer, RunRecordError, conversion_outputs, main_report,
                                        run_offers)
 from src.petsys_manager.session import ManagerSession
-from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
-                                         RunOptions, default_profile_path)
+from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, MachineProfile, PrerequisiteIssue,
+                                         ProfileError, RunOptions, default_profile_path)
 from src.petsys_manager.workflow import format_elapsed, portable_name
 
 
@@ -110,6 +110,13 @@ LM_FIELDS = {
     "ring_number": ("Ring number:", int), "ring_distance_mm": ("Ring distance (mm):", float),
     "detector_pixels_x": ("Detector pixels X:", int), "detector_pixels_y": ("Detector pixels Y:", int),
     "timestamp_unit": ("Timestamp unit:", str),
+}
+# Expert settings in each tab's collapsed Advanced section (spec 005 FR-5); QC has none.
+ADVANCED = {
+    "setup": ("daq_type", "cards", "socket_path", *(f"safety.{name}" for name in SAFETY_FIELDS)),
+    "conversion": ("hit_limit",),
+    "calibration": ("cog_limits_file", "positions", "limit_mode", "target_per_key", "workers"),
+    "lm": ("cog_limits_file", "doi_limits_file", "pair_map_file", "lm_debug"),
 }
 LIVE_KEYS = ("acquire", "pipeline", "qc")      # need an initialized system from this manager's DAQD
 LIVE_ACTIONS = (Action.ACQUIRE, Action.PIPELINE, Action.QC)    # their acquisition time feeds the growth banner
@@ -534,6 +541,57 @@ class InputSelection:
         return True
 
 
+def profile_texts(profile):
+    """What each profile-backed field shows for ``profile``; ``MachineProfile()`` gives the Advanced defaults."""
+    texts = {name: getattr(profile, name) or "" for name in PROFILE_FIELDS}
+    texts.update(daq_type=profile.daq_type, cards=", ".join(profile.cards), socket_path=profile.socket_path,
+                 target_per_key=str(profile.limits.calibration_target_per_key), workers=str(profile.limits.workers))
+    for name in SAFETY_FIELDS:
+        value = profile.safety.min_growth_bytes / 1e6 if name == "min_growth_mb" else getattr(profile.safety, name)
+        texts[f"safety.{name}"] = str(value) if type(value) is int else format(value, ".15g")
+    for name in LM_FIELDS:
+        value = getattr(profile.lm_metadata, name)
+        texts[f"lm_metadata.{name}"] = ("" if value is None else format(value, ".15g") if type(value) is float
+                                        else str(value))
+    return texts
+
+
+class AdvancedSection(ctk.CTkFrame):
+    """Expert settings in ``body`` under a header button, collapsed at start (spec 005 FR-5).
+
+    Hiding the body keeps every Tk variable, so collapsing changes no value. The header counts the fields
+    (name -> (variable, default)) whose value differs from its default, recomputed on every write."""
+
+    def __init__(self, parent, title, fields):
+        super().__init__(parent, fg_color="transparent")
+        self.title, self.fields, self.expanded = title, fields, False
+        self.grid_columnconfigure(0, weight=1)
+        self.header = ctk.CTkButton(self, text="", anchor="w", fg_color="transparent", text_color=("gray10", "gray90"),
+                                    hover_color=("gray80", "gray30"), command=self.toggle)
+        self.header.grid(row=0, column=0, sticky="w", padx=10, pady=(2, 0))
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.grid(row=1, column=0, sticky="ew")
+        self.body.grid_columnconfigure(1, weight=1)
+        self.body.grid_remove()
+        for variable, _ in fields.values():
+            variable.trace_add("write", self._refresh)
+        self._refresh()
+
+    def toggle(self):
+        self.expanded = not self.expanded
+        if self.expanded:
+            self.body.grid()
+        else:
+            self.body.grid_remove()
+        self._refresh()
+
+    def _refresh(self, *_):
+        changed = changed_fields({name: variable.get() for name, (variable, _) in self.fields.items()},
+                                 {name: default for name, (_, default) in self.fields.items()})
+        text = f"{'▾' if self.expanded else '▸'} {self.title}"
+        self.header.configure(text=text + (f": {len(changed)} changed from default" if changed else ""))
+
+
 def growth_text(view):
     """The growth banner's line: run name, attempt elapsed time, time remaining, .rawf size and rate (FR-8)."""
     if view.state == "growing":
@@ -804,6 +862,14 @@ class PETsysManager:
         self._limit_plans = {}
         self.safety_vars = {name: tk.StringVar(root) for name in SAFETY_FIELDS}
         self.lm_vars = {name: tk.StringVar(root) for name in LM_FIELDS}
+        self.field_vars = {**self.vars, **{f"safety.{name}": var for name, var in self.safety_vars.items()},
+                           "hit_limit": self.hit_limit, "positions": self.positions, "limit_mode": self.limit_mode,
+                           "target_per_key": self.target_per_key, "workers": self.workers, "lm_debug": self.lm_debug}
+        # Advanced defaults: an empty profile's values, and this window's initial run options.
+        self.defaults = {**profile_texts(MachineProfile()),
+                         **{name: self.field_vars[name].get() for name in ("hit_limit", "positions", "limit_mode",
+                                                                           "lm_debug")}}
+        self.advanced = {}
         self._build()
         for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time, self.acq_name,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
@@ -871,6 +937,13 @@ class PETsysManager:
             ctk.CTkButton(frame, text="Browse", width=100, command=browse).grid(row=row, column=2, padx=5, pady=2)
         return entry
 
+    def _advanced(self, parent, key):
+        names = ADVANCED[key]
+        section = AdvancedSection(parent, "Advanced",
+                                  {name: (self.field_vars[name], self.defaults[name]) for name in names})
+        self.advanced[key] = section
+        return section
+
     def _fields(self, frame, names, first_row=1):
         for row, name in enumerate(names, first_row):
             label, kind = PROFILE_FIELDS[name]
@@ -908,14 +981,17 @@ class PETsysManager:
         self.profile_status.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         settings = self._frame(tab, "Settings")
         self._fields(settings, ("petsys_folder", "petsys_python", "ini_file", "data_dir"))
-        for row, (name, label) in enumerate(DAQ_FIELDS.items(), 5):
-            self.entries[name] = [self._row(settings, row, label, self.vars[name])]
-        self._row(settings, 8, "Acq. Time (s):", self.acq_time, width=100)
-        self._row(settings, 9, "Acquisition Name:", self.acq_name, width=240)
+        self._row(settings, 5, "Acq. Time (s):", self.acq_time, width=100)
+        self._row(settings, 6, "Acquisition Name:", self.acq_name, width=240)
         ctk.CTkLabel(settings, text="Names the RAW file and the run folder of Acquire, the pipeline and live QC "
                                     "(letters, digits, '_' or '-'; up to 48)", **self._small()).grid(
-            row=10, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
-        safety = self._frame(tab, "Acquisition Safety Limits")
+            row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        advanced = self._advanced(tab, "setup")
+        advanced.pack(fill="x")
+        daq = self._frame(advanced.body, "DAQ")
+        for row, (name, label) in enumerate(DAQ_FIELDS.items(), 1):
+            self.entries[name] = [self._row(daq, row, label, self.vars[name])]
+        safety = self._frame(advanced.body, "Acquisition Safety Limits")
         safety.grid_columnconfigure(3, weight=1)
         for index, (name, (label, _)) in enumerate(SAFETY_FIELDS.items()):
             row, column = 1 + index // 2, 2 * (index % 2)
@@ -986,9 +1062,11 @@ class PETsysManager:
         settings = self._frame(tab, "Processing Settings")
         self._row(settings, 1, "Number of Split Files:", self.splits, width=100)
         self._row(settings, 2, "RAW Acquisition Duration (s):", self.convert_duration, width=100)
-        self._row(settings, 3, "Max Hits per Side:", self.hit_limit, width=100)
         self.split_plan = ctk.CTkLabel(settings, text="", **small)
-        self.split_plan.grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        self.split_plan.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        advanced = self._advanced(settings, "conversion")
+        advanced.grid(row=4, column=0, columnspan=3, sticky="ew")
+        self._row(advanced.body, 1, "Max Hits per Side:", self.hit_limit, width=100)
         options = self._frame(tab, "Conversion Options")
         ctk.CTkLabel(options, text="Output: compact coincidence (--writeBinaryCompact), for calibration, LM and QC",
                      **small).grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
@@ -1009,24 +1087,28 @@ class PETsysManager:
     def _ldat_tab(self, tab):
         self._selection(tab, "calibrate")
         frame = self._frame(tab, "Energy cal file generation")
-        self._fields(frame, ("cog_limits_file", "calibration_dir", "report_dir"))
-        self._row(frame, 4, "Positions per Slab:", self.positions, width=100)
-        ctk.CTkLabel(frame, text="1 = one factor per slab, ID(t_ch, slab), no COG limits needed; 2 or more = "
-                                 "position regions along the slab, ID(time_ch, slab, region), from the COG limits",
+        self._fields(frame, ("calibration_dir", "report_dir"))
+        advanced = self._advanced(frame, "calibration")
+        advanced.grid(row=3, column=0, columnspan=3, sticky="ew")
+        body = advanced.body
+        self._fields(body, ("cog_limits_file",))
+        self._row(body, 2, "Positions per Slab:", self.positions, width=100)
+        ctk.CTkLabel(body, text="1 = one factor per slab, ID(t_ch, slab), no COG limits needed; 2 or more = "
+                                "position regions along the slab, ID(time_ch, slab, region), from the COG limits",
                      font=ctk.CTkFont(size=11), justify="left", anchor="w", wraplength=780).grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
-        modes = ctk.CTkFrame(frame, fg_color="transparent")
-        modes.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+            row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        modes = ctk.CTkFrame(body, fg_color="transparent")
+        modes.grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=2)
         ctk.CTkLabel(modes, text="Event limit:").pack(side="left", padx=(0, 6))
         for value, text in (("target", "Target sides per histogram (default)"),
                             ("reference", "Reference: 10,000,000 per file (cornell_slab_en_cal.py)")):
             ctk.CTkRadioButton(modes, text=text, variable=self.limit_mode, value=value).pack(side="left", padx=4)
-        self._row(frame, 7, "Target sides per histogram (T):", self.target_per_key, width=100)
-        self._row(frame, 8, "Workers (0 = automatic):", self.workers, width=100)
+        self._row(body, 5, "Target sides per histogram (T):", self.target_per_key, width=100)
+        self._row(body, 6, "Workers (0 = automatic):", self.workers, width=100)
         self.limit_plan = ctk.CTkLabel(frame, text="", **self._small())
-        self.limit_plan.grid(row=9, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+        self.limit_plan.grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
         self._button(frame, "calibrate", "Create Energy cal file", command=self.calibrate).grid(
-            row=10, column=0, columnspan=3, padx=20, pady=10)
+            row=5, column=0, columnspan=3, padx=20, pady=10)
         status = self._frame(tab, "Energy Calibration Result")
         self.cal_status = ctk.CTkLabel(status, text="No calibration run in this session", **self._small())
         self.cal_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
@@ -1065,15 +1147,17 @@ class PETsysManager:
     def _lm_tab(self, tab):
         self._selection(tab, "listmode")
         frame = self._frame(tab, "LM File Generation Settings")
-        self._fields(frame, ("calibration_file", "cog_limits_file", "doi_limits_file", "pair_map_file",
-                             "region_map_file", "lm_dir"))
+        self._fields(frame, ("calibration_file", "region_map_file", "lm_dir"))
         ctk.CTkLabel(frame, text="Regions come from the calibration file: ID(t_ch, slab) = one factor per slab, a "
                                  "position file = its region count.", **self._small()).grid(
-            row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2))
-        ctk.CTkCheckBox(frame, text="Write LM debug plots (reference -d)", variable=self.lm_debug).grid(
-            row=8, column=0, columnspan=3, sticky="w", padx=20, pady=2)
+            row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2))
+        advanced = self._advanced(frame, "lm")
+        advanced.grid(row=5, column=0, columnspan=3, sticky="ew")
+        self._fields(advanced.body, ("cog_limits_file", "doi_limits_file", "pair_map_file"))
+        ctk.CTkCheckBox(advanced.body, text="Write LM debug plots (reference -d)", variable=self.lm_debug).grid(
+            row=4, column=0, columnspan=3, sticky="w", padx=20, pady=2)
         self._button(frame, "listmode", "Generate LM File", command=self.generate_lm).grid(
-            row=9, column=0, columnspan=3, padx=20, pady=10)
+            row=6, column=0, columnspan=3, padx=20, pady=10)
         metadata = self._frame(tab, "LM Header Metadata (saved in the profile; empty = unavailable)")
         metadata.grid_columnconfigure(3, weight=1)
         for index, (name, (label, _)) in enumerate(LM_FIELDS.items()):
@@ -1127,7 +1211,7 @@ class PETsysManager:
         ctk.CTkLabel(offline, text="Uses the plot/slab options above; results go to a new run folder "
                                    "<data>_qc_<date>_<time> in the Report Destination. Source mode and duration are "
                                    "not recorded for existing files. Files are read in parallel with the Workers "
-                                   "setting (LDAT Processing tab).",
+                                   "setting (LDAT Processing tab, Advanced).",
                      **self._small()).grid(row=2, column=0, sticky="w", padx=10, pady=(0, 5))
         self._readiness(tab, ("qc", "qc_analyze"))
 
@@ -1908,21 +1992,12 @@ class PETsysManager:
         self._loading = True
         try:
             self.profile_path.set(str(self.session.profile_path))
-            for name in PROFILE_FIELDS:
-                self.vars[name].set(getattr(profile, name) or "")
-            self.vars["daq_type"].set(profile.daq_type)
-            self.vars["cards"].set(", ".join(profile.cards))
-            self.vars["socket_path"].set(profile.socket_path)
-            for name in SAFETY_FIELDS:
-                value = (profile.safety.min_growth_bytes / 1e6 if name == "min_growth_mb"
-                         else getattr(profile.safety, name))
-                self.safety_vars[name].set(str(value) if type(value) is int else format(value, ".15g"))
-            for name in LM_FIELDS:
-                value = getattr(profile.lm_metadata, name)
-                self.lm_vars[name].set("" if value is None else format(value, ".15g") if type(value) is float
-                                       else str(value))
-            self.target_per_key.set(str(profile.limits.calibration_target_per_key))
-            self.workers.set(str(profile.limits.workers))
+            texts = profile_texts(profile)
+            for name, variable in self.field_vars.items():
+                if name in texts:
+                    variable.set(texts[name])
+            for name, variable in self.lm_vars.items():
+                variable.set(texts[f"lm_metadata.{name}"])
         finally:
             self._loading = False
         self._update_profile_status()
