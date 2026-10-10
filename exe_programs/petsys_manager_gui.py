@@ -15,6 +15,8 @@ on behalf of a run. Conversion duration, splits and hit limit are explicit
 settings, never read from a file name. The manager converts and processes
 compact coincidence only (FR-10); the operator confirms that listed LDAT files
 are compact coincidence, since an extension cannot tell.
+A run panel above the tabs shows the foreground run: its stage, progress, elapsed
+time and estimate, and the stages of a multi-stage run (spec 005).
 Nothing launches at startup. Closing stops the workflow, waits for its bias-off,
 then stops the owned DAQD, while the window keeps polling.
 """
@@ -28,6 +30,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -36,6 +39,7 @@ import customtkinter as ctk
 from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, Population, ResultStatus,
                                           SourceMode)
+from src.petsys_manager.progress import RunTracker
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
                                          RunOptions, default_profile_path)
@@ -48,6 +52,7 @@ TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processin
         "LM File Generation", "System Quality Control")
 LOGO = Path(__file__).resolve().parent / "assets" / "onco_logo.jpeg"  # optional, module-relative
 POLL_MS = 100
+PANEL_REFRESH_S = 0.25   # the run panel redraws at most this often (spec 005 FR-1)
 MAX_EVENTS_PER_POLL = 200
 CHECK_DELAY_MS = 400
 SHUTDOWN_TIMEOUT_S = 60.0
@@ -99,6 +104,7 @@ STOP_KEYS = ("stop", "convert_stop", "qc_stop")
 ACTION_TEXT = {Action.ACQUIRE: "Acquisition", Action.CONVERT: "Conversion", Action.CALIBRATE: "Energy calibration",
                Action.LISTMODE: "LM generation", Action.QC: "Quality control", Action.QC_ANALYZE: "Offline QC",
                Action.PIPELINE: "Complete pipeline"}
+STAGE_TONES = {"succeeded": "ok", "failed": "error", "stopped": "warn"}   # run-panel stage row (FR-2)
 STAGE_TEXT = {"acquisition": "Acquisition", "conversion": "Conversion", "calibration": "Energy calibration",
               "listmode": "LM generation", "qc": "QC analysis"}
 ARTIFACT_TEXT = {"encal": "Energy cal file", "calibration_sidecar": "Calibration provenance",
@@ -487,6 +493,65 @@ class InputSelection:
         return True
 
 
+class RunPanel(ctk.CTkFrame):
+    """The foreground run above the tabs (spec 005 FR-1): what runs, a bar, its counter, elapsed time and
+    the estimate. It only shows a ``RunView``; the last run's final state stays until the next run."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.grid_columnconfigure(1, weight=1)
+        self.title = ctk.CTkLabel(self, text="No run started", font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
+        self.title.grid(row=0, column=0, sticky="w", padx=10, pady=(4, 0))
+        self.bar = ctk.CTkProgressBar(self, mode="determinate")
+        self.bar.set(0)
+        self.bar.grid(row=0, column=1, sticky="ew", padx=10, pady=(4, 0))
+        self.counter = ctk.CTkLabel(self, text="", anchor="w")
+        self.counter.grid(row=1, column=0, columnspan=2, sticky="w", padx=10)
+        self.timing = ctk.CTkLabel(self, text="", anchor="w")
+        self.timing.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+        self.stage_row = ctk.CTkFrame(self, fg_color="transparent")   # multi-stage runs only (FR-2)
+        self.stage_labels = []
+        self._running = False   # the indeterminate animation
+
+    def show(self, view):
+        self.title.configure(text=view.title)
+        self.counter.configure(text=view.counter)
+        timing = f"Elapsed {format_elapsed(view.elapsed_s)}"
+        if view.remaining_s is not None:
+            timing += f"  -  about {format_elapsed(view.remaining_s)} remaining"
+        self.timing.configure(text=timing)
+        indeterminate = view.fraction is None and not view.finished
+        if indeterminate and not self._running:
+            self.bar.configure(mode="indeterminate")
+            self.bar.start()
+        elif not indeterminate:
+            if self._running:
+                self.bar.stop()
+            self.bar.configure(mode="determinate")
+            self.bar.set(view.fraction or 0.0)
+        self._running = indeterminate
+        self._show_stages(view)
+
+    def _show_stages(self, view):
+        if not view.stages:
+            self.stage_row.grid_forget()
+            return
+        if len(self.stage_labels) != len(view.stages):
+            for label in self.stage_labels:
+                label.destroy()
+            self.stage_labels = [ctk.CTkLabel(self.stage_row, text="", anchor="w") for _ in view.stages]
+            for column, label in enumerate(self.stage_labels):
+                label.grid(row=0, column=column, sticky="w", padx=(0, 16))
+        for label, row in zip(self.stage_labels, view.stages):
+            state = "not run" if row.state == "pending" and view.finished else row.state
+            text = f"{STAGE_TEXT.get(row.stage, row.stage)}: {state}"
+            if row.elapsed_s is not None:
+                text += f" {format_elapsed(row.elapsed_s)}"
+            label.configure(text=text, text_color=STATUS_COLOURS[STAGE_TONES.get(row.state, "info")])
+        if not self.stage_row.winfo_manager():
+            self.stage_row.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+
+
 class PETsysManager:
     """Manager shell on an existing root; the caller owns the single Tk root."""
 
@@ -528,6 +593,9 @@ class PETsysManager:
         self.selections = {}
         self.ask_files = filedialog.askopenfilenames   # dialogs are attributes so checks can answer them
         self.ask_yes_no = messagebox.askyesno
+        self.clock = time.monotonic                   # the run panel's clock; checks replace it
+        self.run_tracker = RunTracker(STAGE_TEXT)
+        self._panel_shown = None                      # clock() of the last run-panel redraw
         self.root.title(f"{TITLE} {__version__}")
         self.root.geometry("900x950")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -566,6 +634,8 @@ class PETsysManager:
     # Layout -------------------------------------------------------------------------------------
 
     def _build(self):
+        self.run_panel = RunPanel(self.root)
+        self.run_panel.pack(fill="x", padx=10, pady=(5, 0))
         self.tabview = ctk.CTkTabview(self.root)
         self.tabview.pack(fill="both", expand=True, padx=10, pady=5)
         self.tabs = []
@@ -930,8 +1000,15 @@ class PETsysManager:
         if lines:
             self.log(*lines)
         self._refresh_controls()
+        self._refresh_run_panel()
         if not self._closing:
             self._poll_id = self.root.after(POLL_MS, self._poll)
+
+    def _refresh_run_panel(self):
+        now = self.clock()
+        if self._panel_shown is None or not 0 <= now - self._panel_shown < PANEL_REFRESH_S:
+            self._panel_shown = now
+            self.run_panel.show(self.run_tracker.view(now))
 
     def log(self, *messages):
         """Append lines in one widget update, each starting with the local time (FR-1); bounded tail."""
@@ -1068,6 +1145,7 @@ class PETsysManager:
             self._run_id = event.identity.run_id
         if event.identity.run_id != self._run_id:
             return
+        self.run_tracker.event(self.clock(), event.kind, event.identity.stage_id, event.payload)
         kind = event.kind.removeprefix("acquisition_")
         payload = event.payload
         text, tone = None, "info"
@@ -1132,6 +1210,7 @@ class PETsysManager:
         action, label, run_id = self._action, self._status_label, self._run_id
         self._token, self._run_id, self._stop_requested, self._stages = None, None, False, ()
         outcome = result.outcome
+        self.run_tracker.finish(self.clock(), "not started" if outcome is None else outcome.status.value)
         if outcome is None:
             text, tone = f"{ACTION_TEXT.get(action, action.value)} {result.message}", "warn"
         else:
@@ -1355,6 +1434,8 @@ class PETsysManager:
         self._token = self.session.start_workflow(profile, action, options, inputs)
         self._action, self._status_label, self._last_raw = action, label, None
         self._run_id, self._stop_requested, self._stages = None, False, ()
+        self.run_tracker.reset(self.clock(), ACTION_TEXT.get(action, action.value))
+        self._panel_shown = None          # the next poll shows the new run at once
         if action == Action.CONVERT:
             self.last_conversion = None  # "Use these outputs" only ever means the run shown
         if action in (Action.CALIBRATE, Action.PIPELINE):

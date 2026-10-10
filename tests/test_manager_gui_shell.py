@@ -17,7 +17,10 @@ import pytest
 from exe_programs import petsys_manager_gui as gui
 from helpers import REPO
 from manager_gui_helpers import FixtureProbe, GUIBase, PY, STAMP, child, pump, texts, world
+from src.petsys_manager.contracts import Action, Identity, RunEvent
+from src.petsys_manager.session import WorkflowResult
 from src.petsys_manager.settings import MachineProfile, SystemProbe, load_profile, save_profile
+from src.petsys_manager.workflow import format_elapsed
 
 
 PRIVATE = ("/home/sie", "/data/nvmDisk", "nvmDisk")
@@ -364,3 +367,214 @@ def _capture(sink, function):
         function()
     except Exception as exc:
         sink.append(exc)
+
+
+class RunPanelBase(GUIBase):
+    """The run panel above the tabs, fed workflow events on a fake GUI clock (spec 005)."""
+
+    def begin(self, action=Action.CALIBRATE, stages=("calibration",)):
+        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
+        self.now = 100.0
+        app.clock = lambda: self.now
+        app.session.start_workflow = lambda *args, **kwargs: 1     # nothing launches; events are fed below
+        app._start(app.session.profile, action, None, app.cal_status, "Starting...")
+        self.feed(app, "workflow_started", "workflow", run_root=str(self.base / "run"), stages=list(stages))
+        return app
+
+    def feed(self, app, kind, stage, **payload):
+        app._workflow_event(RunEvent(Identity("run-1", stage, "attempt-1"), 0, kind, "", payload))
+
+    def at(self, app, now):
+        """Advance the GUI clock and wait for the panel to show that instant."""
+        self.now = now
+        self.assertTrue(pump(app.root, lambda: f"Elapsed {format_elapsed(now - 100.0)}" in app.run_panel.timing.cget("text")),
+                        app.run_panel.timing.cget("text"))
+        panel = app.run_panel
+        counter = panel.counter.cget("text")
+        self.assertFalse([word for word in ("event", "pair", "single") if word in counter.lower()], counter)
+        return panel.bar.cget("mode"), counter, panel.timing.cget("text")
+
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-1")  # spec 005 T5
+class RunPanelChecks(RunPanelBase):
+    fixture_prefix = "pm-gui-rp-"
+
+    def test_run_panel_unknown_total_is_indeterminate_with_elapsed_only(self):
+        app = self.begin()
+        self.feed(app, "stage_started", "calibration", directory=str(self.base / "run"))
+        self.feed(app, "stage_progress", "calibration", phase="read", phases=["read", "fits"],
+                  bytes_read=1_000_000, bytes_total=None)
+        mode, counter, timing = self.at(app, 112.0)
+        self.assertEqual(mode, "indeterminate")
+        self.assertNotIn("remaining", timing)
+        self.assertIn("Energy calibration", app.run_panel.title.cget("text"))
+
+    def test_run_panel_bytes_give_a_bar_and_estimate_per_phase_after_5_s_and_1_percent(self):
+        app = self.begin()
+        phases = ["read", "pass 2", "fits"]
+        self.feed(app, "stage_started", "calibration", directory=str(self.base / "run"))
+        self.now = 103.0      # 3 s into the phase, 5 %: no estimate yet
+        self.feed(app, "stage_progress", "calibration", phase="read", phases=phases,
+                  bytes_read=200_000_000, bytes_total=4_000_000_000)
+        mode, counter, timing = self.at(app, 103.0)
+        self.assertEqual((mode, counter), ("indeterminate", "0.20 / 4.00 GB input read (read, phase 1 of 3)"))
+        self.assertNotIn("remaining", timing)
+        self.now = 110.0      # 10 s, 25 %: 30 s left in this phase
+        self.feed(app, "stage_progress", "calibration", phase="read", phases=phases,
+                  bytes_read=1_000_000_000, bytes_total=4_000_000_000)
+        mode, counter, timing = self.at(app, 110.0)
+        self.assertEqual((mode, counter), ("determinate", "1.00 / 4.00 GB input read (read, phase 1 of 3)"))
+        self.assertAlmostEqual(app.run_panel.bar.get(), 0.25, places=3)
+        self.assertIn("about 30.0 s remaining", timing)
+        self.now = 111.0      # a new phase restarts the bar and the estimate
+        self.feed(app, "stage_progress", "calibration", phase="pass 2", phases=phases,
+                  bytes_read=400_000_000, bytes_total=4_000_000_000)
+        mode, counter, timing = self.at(app, 111.0)
+        self.assertEqual((mode, counter), ("indeterminate", "0.40 / 4.00 GB input read (pass 2, phase 2 of 3)"))
+        self.assertNotIn("remaining", timing)
+        self.now = 120.0      # 10 s since the read phase was last seen, 50 %: 10 s left
+        self.feed(app, "stage_progress", "calibration", phase="pass 2", phases=phases,
+                  bytes_read=2_000_000_000, bytes_total=4_000_000_000)
+        mode, counter, timing = self.at(app, 120.0)
+        self.assertEqual(mode, "determinate")
+        self.assertAlmostEqual(app.run_panel.bar.get(), 0.5, places=3)
+        self.assertIn("about 10.0 s remaining", timing)
+
+    def test_run_panel_fits_count_keys(self):
+        app = self.begin()
+        self.feed(app, "stage_started", "calibration", directory=str(self.base / "run"))
+        self.now = 110.0
+        self.feed(app, "stage_progress", "calibration", phase="read", phases=["read", "fits"],
+                  bytes_read=4_000_000_000, bytes_total=4_000_000_000)
+        self.now = 112.0
+        self.feed(app, "stage_progress", "calibration", phase="fits", phases=["read", "fits"],
+                  keys_done=10, keys_total=400)
+        mode, counter, timing = self.at(app, 112.0)
+        self.assertEqual((mode, counter), ("indeterminate", "fits 10 / 400 keys (phase 2 of 2)"))
+        self.now = 120.0      # 10 s into the fits, half the keys: 10 s left
+        self.feed(app, "stage_progress", "calibration", phase="fits", phases=["read", "fits"],
+                  keys_done=200, keys_total=400)
+        mode, counter, timing = self.at(app, 120.0)
+        self.assertEqual((mode, counter), ("determinate", "fits 200 / 400 keys (phase 2 of 2)"))
+        self.assertIn("about 10.0 s remaining", timing)
+
+    def convert(self, app, now, **payload):
+        self.now = now
+        self.feed(app, "stage_progress", "conversion", **{"phase": "convert", "rawf_bytes": 2_000_000_000,
+                                                          "converter_exited": False, **payload})
+        return self.at(app, now)
+
+    def test_run_panel_one_split_conversion_is_indeterminate(self):
+        app = self.begin(Action.CONVERT, ("conversion",))
+        self.feed(app, "stage_started", "conversion", raw="x.rawf", directory=str(self.base / "run"))
+        mode, counter, timing = self.convert(app, 130.0, ldat_bytes=500_000_000, splits=1, split_durations_s=[])
+        self.assertEqual((mode, counter), ("indeterminate", "LDAT 0.5 GB written, RAW 2.0 GB; splits 0 / 1 closed"))
+        mode, counter, timing = self.convert(app, 160.0, ldat_bytes=900_000_000, splits=1, split_durations_s=[58.0],
+                                             converter_exited=True)
+        self.assertEqual((mode, counter), ("indeterminate", "LDAT 0.9 GB written, RAW 2.0 GB; splits 1 / 1 closed"))
+        self.assertNotIn("remaining", timing)
+
+    def test_run_panel_three_split_conversion_estimates_after_the_first_closed_split(self):
+        app = self.begin(Action.CONVERT, ("conversion",))
+        self.feed(app, "stage_started", "conversion", raw="x.rawf", directory=str(self.base / "run"))
+        mode, counter, timing = self.convert(app, 110.0, ldat_bytes=300_000_000, splits=3, split_durations_s=[])
+        self.assertEqual((mode, counter), ("indeterminate", "LDAT 0.3 GB written, RAW 2.0 GB; splits 0 / 3 closed"))
+        self.assertNotIn("remaining", timing)
+        mode, counter, timing = self.convert(app, 113.0, ldat_bytes=700_000_000, splits=3, split_durations_s=[12.0])
+        self.assertEqual((mode, counter), ("determinate", "LDAT 0.7 GB written, RAW 2.0 GB; splits 1 / 3 closed"))
+        self.assertAlmostEqual(app.run_panel.bar.get(), 1 / 3, places=3)
+        self.assertIn("about 24.0 s remaining", timing)       # 2 splits left x 12 s
+
+    def test_run_panel_final_state_stays_until_the_next_run(self):
+        app = self.begin()
+        self.feed(app, "stage_started", "calibration", directory=str(self.base / "run"))
+        self.now = 110.0
+        self.feed(app, "stage_progress", "calibration", phase="read", phases=["read"],
+                  bytes_read=1_000_000_000, bytes_total=4_000_000_000)
+        self.now = 130.0
+        self.feed(app, "stage_finished", "calibration", status="succeeded", elapsed_s=30.0)
+        self.feed(app, "workflow_finished", "workflow", status="succeeded", stages=["calibration"])
+        self.now = 500.0      # the clock keeps going; the panel keeps the final state
+        panel = app.run_panel
+        self.assertTrue(pump(app.root, lambda: "succeeded" in panel.title.cget("text")), panel.title.cget("text"))
+        self.assertEqual(panel.timing.cget("text"), "Elapsed 30.0 s")
+        self.assertEqual(panel.bar.cget("mode"), "determinate")
+        self.assertAlmostEqual(panel.bar.get(), 1.0, places=3)
+        self.assertEqual(panel.counter.cget("text"), "1.00 / 4.00 GB input read")
+        app._token = app._run_id = None       # the result has arrived
+        app._start(app.session.profile, Action.LISTMODE, None, app.lm_status, "Starting...")
+        self.assertTrue(pump(app.root, lambda: panel.title.cget("text") == "LM generation"), panel.title.cget("text"))
+        self.assertEqual((panel.counter.cget("text"), panel.timing.cget("text")), ("", "Elapsed 0.0 s"))
+
+    def test_run_panel_failed_run_keeps_its_bar(self):
+        app = self.begin()
+        self.feed(app, "stage_started", "calibration", directory=str(self.base / "run"))
+        self.now = 110.0
+        self.feed(app, "stage_progress", "calibration", phase="read", phases=["read"],
+                  bytes_read=1_000_000_000, bytes_total=4_000_000_000)
+        self.now = 115.0
+        self.feed(app, "stage_finished", "calibration", status="failed", elapsed_s=15.0)
+        self.feed(app, "workflow_finished", "workflow", status="failed", stages=["calibration"])
+        self.now = 500.0
+        panel = app.run_panel
+        self.assertTrue(pump(app.root, lambda: "failed" in panel.title.cget("text")), panel.title.cget("text"))
+        self.assertEqual(panel.timing.cget("text"), "Elapsed 15.0 s")
+        self.assertEqual(panel.bar.cget("mode"), "determinate")
+        self.assertAlmostEqual(panel.bar.get(), 0.25, places=3)
+
+    def test_run_panel_run_that_never_started_ends_the_panel(self):
+        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
+        self.now = 100.0
+        app.clock = lambda: self.now
+        app.session.start_workflow = lambda *args, **kwargs: 1
+        app._start(app.session.profile, Action.CALIBRATE, None, app.cal_status, "Starting...")
+        app._workflow_done(WorkflowResult(1, None, "not started: busy"), [])
+        self.now = 104.0
+        panel = app.run_panel
+        self.assertTrue(pump(app.root, lambda: panel.title.cget("text") == "Energy calibration not started"),
+                        panel.title.cget("text"))
+        self.assertEqual((panel.bar.cget("mode"), panel.timing.cget("text")), ("determinate", "Elapsed 0.0 s"))
+
+    def test_run_panel_acquisition_step_shows_the_raw_size(self):
+        app = self.begin(Action.QC, ("acquisition", "conversion", "qc"))
+        self.now = 104.0
+        self.feed(app, "acquisition_attempt_started", "acquisition", attempt=1, max_attempts=2, directory="d")
+        self.feed(app, "acquisition_rawf_progress", "acquisition", size=12_500_000, bytes_per_s=2.5e6, growing=True)
+        mode, counter, timing = self.at(app, 105.0)
+        self.assertEqual((mode, counter), ("indeterminate", "RAW 12.5 MB written"))
+        self.assertEqual(app.run_panel.title.cget("text"), "Quality control - step 1/3: Acquisition")
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-2")  # spec 005 T6
+class StageRowChecks(RunPanelBase):
+    fixture_prefix = "pm-gui-sr-"
+
+    def stage_texts(self, app):
+        return [label.cget("text") for label in app.run_panel.stage_labels]
+
+    def test_stage_row_lists_pipeline_stages_with_states(self):
+        app = self.begin(Action.PIPELINE, ("acquisition", "conversion", "calibration", "listmode"))
+        self.now = 101.0
+        self.feed(app, "acquisition_attempt_started", "acquisition", attempt=1, max_attempts=2, directory="d")
+        self.now = 161.0
+        self.feed(app, "stage_started", "conversion", raw="x.rawf", directory="d")
+        self.at(app, 165.0)
+        self.assertEqual(self.stage_texts(app), ["Acquisition: succeeded 1 min 00 s", "Conversion: running 4.0 s",
+                                                 "Energy calibration: pending", "LM generation: pending"])
+        self.assertEqual(app.run_panel.stage_row.winfo_manager(), "grid")
+        self.now = 171.0
+        self.feed(app, "stage_finished", "conversion", status="failed", elapsed_s=10.0)
+        self.feed(app, "workflow_finished", "workflow", status="failed", stages=["acquisition", "conversion"])
+        self.now = 400.0
+        self.assertTrue(pump(app.root, lambda: "failed" in app.run_panel.title.cget("text")))
+        self.assertEqual(self.stage_texts(app), ["Acquisition: succeeded 1 min 00 s", "Conversion: failed 10.0 s",
+                                                 "Energy calibration: not run", "LM generation: not run"])
+
+    def test_stage_row_absent_for_a_single_stage_run(self):
+        app = self.begin()
+        self.feed(app, "stage_started", "calibration", directory="d")
+        self.at(app, 103.0)
+        self.assertEqual(app.run_panel.stage_row.winfo_manager(), "")

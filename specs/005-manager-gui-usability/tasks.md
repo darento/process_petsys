@@ -92,7 +92,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - `python -m pytest tests/test_manager_workflow.py tests/test_manager_cli.py -m "not real_data" -n 0 --slow-limit 5` → 48 passed. Full run `-m "not real_data"` → 1036 passed, 23 skipped.
   - Negatives (scratch copies of `workflow.py`), each failing: no final report; thread never stopped; loose prefix; last split not closed at exit; shared time not split; `bytes_read` not forwarded; no scans while converting, which first survived the instant fake converter, hence the slow-converter guard.
 
-- [ ] **T5 — Run panel** (FR-1). A `RunPanel` above the tabs shows the action, `CTkProgressBar` (determinate or indeterminate), counter text, elapsed time and the estimate, refreshed from `_poll` at most every 250 ms.
+- [x] **T5 — Run panel** (FR-1). A `RunPanel` above the tabs shows the action, `CTkProgressBar` (determinate or indeterminate), counter text, elapsed time and the estimate, refreshed from `_poll` at most every 250 ms.
   - Processing counter: "x.xx / y.yy GB input read (read, phase 1 of 2)". Fits: "fits n / m keys".
   - Conversion: "LDAT x.x GB written, RAW y.y GB; splits k / n closed".
   - The final state stays until the next run. Tab status labels are unchanged.
@@ -106,11 +106,25 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
   The GUI compile check (`python -m py_compile exe_programs/petsys_manager_gui.py`) and the full run pass.
 
-- [ ] **T6 — Stage overview** (FR-2). `progress.StageOverview(stages)` updated from `stage_started`/`stage_finished`/`workflow_finished`, plus a `RunPanel` stage row for `PIPELINE` and `QC`.
+  Verified 2026-10-10 (Windows), test-first. Seam: `_workflow_event` / `_start` / `_workflow_done` on a withdrawn window with `app.clock` replaced by a fake clock and `session.start_workflow` stubbed; the panel's widgets are read after `_poll` redraws (`RunPanelChecks`).
+  - Logic in the Tk-free `progress.RunTracker` (events → `RunView`); `RunPanel` only renders it. Elapsed counts from `workflow_started` and freezes at `workflow_finished` (or a result without an outcome: "not started"). Each stage's estimate clock starts at its first event. The bar stays indeterminate until the 5 s / 1 % gate opens; a succeeded run fills it, any other end keeps it. Single-phase stages show no "phase k of n". Acquisition shows "RAW x.x MB written" (indeterminate; its time remaining is T8). Redraws at most every `PANEL_REFRESH_S` = 0.25 s, and at once after `_start`.
+  - Red → green, one slice each: unknown total; bytes with gate and per-phase reset; fits keys; 1-split conversion; 3-split conversion; final state kept until the next run; failed run keeps its bar; run that never started; acquisition RAW counter. The "events/pairs/singles" check runs on every counter the tests read.
+  - Tab status labels unchanged: the existing GUI tests pass unmodified.
+  - `python -m py_compile exe_programs/petsys_manager_gui.py` OK. `python -m pytest tests/test_manager_progress.py tests/test_manager_gui_shell.py tests/test_manager_gui_processing.py tests/test_manager_gui_conversion.py tests/test_manager_gui_acquisition.py -m "not real_data" -n 0 --slow-limit 5` → 60 passed, 1 deselected. Full run `-m "not real_data"` → 1053 passed, 23 skipped.
+  - Also marked `test_cli_calibrate_child_process_literal_paths_match_in_process` `slow` (~5 s; borderline in T3).
+  - Negatives (scratch copies; unmodified copy 17 passed), each failing: no gate; phase index off by one; estimate clock not started with the stage; 1-split conversion gets a bar; elapsed not frozen; succeeded bar not filled; `_start` not resetting the tracker; `_workflow_done` not ending it; no acquisition counter; no redraw at `_start`.
+
+- [x] **T6 — Stage overview** (FR-2). `progress.StageOverview(stages)` updated from `stage_started`/`stage_finished`/`workflow_finished`, plus a `RunPanel` stage row for `PIPELINE` and `QC`.
 
   **Done when:**
   - `python -m pytest tests/test_manager_progress.py -k overview` passes, covering: the success sequence gives all `succeeded` with recorded `elapsed_s`; a failure at stage 2 gives `failed` with the later stages `pending`; STOP during stage 1 gives `stopped` with the later stages `stopped`; the running stage's elapsed time ticks on a fake clock.
   - `python -m pytest tests/test_manager_gui_shell.py -k stage_row` passes: a pipeline shows 4 stage labels with their states, and a single-stage run shows no stage row.
+
+  Verified 2026-10-10 (Windows), test-first. Seams: `StageOverview.event(now, kind, stage, payload)` / `rows(now)` and the `RunPanel` stage row through the T5 seam.
+  - A stage runs from its first event. Acquisition emits no `stage_started`/`stage_finished`, so the next stage's start ends it as succeeded and `workflow_finished` ends it otherwise; its elapsed time is the GUI clock's. `cancelled` → stopped, `launch_error` and other results → failed. After a STOP, stages not run are `stopped`; otherwise they stay `pending`, shown as "not run" once the run ended. `RunTracker` keeps an overview only when `workflow_started` lists more than one stage.
+  - Red → green: success sequence; failure at stage 2 (`failed`, `launch_error`); STOP during stage 1 and a failed acquisition; running elapsed ticks then recorded `elapsed_s`; GUI pipeline row (4 labels, states, "not run" after a failure) and no row for a single stage.
+  - `python -m pytest tests/test_manager_progress.py -k overview` → 6 passed; `tests/test_manager_gui_shell.py -k stage_row` → 2 passed. Serial and full runs as in T5.
+  - Negatives (scratch copies), each failing: earlier running stage not closed; pending not stopped after STOP; running stage without elapsed; `cancelled` read as failed; recorded `elapsed_s` ignored; no "not run"; stage row for a single stage; `workflow_finished` ignored.
 
 ## Banners
 

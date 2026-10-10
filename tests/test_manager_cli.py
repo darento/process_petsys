@@ -48,6 +48,7 @@ class CLIChecks(CLIFixtures, unittest.TestCase):
 
     # Actions --------------------------------------------------------------
 
+    @pytest.mark.slow  # ~5 s
     def test_cli_calibrate_child_process_literal_paths_match_in_process(self):
         for positions, data_format in ((5, "fixed"), (1, "compact")):
             h, descriptors, limits, request = self.calibration_request(positions=positions, data_format=data_format)

@@ -1,4 +1,4 @@
-"""Spec 005 run-progress logic without Tk (T1): time-remaining estimates."""
+"""Spec 005 run-progress logic without Tk: time-remaining estimates (T1) and the stage overview (T6)."""
 
 import os
 import subprocess
@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from helpers import REPO
-from src.petsys_manager.progress import Progress, RateEstimate, split_remaining
+from src.petsys_manager.progress import Progress, RateEstimate, StageOverview, split_remaining
 
 
 @pytest.mark.fr("005-FR-1")
@@ -104,3 +104,68 @@ def test_progress_imports_without_tk():
             "sys.exit('tkinter' in sys.modules or 'customtkinter' in sys.modules)")
     result = subprocess.run([sys.executable, "-c", code], cwd=REPO, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+PIPELINE = ["acquisition", "conversion", "calibration", "listmode"]
+
+
+def states(overview, now):
+    return [(row.stage, row.state, row.elapsed_s) for row in overview.rows(now)]
+
+
+@pytest.mark.fr("005-FR-2")
+def test_overview_success_sequence():
+    # Acquisition reports no stage events of its own: it runs from its first event until conversion starts.
+    overview = StageOverview(PIPELINE)
+    assert states(overview, 0.0) == [(stage, "pending", None) for stage in PIPELINE]
+    overview.event(10.0, "acquisition_attempt_started", "acquisition", {"attempt": 1})
+    overview.event(70.0, "stage_started", "conversion", {})
+    overview.event(100.0, "stage_finished", "conversion", {"status": "succeeded", "elapsed_s": 30.2})
+    overview.event(100.0, "stage_started", "calibration", {})
+    overview.event(160.0, "stage_finished", "calibration", {"status": "succeeded", "elapsed_s": 59.9})
+    overview.event(160.0, "stage_started", "listmode", {})
+    overview.event(200.0, "stage_finished", "listmode", {"status": "succeeded", "elapsed_s": 40.1})
+    overview.event(200.0, "workflow_finished", "workflow", {"status": "succeeded"})
+    assert states(overview, 900.0) == [("acquisition", "succeeded", 60.0), ("conversion", "succeeded", 30.2),
+                                       ("calibration", "succeeded", 59.9), ("listmode", "succeeded", 40.1)]
+
+
+@pytest.mark.fr("005-FR-2")
+@pytest.mark.parametrize("status", ["failed", "launch_error"])
+def test_overview_failure_leaves_later_stages_not_run(status):
+    overview = StageOverview(PIPELINE)
+    overview.event(10.0, "acquisition_attempt_started", "acquisition", {"attempt": 1})
+    overview.event(70.0, "stage_started", "conversion", {})
+    overview.event(75.0, "stage_finished", "conversion", {"status": status, "elapsed_s": 5.0})
+    overview.event(75.0, "workflow_finished", "workflow", {"status": "failed"})
+    assert states(overview, 900.0) == [("acquisition", "succeeded", 60.0), ("conversion", "failed", 5.0),
+                                       ("calibration", "pending", None), ("listmode", "pending", None)]
+
+
+@pytest.mark.fr("005-FR-2")
+def test_overview_stop_during_the_first_stage_stops_the_rest():
+    overview = StageOverview(PIPELINE)
+    overview.event(10.0, "acquisition_attempt_started", "acquisition", {"attempt": 1})
+    overview.event(40.0, "workflow_finished", "workflow", {"status": "cancelled"})
+    assert states(overview, 900.0) == [("acquisition", "stopped", 30.0), ("conversion", "stopped", None),
+                                       ("calibration", "stopped", None), ("listmode", "stopped", None)]
+
+
+@pytest.mark.fr("005-FR-2")
+def test_overview_failed_acquisition_ends_at_the_workflow_result():
+    # Acquisition reports no stage_finished: the workflow's failure is its own.
+    overview = StageOverview(["acquisition", "conversion", "qc"])
+    overview.event(10.0, "acquisition_attempt_started", "acquisition", {"attempt": 1})
+    overview.event(25.0, "workflow_finished", "workflow", {"status": "failed"})
+    assert states(overview, 900.0) == [("acquisition", "failed", 15.0), ("conversion", "pending", None),
+                                       ("qc", "pending", None)]
+
+
+@pytest.mark.fr("005-FR-2")
+def test_overview_running_stage_elapsed_ticks_until_recorded():
+    overview = StageOverview(["acquisition", "conversion", "qc"])
+    overview.event(10.0, "stage_started", "conversion", {})
+    assert states(overview, 12.5)[1] == ("conversion", "running", 2.5)
+    assert states(overview, 70.0)[1] == ("conversion", "running", 60.0)
+    overview.event(71.0, "stage_finished", "conversion", {"status": "succeeded", "elapsed_s": 60.4})
+    assert states(overview, 500.0)[1] == ("conversion", "succeeded", 60.4)
