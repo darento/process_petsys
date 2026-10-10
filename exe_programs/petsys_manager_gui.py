@@ -566,8 +566,7 @@ class AdvancedSection(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.title, self.fields, self.expanded = title, fields, False
         self.grid_columnconfigure(0, weight=1)
-        self.header = ctk.CTkButton(self, text="", anchor="w", fg_color="transparent", text_color=("gray10", "gray90"),
-                                    hover_color=("gray80", "gray30"), command=self.toggle)
+        self.header = ctk.CTkButton(self, text="", anchor="w", command=self.toggle)   # filled: plainly clickable
         self.header.grid(row=0, column=0, sticky="w", padx=10, pady=(2, 0))
         self.body = ctk.CTkFrame(self, fg_color="transparent")
         self.body.grid(row=1, column=0, sticky="ew")
