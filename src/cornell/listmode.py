@@ -897,18 +897,20 @@ def _reuse(record_path, job_sha256, job_input, debug):
     return item, summary
 
 
-def compact_chunks(descriptor, mapped, hit_limit, batch_records):
+def compact_chunks(descriptor, mapped, hit_limit, batch_records, position=None):
     """Compact coincidence records as ``read_fixed_file_numpy`` chunks of ``hit_limit`` slots (FR-22).
 
     Hits keep their order; empty slots are channel -1, time 0, energy 0. Chunks
     hold exactly ``batch_records`` records (the last may be shorter), as the
     fixed reader yields them. The slot count matters: the reference's float32
-    sums group terms by row width.
+    sums group terms by row width. ``position[0]``, when given, is the reader's consumed offset at
+    each chunk (spec 005 FR-1).
     """
     dtype = np.dtype([("header", "u1", (2,)), ("side1", HIT_DTYPE, (hit_limit,)),
                       ("side2", HIT_DTYPE, (hit_limit,))])
     pending, count = [], 0
-    for records, sides in _Reader(descriptor, mapped, batch_records, None):
+    reader = _Reader(descriptor, mapped, batch_records, None)
+    for records, sides in reader:
         chunk = np.zeros(records, dtype)
         for s, (name, hits) in enumerate(zip(("side1", "side2"), sides)):
             if hits.shape[1] > hit_limit and (hits["channelID"][:, hit_limit:] != -1).any():
@@ -921,18 +923,31 @@ def compact_chunks(descriptor, mapped, hit_limit, batch_records):
         count += records
         while count >= batch_records:
             joined = np.concatenate(pending) if len(pending) > 1 else pending[0]
+            if position is not None:
+                position[0] = reader.offset
             yield joined[:batch_records]
             pending, count = [joined[batch_records:]], count - batch_records
     if count:
+        if position is not None:
+            position[0] = reader.offset
         yield np.concatenate(pending) if len(pending) > 1 else pending[0]
 
 
-def _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
+def _fixed_chunks(path, batch_records, position):
+    records = 0
+    for chunk in read_fixed_file_numpy(str(path), batch_size=batch_records, group_events=False):
+        records += len(chunk)
+        position[0] = 4 + records * chunk.dtype.itemsize
+        yield chunk
+
+
+def _chunks(descriptor, ctx, mapping, hit_limit, batch_records, position):
+    """Record chunks of one input; ``position[0]`` follows the bytes consumed (spec 005 FR-1)."""
     if descriptor.format == DataFormat.FIXED:
-        return read_fixed_file_numpy(str(descriptor.path), batch_size=batch_records, group_events=False)
+        return _fixed_chunks(descriptor.path, batch_records, position)
     mapped = np.zeros(ctx.maps.max_ch, dtype=bool)
     mapped[[ch for ch in mapping.modules if ch < ctx.maps.max_ch]] = True
-    return compact_chunks(descriptor, mapped, hit_limit, batch_records)
+    return compact_chunks(descriptor, mapped, hit_limit, batch_records, position)
 
 
 def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, batch_records, debug,
@@ -956,8 +971,9 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
     file_debug = DebugSummary() if debug else None
     digest = hashlib.sha256()
     records = written = 0
+    position = [0]
     with open(segment, "xb") as out:
-        for chunk in _chunks(descriptor, ctx, mapping, hit_limit, batch_records):
+        for chunk in _chunks(descriptor, ctx, mapping, hit_limit, batch_records, position):
             if cancelled is not None and cancelled():
                 raise ListmodeCancelled("Listmode cancelled")
             if fixed:
@@ -968,7 +984,7 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
             digest.update(payload)
             written += len(payload) // RECORD_DTYPE.itemsize
             if progress is not None:
-                progress(index, descriptor.path, records, written)
+                progress(index, descriptor.path, records, written, bytes_read=position[0])
         out.flush()
         os.fsync(out.fileno())
     info = os.stat(descriptor.path)
@@ -993,6 +1009,8 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
     _write_json_exclusive(segments / f"{name}.json", record)      # completion record, written last
     item = FileListmode(Path(descriptor.path), records, records, written, rejected, observations,
                         slab_flags, segment, digest.hexdigest(), record["segment"]["bytes"])
+    if progress is not None:
+        progress(index, descriptor.path, records, written, bytes_read=position[0], finished=True)
     return item, file_debug
 
 
@@ -1006,10 +1024,12 @@ def _lm_worker_init(event, ctx, mapping, segments, job_sha256, options):
                       cancelled=event.is_set)
 
 
-def _lm_task(descriptor, job_input, index, seed):
+def _lm_task(descriptor, job_input, index, seed, slot):
+    from .parallel import slot_progress
     w = _LM_WORKER
     return _process_file(descriptor, w["ctx"], w["mapping"], w["segments"], w["job_sha256"], job_input,
-                         cancelled=w["cancelled"], progress=None, index=index, seed=seed, **w["options"])
+                         cancelled=w["cancelled"], progress=slot_progress(slot), index=index, seed=seed,
+                         **w["options"])
 
 
 def _merge(destination, name, header, files):
@@ -1133,6 +1153,9 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
         name = segment_name(descriptor.path)
         if name in completed:
             keep(index, _reuse(completed[name], job_sha256, job_input, debug))
+            if progress is not None:      # a reused segment's input counts as read (spec 005 FR-1)
+                progress(index, descriptor.path, files[index].records_read, files[index].records_written,
+                         finished=True)
         else:
             todo.append((index, descriptor, job_input))
     options = dict(batch_records=batch_records, debug=debug, hit_limit=hit_limit)
@@ -1142,18 +1165,21 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
                                       cancelled=cancelled, progress=progress, index=index,
                                       seed=None if seeds is None else seeds[index], **options))
     elif todo:
-        from .parallel import OrderedPool, PoolCancelled
+        from .parallel import OrderedPool, PoolCancelled, tick_progress
 
         def done(position, value):
             index, descriptor, _ = todo[position]
             keep(index, value)
             if progress is not None:
-                progress(index, descriptor.path, value[0].records_read, value[0].records_written)
+                progress(index, descriptor.path, value[0].records_read, value[0].records_written, finished=True)
+        ticks = None if progress is None else tick_progress(
+            [descriptor.path for _, descriptor, _ in todo],
+            lambda position, path, **extra: progress(todo[position][0], path, None, None, **extra))
         try:
             with OrderedPool(min(workers, len(todo)), _lm_worker_init,
-                             (ctx, config.mapping, segments, job_sha256, options), cancelled) as pool:
-                pool.run(_lm_task, [(descriptor, job_input, index, seeds[index])
-                                    for index, descriptor, job_input in todo], done)
+                             (ctx, config.mapping, segments, job_sha256, options), cancelled, len(todo)) as pool:
+                pool.run(_lm_task, [(descriptor, job_input, index, seeds[index], position)
+                                    for position, (index, descriptor, job_input) in enumerate(todo)], done, ticks)
         except PoolCancelled:
             raise ListmodeCancelled("Listmode cancelled") from None
     if cancelled is not None and cancelled():

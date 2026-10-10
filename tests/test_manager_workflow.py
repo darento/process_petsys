@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -139,12 +140,15 @@ class WorkflowChecks(PrivateOutput, unittest.TestCase):
         return {str(p): sha256(p) for p in paths}
 
     def execute(self, settings, *, faults=None, real_cli=False, stop_after=None, plant=None, prerequisite=None,
-            timeout=600):
-        world = ToolWorld(self, faults=faults, sources=self.sources, real_cli=real_cli)
+            timeout=600, on_event=None, converter_interval_s=None):
+        world = ToolWorld(self, faults=faults, sources=self.sources, real_cli=real_cli,
+                          converter_interval_s=converter_interval_s)
         self.events = []
 
         def sink(event):
             self.events.append(event)
+            if on_event is not None:
+                on_event(event)
             if plant and event.kind == "stage_started" and event.identity.stage_id == "conversion":
                 Path(event.payload["directory"], plant).write_bytes(b"old converter output")
             if stop_after and event.kind == "stage_finished" and event.identity.stage_id == stop_after:
@@ -274,6 +278,59 @@ class WorkflowChecks(PrivateOutput, unittest.TestCase):
         self.assertEqual([wf.format_elapsed(v) for v in (-1, 0, 42.34, 59.94, 60, 724, 3599.4, 3600, 3725)],
                          ["0.0 s", "0.0 s", "42.3 s", "59.9 s", "1 min 00 s", "12 min 04 s", "59 min 59 s",
                           "1 h 00 min", "1 h 02 min"])
+
+    @pytest.mark.fr("005-FR-1")  # spec 005 T4
+    def test_workflow_conversion_watch_events(self):
+        """The convert stage reports LDAT bytes and closed splits; the last report follows the converter's exit
+        and the watch thread has ended when the stage finishes."""
+        self.profile()                                                     # creates private/ for the RAW
+        raw = self.raw_fixture("watch run")
+        settings = self.settings(Action.CONVERT, RunOptions(raw_input=str(raw), duration_s=10.0, splits=2))
+        self.sources = self.assets("lm")[2]
+        watching = []
+
+        def on_event(event):
+            if event.kind == "stage_finished":
+                watching.extend(t.name for t in threading.enumerate() if t.name == wf.CONVERSION_WATCH_THREAD)
+        outcome, _ = self.execute(settings, on_event=on_event)
+        self.assertTrue(outcome.succeeded, outcome.message)
+        self.assertEqual(watching, [])
+        progress = [to_plain(e.payload) for e in self.events
+                    if e.kind == "stage_progress" and e.identity.stage_id == "conversion"]
+        self.assertTrue(progress)
+        self.assertEqual(progress[-1], {
+            "phase": "convert", "ldat_bytes": sum(p.stat().st_size for p in self.sources), "rawf_bytes": 64,
+            "splits": 2, "split_durations_s": progress[-1]["split_durations_s"], "converter_exited": True})
+        durations = progress[-1]["split_durations_s"]
+        self.assertTrue(len(durations) == 3 and min(durations) >= 0)    # _1, _2 and the converter's empty _9
+        self.assertFalse(any(p["converter_exited"] for p in progress[:-1]))
+        finished = [e for e in self.events if e.kind == "stage_finished"][0]
+        self.assertGreater(finished.sequence, max(e.sequence for e in self.events if e.kind == "stage_progress"))
+
+    @pytest.mark.fr("005-FR-1")  # spec 005 T4
+    def test_workflow_slow_conversion_watch_reports_while_converting(self):
+        """A converter writing a split every 0.3 s: scans report a closed split before the converter exits."""
+        self.profile()
+        raw = self.raw_fixture("slow run")
+        settings = self.settings(Action.CONVERT, RunOptions(raw_input=str(raw), duration_s=10.0, splits=2))
+        self.sources = self.assets("lm")[2]
+        with patch.object(wf, "CONVERSION_WATCH_S", 0.02):
+            outcome, _ = self.execute(settings, converter_interval_s=0.3)
+        self.assertTrue(outcome.succeeded, outcome.message)
+        progress = [to_plain(e.payload) for e in self.events if e.kind == "stage_progress"]
+        running = [p for p in progress if not p["converter_exited"]]
+        self.assertTrue(any(p["split_durations_s"] for p in running))
+        self.assertEqual([p["ldat_bytes"] for p in running], sorted(p["ldat_bytes"] for p in running))
+        self.assertTrue(len(progress[-1]["split_durations_s"]) == 3 and min(progress[-1]["split_durations_s"]) > 0)
+
+    @pytest.mark.fr("005-FR-1")  # spec 005 T4
+    def test_workflow_byte_forward(self):
+        """A processing stage forwards the CLI's byte progress (the fake CLI prints one progress line)."""
+        outcome, _ = self.execute(self.settings(Action.CALIBRATE, None, self.lm_inputs()))
+        self.assertTrue(outcome.succeeded, outcome.message)
+        progress = [to_plain(e.payload) for e in self.events if e.kind == "stage_progress"]
+        self.assertEqual([(p["phase"], p["phases"], p["bytes_read"], p["bytes_total"]) for p in progress],
+                         [("read", ["read", "pass 2", "fits"], 1200, 4800)])
 
     @pytest.mark.slow  # ~6 s
     @pytest.mark.fr("003-FR-22")  # spec 003 T21, T25.5
@@ -759,3 +816,32 @@ def replace_paths(settings, **changes):
     values = dict(settings.paths)
     values.update(changes)
     return values
+
+
+# Spec 005 T4: conversion watch ---------------------------------------------------------------
+
+@pytest.mark.fr("005-FR-1")
+def test_conversion_watch_closed_splits():
+    # A split closes when the next one appears, the last when the converter exits: 12 s, 18 s, 11 s.
+    watch = wf.ConversionWatch("run_coincCompact", rawf_bytes=900, splits=3, started=100.0)
+    look_alikes = [("run_coincCompact2_1.ldat", 999), ("run_coincCompact_1.lidx", 8)]
+    assert watch.observe(101.0, [("run_coincCompact_1.ldat", 10)] + look_alikes, exited=False) == {
+        "phase": "convert", "ldat_bytes": 10, "rawf_bytes": 900, "splits": 3, "split_durations_s": [],
+        "converter_exited": False}
+    progress = watch.observe(112.0, [("run_coincCompact_1.ldat", 40), ("run_coincCompact_2.ldat", 5)], exited=False)
+    assert (progress["ldat_bytes"], progress["split_durations_s"]) == (45, [12.0])
+    files = [("run_coincCompact_1.ldat", 40), ("run_coincCompact_2.ldat", 50), ("run_coincCompact_3.ldat", 1)]
+    progress = watch.observe(130.0, files + look_alikes, exited=False)
+    assert (progress["ldat_bytes"], progress["split_durations_s"]) == (91, [12.0, 18.0])
+    files[2] = ("run_coincCompact_3.ldat", 30)
+    progress = watch.observe(141.0, files, exited=True)
+    assert progress == {"phase": "convert", "ldat_bytes": 120, "rawf_bytes": 900, "splits": 3,
+                        "split_durations_s": [12.0, 18.0, 11.0], "converter_exited": True}
+
+
+@pytest.mark.fr("005-FR-1")
+def test_conversion_watch_splits_closing_in_one_scan_share_the_time():
+    watch = wf.ConversionWatch("run", rawf_bytes=None, splits=4, started=0.0)
+    files = [(f"run_{i}.ldat", 1) for i in (1, 2, 3)]
+    assert watch.observe(30.0, files, exited=False)["split_durations_s"] == [15.0, 15.0]
+    assert watch.observe(36.0, files, exited=True)["split_durations_s"] == [15.0, 15.0, 6.0]

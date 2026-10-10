@@ -29,6 +29,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from threading import Lock, Timer
 
 import numpy as np
@@ -176,6 +177,23 @@ class FakeChild:
         self.waited = True
         if self.code is None:
             raise subprocess.TimeoutExpired("fake-owned-command", timeout)
+        return self.code
+
+
+class SplitWriterChild(FakeChild):
+    """A converter writing one split every ``interval_s`` from launch, exiting 0 one interval after the last."""
+
+    def __init__(self, writes, interval_s):
+        super().__init__(None, stdout=b"")
+        self.writes, self.interval_s, self.due = list(writes), interval_s, time.monotonic()
+
+    def poll(self):
+        while self.code is None and time.monotonic() >= self.due:
+            if self.writes:
+                self.writes.pop(0)()
+                self.due += self.interval_s
+            else:
+                self.code = 0
         return self.code
 
 
@@ -899,7 +917,9 @@ class CLIFixtures(PrivateOutput):
         self.assertLess(max(len(line) for line in proc.stdout.splitlines()), 4096)   # the runner's line bound
         self.assertIn("output", kinds)
         progress = [e for e in events if e["kind"] == "progress"]
-        self.assertTrue(progress and all(e["records_read"] > 0 for e in progress if e.get("phase") != "fits"))
+        # A worker's byte tick (spec 005 FR-1) has bytes_read but no record count.
+        self.assertTrue(progress and all(e["records_read"] > 0 if e["records_read"] is not None else "bytes_read" in e
+                                         for e in progress if e.get("phase") != "fits"))
         fits = [e for e in progress if e.get("phase") == "fits"]                 # T25.4: keys, not records
         self.assertTrue(all(isinstance(e["keys_done"], int) and isinstance(e["keys_total"], int) for e in fits))
         self.assertEqual(events[-1]["result"], str(result_path))
@@ -933,13 +953,15 @@ def write_output(path, content, kind):
 
 class ToolWorld:
     """Check-only backend. ``faults``: stage id -> fault name; ``sources``: LDAT bytes the converter copies.
-    ``check`` provides ``root`` and, for stop faults, ``coordinator``."""
+    ``check`` provides ``root`` and, for stop faults, ``coordinator``. ``converter_interval_s``: the converter
+    writes one split per interval instead of all at launch."""
 
-    def __init__(self, check, *, faults=None, sources=(), real_cli=False):
+    def __init__(self, check, *, faults=None, sources=(), real_cli=False, converter_interval_s=None):
         self.check = check
         self.faults = dict(faults or {})
         self.sources = tuple(sources)
         self.real_cli = real_cli
+        self.converter_interval_s = converter_interval_s
         self.launched = []
 
     def stop_active(self):
@@ -966,7 +988,11 @@ class ToolWorld:
                 return DirectDummyChild(subprocess.Popen(argv, shell=False, cwd=command.cwd,
                                                          env=dict(command.environment), stdin=subprocess.DEVNULL,
                                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE))
-            self.produce(tool, argv, fault)
+            if tool.startswith("convert_raw_to_") and self.converter_interval_s and fault is None:
+                return SplitWriterChild(self.converter_writes(argv, fault), self.converter_interval_s)
+            stdout = self.produce(tool, argv, fault)
+            if stdout:
+                return FakeChild(0, stdout=stdout)
         elif cli and fault == "stale":
             self.foreign_result(argv)
         return FakeChild(0, stdout=b"")
@@ -977,20 +1003,28 @@ class ToolWorld:
             for suffix in (".rawf", ".idxf"):
                 Path(prefix + suffix).write_bytes(b"" if fault == "invalid" else b"\x01" * 64)
         elif tool.startswith("convert_raw_to_"):
-            prefix = argv[argv.index("-o") + 1]
-            names = ([f"{prefix}_{i}.ldat" for i in range(1, len(self.sources) + 1)] + [f"{prefix}_9.ldat"]
-                     if "--splitTime" in argv else [f"{prefix}.ldat"])
-            for index, name in enumerate(names):
-                content = self.sources[min(index, len(self.sources) - 1)].read_bytes() if index < len(self.sources) \
-                    else b""
-                if fault == "invalid":
-                    content = content[:-5]
-                Path(name).write_bytes(content)
-                Path(name[:-5] + ".lidx").write_bytes(b"\x02" * 8)      # the converter's index (T34)
+            for write in self.converter_writes(argv, fault):
+                write()
         else:
-            self.fake_cli(tool[4:], argv, fault)
+            return self.fake_cli(tool[4:], argv, fault)
+
+    def converter_writes(self, argv, fault):
+        """One callable per split: writes the split and the converter's index."""
+        prefix = argv[argv.index("-o") + 1]
+        names = ([f"{prefix}_{i}.ldat" for i in range(1, len(self.sources) + 1)] + [f"{prefix}_9.ldat"]
+                 if "--splitTime" in argv else [f"{prefix}.ldat"])
+
+        def write(index, name):
+            content = self.sources[min(index, len(self.sources) - 1)].read_bytes() if index < len(self.sources) \
+                else b""
+            if fault == "invalid":
+                content = content[:-5]
+            Path(name).write_bytes(content)
+            Path(name[:-5] + ".lidx").write_bytes(b"\x02" * 8)      # the converter's index (T34)
+        return [lambda index=index, name=name: write(index, name) for index, name in enumerate(names)]
 
     def fake_cli(self, action, argv, fault):
+        """Writes the outputs and result; returns its stdout: one byte progress event (spec 005 T4)."""
         request_path, result_path = Path(argv[6]), Path(argv[8])
         request = json.loads(request_path.read_text(encoding="utf-8"))
         out, outputs = request["outputs"], []
@@ -1022,6 +1056,10 @@ class ToolWorld:
                   "request": {"path": str(request_path), "sha256": sha256(request_path)},
                   "outputs": outputs, "summary": summary, "errors": []}
         result_path.write_text(json.dumps(result), encoding="utf-8")
+        event = {"sequence": 1, "action": action, "kind": "progress", "file_index": 0, "files": 2, "path": "a.ldat",
+                 "records_read": 10, "phase": "read", "phases": ["read", "pass 2", "fits"], "bytes_read": 1200,
+                 "bytes_total": 4800}
+        return (cli.EVENT_PREFIX + json.dumps(event) + "\n").encode("utf-8")
 
     def foreign_result(self, argv):
         """An old successful result of another request where this stage expects its own."""

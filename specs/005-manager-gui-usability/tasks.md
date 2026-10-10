@@ -48,7 +48,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - `python -m pytest tests/test_manager_cli.py tests/test_manager_calibration.py -m "not real_data" -n 0 --slow-limit 5` → 42 passed, 1 deselected. Full run `-m "not real_data"` → 1024 passed, 23 skipped.
   - Negatives (scratch copies of `parallel.py`), each failing: no tick in the pool loop (timeout); no final tick, which first survived, so an order assertion was added ("tick after the last result"); in-process slots not ticking; `_SLOTS` not restored; workers not given the slots; in-process loop ignoring cancellation.
 
-- [ ] **T3 — Byte progress in the CLI** (FR-1). Calibration `_Reader`, LM `_chunks` and QC `read_pairs` report the consumed offset per batch, through a hook that writes to the slot or calls progress directly in the serial path.
+- [x] **T3 — Byte progress in the CLI** (FR-1). Calibration `_Reader`, LM `_chunks` and QC `read_pairs` report the consumed offset per batch, through a hook that writes to the slot or calls progress directly in the serial path.
   - `cli.Events` keeps per-file bytes (a finished file counts whole), `bytes_total` from the input sizes at request start, and `phases`: calibration from `once`, LM and QC `["read"]`.
   - It emits `bytes_read`, `bytes_total`, `phase` and `phases` at most every `PROGRESS_INTERVAL_S`.
 
@@ -60,7 +60,16 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
   `tests/test_golden_provenance.py` and the golden calibration/LM/QC comparisons pass unchanged. The full run passes.
 
-- [ ] **T4 — Workflow forwarding and conversion watch** (FR-1).
+  Verified 2026-10-10 (Windows), test-first. Seam: the `cli.main` event stream (`ByteProgressChecks`, in-process, `PROGRESS_INTERVAL_S` patched to 0).
+  - Readers: calibration `_Reader.offset`; LM `_chunks(..., position)` (compact through `compact_chunks`, fixed through `_fixed_chunks`); QC `read_pairs(..., position)`. Each file's last report carries `finished=True` (counted whole). In workers, `parallel.slot_progress(index)` writes the slot and `tick_progress` turns changed slots into reports; worker ticks have `records_read: null`. A reused LM segment counts as read. Throttling is now global, but a file's end, a new phase and the last fit are always emitted.
+  - Red → green, one slice each: calibrate serial (two passes), calibrate `workers=2` decoding once, LM serial (compact and fixed), LM `workers=2`, QC serial, QC `workers=2`. The early stop at `event_limit` 1,000 of about 2,550 events per file was green at once (a guard, proven by a broken copy).
+  - Serial calibration and QC reports are checked against record boundaries parsed from the file. LM regroups reader batches, so its check only requires a value inside a file.
+  - Byte-identical outputs: the existing CLI-vs-in-process tests (`progress=None`) and the golden comparisons pass unchanged.
+  - Callers adapted: QC parallel test counts `finished` reports; LM test lambdas accept keywords; `assertSucceeded` accepts `records_read: null` only on byte ticks.
+  - `python -m pytest tests/test_manager_cli.py tests/test_manager_qc.py tests/test_manager_listmode.py tests/test_manager_calibration.py -m "not real_data" -n 0 --slow-limit 5` → 86 passed, 1 failed. The failure is `test_cli_calibrate_child_process_literal_paths_match_in_process` over 5 s under load; it takes 4.6 s alone both at HEAD and with T3 (6.4 s cold at HEAD), so it is borderline already. Full run `-m "not real_data"` → 1031 passed, 23 skipped.
+  - Negatives (scratch copies), each failing: finished file not counted whole; compact offset lagging one batch; LM compact position not updated, which first survived through file boundaries, so the check now needs a value inside a file; LM fixed position not updated; no calibration ticks; QC worker without slot; no phase reset; wrong `phases` when decoding once; QC offset miscounted.
+
+- [x] **T4 — Workflow forwarding and conversion watch** (FR-1).
   - `workflow.py` forwards `bytes_read`, `bytes_total` and `phases`.
   - `_ConversionWatch` scans the attempt directory every 1 s (bounded, exact prefix). It emits `stage_progress` with `phase: "convert"`, `ldat_bytes`, `rawf_bytes`, `splits`, `split_durations_s` and `converter_exited`, and stops with the converter.
 
@@ -73,6 +82,15 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - a calibration stage's events carry the byte fields.
 
   The full run passes.
+
+  Verified 2026-10-10 (Windows), test-first. Seams: the pure tracker `wf.ConversionWatch.observe(now, entries, exited)` and the coordinator's RunEvents through `ToolWorld`.
+  - `ConversionWatch` matches the `discover_ldat` names (exact prefix, optional `_n`, `.ldat`). Splits that close in the same scan share the time since the previous close. The thread (`CONVERSION_WATCH_THREAD`, every `CONVERSION_WATCH_S` = 1 s) scans the attempt directory (files only, bounded by `artifact_limit`). It is stopped and joined when the runner returns; then one final report with `converter_exited: true` comes before `stage_finished`. `rawf_bytes` is the RAW size at the start (null if unreadable).
+  - Red → green: `test_conversion_watch_closed_splits` (fake clock: 12/18/11 s, look-alike `<prefix>2_1.ldat` and `.lidx` not counted); `test_workflow_conversion_watch_events` (last report after exit, 3 durations for `_1`, `_2` and the empty `_9`, `ldat_bytes` = split sizes, no watch thread alive at `stage_finished`); `test_workflow_byte_forward` (failed with `KeyError: 'phases'`).
+  - Guards: `test_conversion_watch_splits_closing_in_one_scan_share_the_time`; `test_workflow_slow_conversion_watch_reports_while_converting`, where a new `SplitWriterChild` writes a split every 0.3 s and the scan period is patched to 0.02 s.
+  - Test helpers: `ToolWorld(converter_interval_s=...)` with `converter_writes`; the fake CLI prints one byte progress event; `execute(on_event=..., converter_interval_s=...)`.
+  - The run record and outputs are unchanged: the existing conversion tests pass unmodified.
+  - `python -m pytest tests/test_manager_workflow.py tests/test_manager_cli.py -m "not real_data" -n 0 --slow-limit 5` → 48 passed. Full run `-m "not real_data"` → 1036 passed, 23 skipped.
+  - Negatives (scratch copies of `workflow.py`), each failing: no final report; thread never stopped; loose prefix; last split not closed at exit; shared time not split; `bytes_read` not forwarded; no scans while converting, which first survived the instant fake converter, hence the slow-converter guard.
 
 - [ ] **T5 — Run panel** (FR-1). A `RunPanel` above the tabs shows the action, `CTkProgressBar` (determinate or indeterminate), counter text, elapsed time and the estimate, refreshed from `_poll` at most every 250 ms.
   - Processing counter: "x.xx / y.yy GB input read (read, phase 1 of 2)". Fits: "fits n / m keys".

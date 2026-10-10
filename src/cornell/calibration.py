@@ -380,6 +380,7 @@ class _Reader:
         self.batch_records = batch_records
         self.cancelled = cancelled
         self.records = 0
+        self.offset = 0         # bytes consumed: the file offset after the last record handed on (spec 005)
         self.hit_limit = None
 
     def _check(self, hits, active, first_record):
@@ -436,16 +437,18 @@ class _Reader:
                     hits["channelID"][~active] = -1   # inactive slots carry no population
                     batch.append(hits)
                 self.records += len(chunk)
+                self.offset = 4 + self.records * dtype.itemsize
                 yield len(chunk), batch
 
     def _compact(self):
         with self.path.open("rb") as stream:
             if os.fstat(stream.fileno()).st_size == 0:
                 raise InputError(f"Empty LDAT: {self.path}")
-            carry = b""
+            carry, position = b"", 0
             while True:
                 self._stop()
                 block = stream.read(READ_BLOCK_BYTES)
+                base, position = position - len(carry), position + len(block)    # file offset of buffer[0]
                 buffer = np.frombuffer(carry + block, dtype=np.uint8)
                 if not len(buffer):
                     break
@@ -458,6 +461,7 @@ class _Reader:
                         break
                     batch = self._gather(buffer, start, offsets, counts)
                     self.records += len(offsets)
+                    self.offset = base + start + end
                     yield len(offsets), batch
                     start += end
                     if len(offsets) < self.batch_records:
@@ -918,8 +922,9 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
     the same accumulator calls on the same batches, so their outputs are identical.
     ``workers`` > 1 reads files and fits keys in spawned worker processes (``src.cornell.parallel``); their
     integer histograms are merged by key and fits are per key, so outputs are identical for any count.
-    ``progress(path, records, phase=..., **extra)``: phases "read", "pass 2" and "fits" (keys_done,
-    keys_total)."""
+    ``progress(path, records, phase=..., phases=..., **extra)``: phases "read", "pass 2" and "fits" (keys_done,
+    keys_total); ``phases`` lists this run's. Reading reports the file's ``bytes_read`` per batch and
+    ``finished=True`` at its end."""
     descriptors = tuple(descriptors)
     if not isinstance(config, ProcessingConfig):
         raise InputError("Calibration requires a typed processing config")
@@ -952,8 +957,9 @@ def calibrate(descriptors, config, limits=None, *, positions=DEFAULT_POSITIONS, 
     context = _Context(config, limits, positions)
     accumulator = _Accumulator()
     files, fingerprints, kept = [], [], []
+    phases = ["read", "fits"] if once else ["read", "pass 2", "fits"]
     phase = (lambda name: None if progress is None else
-             (lambda path, records, **extra: progress(path, records, phase=name, **extra)))
+             (lambda path, records, **extra: progress(path, records, phase=name, phases=phases, **extra)))
 
     def first_and_keep(codes, energies):
         accumulator.first(codes, energies)
@@ -1044,24 +1050,26 @@ def _plain_init(event):
     _WORKER.update(cancelled=event.is_set)
 
 
-def _first_task(descriptor, event_limit, side_limit, batch_records, keep):
+def _first_task(index, descriptor, event_limit, side_limit, batch_records, keep):
     """Pass 1 of one file: its sample, its histograms by key and, when decoding once, its kept batches."""
+    from .parallel import slot_progress
     accumulator, kept = _Accumulator(), []
 
     def add(codes, energies):
         accumulator.first(codes, energies)
         if keep:
             kept.append((codes, energies))
-    sample = _sample(descriptor, _WORKER["context"], add, event_limit, batch_records, _WORKER["cancelled"], None,
-                     validate=True, side_limit=side_limit)
+    sample = _sample(descriptor, _WORKER["context"], add, event_limit, batch_records, _WORKER["cancelled"],
+                     slot_progress(index), validate=True, side_limit=side_limit)
     return sample, np.asarray(accumulator.codes, np.int64), accumulator.counts, accumulator.anchor, kept
 
 
-def _second_task(descriptor, event_limit, side_limit, batch_records):
+def _second_task(index, descriptor, event_limit, side_limit, batch_records):
     """Pass 2 of one file over the parent's keys: its sample and the rows it filled."""
+    from .parallel import slot_progress
     accumulator = _Accumulator.for_second(*_WORKER["table"])
     sample = _sample(descriptor, _WORKER["context"], accumulator.second, event_limit, batch_records,
-                     _WORKER["cancelled"], None, validate=False, side_limit=side_limit)
+                     _WORKER["cancelled"], slot_progress(index), validate=False, side_limit=side_limit)
     used = np.flatnonzero(accumulator.second_counts)
     return sample, used, accumulator.second_counts[used], accumulator.fit_counts[used]
 
@@ -1072,9 +1080,17 @@ def _fit_task(payloads):
     return [_fit_values(*payload) for payload in payloads]
 
 
-def _pool(workers, tasks, initializer, initargs, cancelled):
+def _pool(workers, tasks, initializer, initargs, cancelled, progress_slots=0):
     from .parallel import OrderedPool
-    return OrderedPool(min(workers, max(1, tasks)), initializer, initargs, cancelled)
+    return OrderedPool(min(workers, max(1, tasks)), initializer, initargs, cancelled, progress_slots)
+
+
+def _file_ticks(descriptors, progress):
+    """Byte progress of the files being read in workers (spec 005 FR-1)."""
+    from .parallel import tick_progress
+    if progress is None:
+        return None
+    return tick_progress([d.path for d in descriptors], lambda index, path, **extra: progress(path, None, **extra))
 
 
 def _parallel_first(descriptors, accumulator, kept, initargs, event_limit, side_limit, batch_records, once, workers,
@@ -1088,10 +1104,11 @@ def _parallel_first(descriptors, accumulator, kept, initargs, event_limit, side_
         accumulator.merge_first(codes, counts, anchor)
         kept.extend(batches)
         if progress is not None:
-            progress(sample.path, sample.records_read)
+            progress(sample.path, sample.records_read, finished=True)
     try:
-        with _pool(workers, len(descriptors), _worker_init, initargs, cancelled) as pool:
-            pool.run(_first_task, [(d, event_limit, side_limit, batch_records, once) for d in descriptors], merge)
+        with _pool(workers, len(descriptors), _worker_init, initargs, cancelled, len(descriptors)) as pool:
+            pool.run(_first_task, [(i, d, event_limit, side_limit, batch_records, once)
+                                   for i, d in enumerate(descriptors)], merge, _file_ticks(descriptors, progress))
     except PoolCancelled:
         raise CalibrationCancelled("Calibration cancelled") from None
     return files
@@ -1106,10 +1123,11 @@ def _parallel_second(descriptors, accumulator, files, initargs, event_limit, sid
         _same_sample(sample, files[index])
         accumulator.merge_second(rows, second_counts, fit_counts)
         if progress is not None:
-            progress(sample.path, sample.records_read)
+            progress(sample.path, sample.records_read, finished=True)
     try:
-        with _pool(workers, len(descriptors), _worker_init, initargs, cancelled) as pool:
-            pool.run(_second_task, [(d, event_limit, side_limit, batch_records) for d in descriptors], merge)
+        with _pool(workers, len(descriptors), _worker_init, initargs, cancelled, len(descriptors)) as pool:
+            pool.run(_second_task, [(i, d, event_limit, side_limit, batch_records) for i, d in enumerate(descriptors)],
+                     merge, _file_ticks(descriptors, progress))
     except PoolCancelled:
         raise CalibrationCancelled("Calibration cancelled") from None
 
@@ -1164,7 +1182,7 @@ def _sample(descriptor, context, add, event_limit, batch_records, cancelled, pro
         if stopped:
             break
         if progress is not None:
-            progress(descriptor.path, reader.records)
+            progress(descriptor.path, reader.records, bytes_read=reader.offset)
         counted = dict.fromkeys(REJECTIONS, 0)
         codes, energies, rows, passed = context.select(batch, counted)
         included = None
@@ -1188,6 +1206,8 @@ def _sample(descriptor, context, add, event_limit, batch_records, cancelled, pro
         passed_total += int(passed.sum())
         accepted += len(codes)
         add(codes, energies)
+    if progress is not None:
+        progress(descriptor.path, reader.records, bytes_read=reader.offset, finished=True)   # stopped early: whole
     return FileSample(Path(descriptor.path), descriptor.format, descriptor.population, reader.records, read,
                       passed_total, accepted, stopped, rejected)
 

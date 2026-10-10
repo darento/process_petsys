@@ -258,11 +258,19 @@ def load_request(path, action, *, result_path=None):
 # Events and result ------------------------------------------------------------
 
 class Events:
-    """``@petsys-event`` JSON lines with a monotonically increasing sequence."""
+    """``@petsys-event`` JSON lines with a monotonically increasing sequence.
+
+    Byte progress (spec 005 FR-1): with ``track_bytes(paths)``, progress reports carrying a file's
+    ``bytes_read`` (its consumed offset) or ``finished=True`` (counted whole) add the phase's
+    ``bytes_read`` over all inputs and their ``bytes_total``, taken from the sizes at that call."""
 
     def __init__(self, stream, action):
         self.stream, self.action, self.sequence = stream, action, 0
-        self._last = {}
+        self._last = None
+        self._sizes, self._phase, self._read, self._finished = None, None, {}, set()
+
+    def track_bytes(self, paths):
+        self._sizes = [os.path.getsize(path) for path in paths]
 
     def emit(self, kind, **payload):
         self.sequence += 1
@@ -271,13 +279,26 @@ class Events:
         self.stream.write(EVENT_PREFIX + line + "\n")
         self.stream.flush()
 
-    def progress(self, index, files, path, records, **extra):
+    def progress(self, index, files, path, records, *, bytes_read=None, finished=False, phase=None, **extra):
+        """At most one event per ``PROGRESS_INTERVAL_S``; a file's end, a new phase and the last fit always."""
         now = time.monotonic()
-        key = str(path)
-        if key in self._last and now - self._last[key] < PROGRESS_INTERVAL_S:
+        force = finished or phase != self._phase or (extra.get("keys_total") is not None
+                                                     and extra.get("keys_done") == extra["keys_total"])
+        if phase != self._phase:
+            self._phase, self._read, self._finished = phase, {}, set()
+        if self._sizes is not None and index is not None and (finished or bytes_read is not None):
+            if finished:
+                self._finished.add(index)
+            elif index not in self._finished:   # a late report never undoes a finished file
+                self._read[index] = max(self._read.get(index, 0), min(bytes_read, self._sizes[index]))
+            extra.update(bytes_read=sum(size if i in self._finished else self._read.get(i, 0)
+                                        for i, size in enumerate(self._sizes)),
+                         bytes_total=sum(self._sizes))
+        if not force and self._last is not None and now - self._last < PROGRESS_INTERVAL_S:
             return
-        self._last[key] = now
-        self.emit("progress", file_index=index, files=files, path=key, records_read=records, **extra)
+        self._last = now
+        self.emit("progress", file_index=index, files=files, path=str(path), records_read=records, phase=phase,
+                  **extra)
 
 
 def parse_event(line):
@@ -379,6 +400,7 @@ def run_calibrate(request, events, cancelled):
     limits = (None if options["positions"] == 1 else
               load_limits(request.files["cog_limits"], config.mapping, kind="cog"))
     paths = [str(d.path) for d in descriptors]
+    events.track_bytes(paths)
 
     def progress(path, records, phase="read", **extra):     # FR-1: read / pass 2 per file, fits per keys
         index = None if path is None else paths.index(str(path))
@@ -435,14 +457,15 @@ def run_listmode(request, events, cancelled):
     cog = load_limits(files["cog_limits"], mapping, kind="cog")
     doi = load_limits(files["doi_limits"], mapping, kind="doi")
     paths = [str(d.path) for d in descriptors]
+    events.track_bytes(paths)
     result = lm.generate_listmode(
         descriptors, config, calibration, cog, doi, lm.load_pair_map(files["pair_map"]),
         lm.load_region_map(files["region_map"], mapping), options["metadata"], request.outputs["directory"],
         resume=options["resume"], debug=options["debug"], batch_records=options["batch_records"],
         hit_limit=options["hit_limit"], lm_seed=options["lm_seed"], workers=options["workers"],
         in_place=options["in_place"], cancelled=cancelled,
-        progress=lambda index, path, records, written: events.progress(index, len(paths), path, records,
-                                                                       records_written=written))
+        progress=lambda index, path, records, written, **extra: events.progress(
+            index, len(paths), path, records, records_written=written, phase="read", phases=["read"], **extra))
     if cancelled():
         raise Cancelled("Listmode cancelled")
     expected = lm.HEADER_BYTES + result.records * lm.RECORD_DTYPE.itemsize
@@ -474,12 +497,13 @@ def run_qc(request, events, cancelled):
     descriptors = _descriptors(request)
     options = request.options
     paths = [str(d.path) for d in descriptors]
+    events.track_bytes(paths)
     result = qc.run_qc(descriptors, config, plots=options["plots"], slabs=options["slabs"],
                        source_mode=options["source_mode"], acquisition_time_s=options["acquisition_time_s"],
                        pair_limit=options["pair_limit"], qc_seed=options["qc_seed"], workers=options["workers"],
                        cancelled=cancelled,
-                       progress=lambda path, records: events.progress(paths.index(str(path)), len(paths), path,
-                                                                      records))
+                       progress=lambda path, records, **extra: events.progress(
+                           paths.index(str(path)), len(paths), path, records, phase="read", phases=["read"], **extra))
     if cancelled():
         raise Cancelled("QC cancelled")
     report = qc_report.write_report(result, request.outputs["directory"], in_place=options["in_place"],

@@ -218,7 +218,8 @@ class QCChecks(QCFixtures, PrivateOutput, unittest.TestCase):
         with self.assertRaises(qc.QCCancelled):
             self.qc_run(descriptors, qc_seed=5, workers=2, cancelled=lambda: calls.append(1) or len(calls) > 2)
         progress = []
-        self.qc_run(descriptors, qc_seed=5, workers=2, progress=lambda path, records: progress.append(path))
+        self.qc_run(descriptors, qc_seed=5, workers=2, progress=lambda path, records, finished=False, **extra:
+                    finished and progress.append(path))                 # one completion report per file
         self.assertEqual(progress, [d.path for d in descriptors])
 
     @pytest.mark.fr("003-FR-24", "007-FR-3")  # FR-24; golden files

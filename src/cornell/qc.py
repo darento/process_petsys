@@ -69,6 +69,7 @@ REJECTIONS = ("min_channels", "minimodule_channels", "no_energy_minimodule", "un
 SLAB_FLAGS = ("edge", "single_time_random", "non_adjacent", "adjacent")   # get_slab_cornell flags 0-3
 FIT_STATUSES = ("fitted", "sparse", "fit_failed", "fit_error", "invalid_result")
 DEFAULT_FLUSH_SIDES = 16384
+PROGRESS_RECORDS = 65536           # records between progress reports
 MAX_KEYS = 100_000
 _HIT = struct.Struct("<qfi")
 
@@ -209,15 +210,16 @@ class Accumulators:
                 present[channel] += hits
 
 
-def read_pairs(path, en_min_ch, channels=None):
+def read_pairs(path, en_min_ch, channels=None, position=None):
     """Reference ``read_compact.read_binary_file(path, en_min_ch)`` without tqdm.
 
     Yields (det1, det2) lists of (timestamp, energy, channel) tuples keeping hits
     with energy >= ``en_min_ch``. Truncation raises instead of yielding garbage.
     With ``channels`` (the selected map), every hit read, dropped ones included, gets the
     T5 checks before its pair is yielded (FR-24: QC validates the records it reads).
+    ``position[0]``, when given, is the offset after the last pair yielded (spec 005 FR-1).
     """
-    record = 0
+    record = offset = 0
     with open(path, "rb") as stream:
         while True:
             header = stream.read(2)
@@ -241,6 +243,9 @@ def read_pairs(path, en_min_ch, channels=None):
                             raise InputError(f"{path}: record {record}, side {side}: nonfinite energy")
                 sides.append([hit for hit in hits if hit[1] >= en_min_ch])
             record += 1
+            offset += 2 + (header[0] + header[1]) * _HIT.size
+            if position is not None:
+                position[0] = offset
             yield sides[0], sides[1]
 
 
@@ -289,12 +294,13 @@ def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, flush_side
         for values in (mm_keys, slab_keys, energies, flood_sm, flood_x, flood_y):
             values.clear()
 
-    for det1, det2 in read_pairs(path, en_min_ch, modules):
+    position = [0]
+    for det1, det2 in read_pairs(path, en_min_ch, modules, position):
         read += 1
         if cancelled is not None and read % 1024 == 0 and cancelled():
             raise QCCancelled("QC cancelled")
-        if progress is not None and read % 65536 == 0:
-            progress(path, read)
+        if progress is not None and read % PROGRESS_RECORDS == 0:
+            progress(path, read, bytes_read=position[0])
         if accepted >= pair_limit:
             stopped = True
             break
@@ -345,7 +351,7 @@ def sample_file(path, config, accumulators, *, pair_limit=PAIR_LIMIT, flush_side
             flush()
     flush()
     if progress is not None:
-        progress(path, read)
+        progress(path, read, bytes_read=position[0], finished=True)    # stopped at the pair limit: counts whole
     # FR-24: the records read are the records validated; the file total is known only if read whole.
     return FileSample(str(path), read, read, processed, occupancy_pairs, occupancy_hits, accepted,
                       stopped, rejected, dict(zip(SLAB_FLAGS, flags)), None if stopped else read)
@@ -549,9 +555,11 @@ def _qc_worker_init(event, config, options):
     _QC_WORKER.update(config=config, options=options, cancelled=event.is_set)
 
 
-def _qc_task(path, seed):
+def _qc_task(index, path, seed):
+    from .parallel import slot_progress
     w = _QC_WORKER
-    return _sample_one(path, w["config"], seed, cancelled=w["cancelled"], progress=None, **w["options"])
+    return _sample_one(path, w["config"], seed, cancelled=w["cancelled"], progress=slot_progress(index),
+                       **w["options"])
 
 
 def run_qc(descriptors, config, *, plots=False, slabs=False, source_mode=None, acquisition_time_s=None,
@@ -592,18 +600,21 @@ def run_qc(descriptors, config, *, plots=False, slabs=False, source_mode=None, a
             files.append(sample)
             acc.merge(part)
     else:
-        from .parallel import OrderedPool, PoolCancelled
+        from .parallel import OrderedPool, PoolCancelled, tick_progress
 
         def done(index, value):
             sample, part = value
             files.append(sample)
             acc.merge(part)              # in input order: the same floats as one worker
             if progress is not None:
-                progress(descriptors[index].path, sample.records_read)
+                progress(descriptors[index].path, sample.records_read, finished=True)
+        ticks = None if progress is None else tick_progress(
+            [d.path for d in descriptors], lambda index, path, **extra: progress(path, None, **extra))
         used = min(workers, len(descriptors))
         try:
-            with OrderedPool(used, _qc_worker_init, (config, options), cancelled) as pool:
-                pool.run(_qc_task, [(d.path, seed) for d, seed in zip(descriptors, seeds)], done)
+            with OrderedPool(used, _qc_worker_init, (config, options), cancelled, len(descriptors)) as pool:
+                pool.run(_qc_task, [(index, d.path, seed) for index, (d, seed) in enumerate(zip(descriptors, seeds))],
+                         done, ticks)
         except PoolCancelled:
             raise QCCancelled("QC cancelled") from None
     streams = None if seeds is None else {"qc_seed": qc_seed, "file_seeds": seeds,

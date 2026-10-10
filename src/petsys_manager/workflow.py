@@ -70,6 +70,8 @@ DESTINATIONS = {Action.ACQUIRE: "data_dir", Action.CONVERT: "data_dir", Action.Q
                 Action.PIPELINE: "data_dir", Action.CALIBRATE: "calibration_dir", Action.LISTMODE: "lm_dir",
                 Action.QC_ANALYZE: "report_dir"}
 CONVERSION_CHECK_RECORDS = 10_000   # FR-24: converter outputs are structure-checked, not read whole
+CONVERSION_WATCH_S = 1.0            # spec 005 FR-1: attempt directory scan period during conversion
+CONVERSION_WATCH_THREAD = "petsys-conversion-watch"
 CLI_ACTIONS = {"calibration": "calibrate", "listmode": "listmode", "qc": "qc"}
 STAGE_ACTIONS = {"calibration": Action.CALIBRATE, "listmode": Action.LISTMODE, "qc": Action.QC_ANALYZE}
 REQUIRED_KINDS = {"calibrate": {"encal", "calibration_sidecar", "calibration_status", "calibration_plot"},
@@ -299,6 +301,27 @@ def append_overview(destination, row):
 
 def _conversion_prefix(plan):
     return f"{plan.basename}_coincCompact"
+
+
+class ConversionWatch:
+    """Conversion progress from the converter's split files (spec 005 FR-1); the caller scans and supplies the
+    clock. Split k counts as closed when split k + 1 appears and the last one when the converter exits;
+    splits closing in the same scan share the time since the previous close."""
+
+    def __init__(self, prefix, *, rawf_bytes, splits, started):
+        self.pattern = re.compile(re.escape(prefix) + r"(?:_\d+)?\.ldat\Z")     # the discover_ldat names
+        self.rawf_bytes, self.splits = rawf_bytes, splits
+        self.closed_at, self.durations = started, []
+
+    def observe(self, now, entries, exited):
+        """``entries``: (name, size) of the attempt directory's files."""
+        sizes = [size for name, size in entries if self.pattern.fullmatch(name)]
+        closing = (len(sizes) if exited else max(len(sizes) - 1, 0)) - len(self.durations)
+        if closing > 0:
+            self.durations += [round((now - self.closed_at) / closing, 3)] * closing
+            self.closed_at = now
+        return {"phase": "convert", "ldat_bytes": sum(sizes), "rawf_bytes": self.rawf_bytes, "splits": self.splits,
+                "split_durations_s": list(self.durations), "converter_exited": exited}
 
 
 def _processing_config(settings, action):
@@ -690,8 +713,39 @@ class WorkflowCoordinator:
             return OutputValidation(True, f"{len(validated)} structure-checked LDAT file(s)", validated)
 
         command = build_conversion(settings, identity, prefix, raw_input=raw)
-        result = self._runner(settings).run(command, cancellation=handle._cancel, validate_outputs=validate,
-                                            log_sink=self._log)
+        try:
+            rawf_bytes = os.path.getsize(raw or settings.paths.get("raw_input"))
+        except (OSError, TypeError):
+            rawf_bytes = None
+        watch = ConversionWatch(prefix.name, rawf_bytes=rawf_bytes, splits=options.splits,
+                                started=self._clock.monotonic())
+
+        def report(exited):
+            entries = []
+            try:
+                with os.scandir(attempt.directory) as found:     # this conversion's own folder, bounded
+                    for entry in found:
+                        if entry.is_file(follow_symlinks=False):
+                            entries.append((entry.name, entry.stat(follow_symlinks=False).st_size))
+                        if len(entries) >= store.artifact_limit:
+                            break
+            except OSError:
+                return
+            self._emit(identity, "stage_progress", "", watch.observe(self._clock.monotonic(), entries, exited))
+        stop = Event()
+
+        def scan():
+            while not stop.wait(CONVERSION_WATCH_S):
+                report(False)
+        thread = Thread(target=scan, name=CONVERSION_WATCH_THREAD, daemon=True)
+        thread.start()
+        try:
+            result = self._runner(settings).run(command, cancellation=handle._cancel, validate_outputs=validate,
+                                                log_sink=self._log)
+        finally:
+            stop.set()
+            thread.join()
+        report(True)
         details = {"ldat": counts, "empty_ldat": [str(a.path) for a in empty],
                    "format": plan.conversion_format.value, "population": plan.conversion_population.value,
                    "output_check": f"structure: first {CONVERSION_CHECK_RECORDS:,} records of each file; "
@@ -768,8 +822,8 @@ class WorkflowCoordinator:
             elif event.get("kind") == "progress":
                 self._emit(identity, "stage_progress", "", {k: event.get(k) for k in
                                                             ("file_index", "files", "path", "records_read",
-                                                             "records_written", "phase", "keys_done",
-                                                             "keys_total")})
+                                                             "records_written", "phase", "phases", "keys_done",
+                                                             "keys_total", "bytes_read", "bytes_total")})
 
         def validate(command):
             value = cli.read_result(result_path, verify_hashes=True)

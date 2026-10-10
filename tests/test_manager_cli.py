@@ -666,3 +666,112 @@ def test_pool_slots_cancellation_still_raises(tmp_path, workers):
         with OrderedPool(workers, _no_init, (), cancel.exists, progress_slots=4) as pool:
             pool.run(cancel_after_report, [(str(tmp_path), index) for index in range(4)],
                      lambda index, value: None, on_tick=lambda values: None)
+
+
+# Spec 005 T3: byte progress in the CLI events ---------------------------------------------------
+
+def record_ends(path):
+    """Offset after each compact coincidence record: 2 header bytes plus 16 bytes per hit."""
+    content, ends, offset = Path(path).read_bytes(), [0], 0
+    while offset < len(content):
+        offset += 2 + 16 * (content[offset] + content[offset + 1])
+        ends.append(offset)
+    return ends
+
+
+def byte_events(stdout):
+    """Progress events carrying bytes, in order."""
+    events = [cli.parse_event(line) for line in stdout.splitlines()]
+    return [e for e in events if e["kind"] == "progress" and "bytes_read" in e]
+
+
+@pytest.mark.fr("005-FR-1")
+class ByteProgressChecks(CLIFixtures, unittest.TestCase):
+    fixture_prefix = "petsys-manager-bytes-"   # test names: unique first 12 characters after test_cli_ (setUp)
+
+    def run_bytes(self, action, request):
+        with patch.object(cli, "PROGRESS_INTERVAL_S", 0.0):       # every report reaches the stream
+            code, result, stdout, stderr = self.in_process(action, request)
+        self.assertEqual(code, 0, stderr[-2000:])
+        total = sum(os.path.getsize(entry["path"]) for entry in request["inputs"])
+        events = byte_events(stdout)
+        self.assertTrue(events)
+        by_phase = {}
+        for event in events:
+            self.assertEqual(event["bytes_total"], total)
+            self.assertLessEqual(event["bytes_read"], total)
+            by_phase.setdefault(event["phase"], []).append(event["bytes_read"])
+        for phase, values in by_phase.items():
+            self.assertEqual(values, sorted(values), phase)          # never decreases within a phase
+            self.assertLess(values[0], total, phase)                 # each phase starts again
+            self.assertEqual(values[-1], total, phase)               # ends at the whole input
+        if request["options"]["workers"] > 1:
+            self.assertTrue(any(e["records_read"] is None for e in events))   # worker byte ticks reach the stream
+        return events, by_phase, result
+
+    def assertRecordOffsets(self, events, request):
+        """Serial reports: bytes_read is the earlier files whole plus this file's offset after records_read."""
+        paths = [entry["path"] for entry in request["inputs"]]
+        ends = [record_ends(path) for path in paths]
+        checked = 0
+        for event in events:
+            index, records = event["file_index"], event["records_read"]
+            if records < len(ends[index]) - 1:                       # not a file's final report
+                self.assertEqual(event["bytes_read"], sum(e[-1] for e in ends[:index]) + ends[index][records])
+                checked += 1
+        self.assertGreater(checked, 2)
+
+    def test_cli_cal1_byte_progress(self):
+        _, _, _, request = self.calibration_request(positions=1, data_format="compact")
+        request["options"]["batch_records"] = 200
+        events, by_phase, _ = self.run_bytes("calibrate", request)
+        self.assertEqual(list(by_phase), ["read", "pass 2"])
+        self.assertEqual(events[0]["phases"], ["read", "pass 2", "fits"])
+        self.assertRecordOffsets(events, request)
+
+    def test_cli_cal2_byte_progress_once(self):
+        _, _, _, request = self.calibration_request(positions=1, data_format="compact")
+        request["options"].update(limit_mode="target", target_per_key=2000, memory_budget_mb=64, workers=2)
+        events, by_phase, _ = self.run_bytes("calibrate", request)
+        self.assertEqual(list(by_phase), ["read"])
+        self.assertEqual(events[0]["phases"], ["read", "fits"])
+
+    def test_cli_stop_byte_progress_at_event_limit(self):
+        _, _, _, request = self.calibration_request(positions=1, data_format="compact")
+        request["options"].update(event_limit=1000, batch_records=100)   # of about 2,550 per file
+        _, _, result = self.run_bytes("calibrate", request)
+        self.assertTrue(all(item["stopped_at_limit"] for item in result["summary"]["inputs"]))   # files stop early
+
+    def compact_listmode_request(self, **options):
+        h, descriptors, _, request = self.listmode_request(debug=False)
+        twins = h.compact_twins(descriptors, count=1500, random_slabs=False)
+        request["inputs"] = [{"path": str(d.path), "format": "compact", "population": "coincidence"} for d in twins]
+        request["options"].update(hit_limit=16, **options)
+        return request
+
+    def test_cli_lm1_byte_progress(self):
+        for request in (self.compact_listmode_request(batch_records=100),
+                        self.listmode_request(debug=False)[3]):            # and fixed records
+            request["options"]["batch_records"] = 100
+            events, by_phase, _ = self.run_bytes("listmode", request)
+            self.assertEqual((list(by_phase), events[0]["phases"]), (["read"], ["read"]))
+            sizes = [os.path.getsize(entry["path"]) for entry in request["inputs"]]
+            boundaries = {sum(sizes[:i]) for i in range(len(sizes) + 1)}
+            self.assertTrue(set(by_phase["read"]) - boundaries)             # reported within a file
+
+    def test_cli_lm2_byte_progress(self):
+        _, by_phase, _ = self.run_bytes("listmode", self.compact_listmode_request(lm_seed=11, workers=2))
+        self.assertEqual(list(by_phase), ["read"])
+
+    def test_cli_qc1_byte_progress(self):
+        _, _, request = self.qc_request(count=600, plots=False, slabs=False)
+        with patch.object(qc, "PROGRESS_RECORDS", 100):
+            events, by_phase, _ = self.run_bytes("qc", request)
+        self.assertEqual((list(by_phase), events[0]["phases"]), (["read"], ["read"]))
+        self.assertRecordOffsets(events, request)
+
+    def test_cli_qc2_byte_progress(self):
+        _, _, request = self.qc_request(count=600, plots=False, slabs=False)
+        request["options"].update(qc_seed=11, workers=2)
+        _, by_phase, _ = self.run_bytes("qc", request)
+        self.assertEqual(list(by_phase), ["read"])

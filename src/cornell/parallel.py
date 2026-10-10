@@ -39,6 +39,26 @@ def report_progress(index, value):
         _SLOTS[index] = value
 
 
+def slot_progress(index):
+    """A stage's progress callback inside pool task ``index``: its ``bytes_read`` goes to the slot."""
+    def progress(*args, bytes_read=None, **extra):
+        if bytes_read is not None:
+            report_progress(index, bytes_read)
+    return progress
+
+
+def tick_progress(paths, progress):
+    """``on_tick`` for a pool over ``paths``: each changed slot becomes ``progress(index, path, bytes_read=...)``."""
+    seen = [0] * len(paths)
+
+    def on_tick(values):
+        for index, value in enumerate(values):
+            if value != seen[index]:
+                seen[index] = value
+                progress(index, paths[index], bytes_read=value)
+    return on_tick
+
+
 def _init_with_slots(slots, initializer, event, *initargs):
     global _SLOTS
     _SLOTS = slots

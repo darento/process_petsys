@@ -446,7 +446,7 @@ class ListmodeChecks(ListmodeFixtures, PrivateOutput, unittest.TestCase):
         progress = []                                                    # cancel inside the second file
         with self.assertRaises(lm.ListmodeCancelled):
             self.generate(descriptors, maps, job, cancelled=lambda: any(p[0] == 1 for p in progress),
-                          progress=lambda *a: progress.append(a))
+                          progress=lambda *a, **extra: progress.append(a))
         self.assertEqual(progress[-1][:2], (1, descriptors[1].path))
         orphans = sorted(p.name for p in (job / "segments").iterdir())
         self.assertEqual(sum(name.endswith(".json") for name in orphans), 1)
@@ -508,7 +508,8 @@ class ListmodeChecks(ListmodeFixtures, PrivateOutput, unittest.TestCase):
         progress = []                                                    # cancel inside the second file
         with self.assertRaises(lm.ListmodeCancelled):
             self.generate(descriptors, maps, folder, in_place=True,
-                          cancelled=lambda: any(p[0] == 1 for p in progress), progress=lambda *a: progress.append(a))
+                          cancelled=lambda: any(p[0] == 1 for p in progress),
+                          progress=lambda *a, **extra: progress.append(a))
         with self.assertRaises(InputError):                              # a new job over this job's files
             self.generate(descriptors, maps, folder, in_place=True)
         stray = folder / "run_coinc_all_notes.txt"                       # LM-named: still refused on resume
