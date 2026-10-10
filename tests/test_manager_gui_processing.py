@@ -13,11 +13,14 @@ import re
 from dataclasses import replace
 
 import pytest
+import yaml
 
 from exe_programs import petsys_manager_gui as gui
 from helpers import REPO
-from manager_gui_helpers import ConversionBase, FAST, Hardware, RunPanelBase, SAFETY, SETTLE_S, SHM, TOOLS, pump
-from manager_helpers import METADATA, FakeChild, ListmodeFixtures, QCFixtures, ToolWorld
+from manager_gui_helpers import (ConversionBase, FAST, GUIBase, Hardware, RunPanelBase, SAFETY, SETTLE_S, SHM,
+                                 TOOLS, pump, world)
+from manager_helpers import (CALIBRATION, METADATA, SPLITS, FakeChild, ListmodeFixtures, QCFixtures, ToolWorld,
+                             recorded_run)
 from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.artifacts import RunStore
 from src.petsys_manager.contracts import Action, Artifact, CommandResult, ResultStatus, to_plain
@@ -144,9 +147,15 @@ class ProcessingChecks(ConversionBase):
         return found
 
     def digests(self):
-        """Profile, processing YAML, map, limits, calibration and input LDAT files."""
-        paths = [self.profile_path, *(path for path in self.processing_root.rglob("*") if path.is_file())]
-        return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+        """Profile settings, processing YAML, map, limits, calibration and input LDAT files."""
+        paths = [path for path in self.processing_root.rglob("*") if path.is_file() and path != self.profile_path]
+        found = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+        found[str(self.profile_path)] = self.settings()
+        return found
+
+    def settings(self):
+        """The profile file's settings: spec 005 FR-6 writes ``last_folders`` alone as soon as a dialog returns."""
+        return replace(load_profile(self.profile_path), last_folders={})
 
     def ui_state(self, app):
         values = {f"profile.{name}": var.get() for name, var in app.vars.items()}
@@ -155,7 +164,7 @@ class ProcessingChecks(ConversionBase):
                      "raw_input", "lm_debug", "qc_source", "qc_plots", "qc_slabs"):
             values[name] = getattr(app, name).get()
         values["lists"] = {key: [str(path) for path in selection.paths] for key, selection in app.selections.items()}
-        return values, app.session.profile
+        return values, replace(app.session.profile, last_folders={})   # dialog folders: spec 005 FR-6
 
     def launched_since(self, count):
         return [(stage, tool) for stage, tool, _ in self.world.launched[count:]]
@@ -167,7 +176,7 @@ class ProcessingChecks(ConversionBase):
     @pytest.mark.fr("003-FR-21")
     def test_manual_calibration_and_lm_show_and_use_recorded_artifacts(self):
         app = self.processing_app("lm", real_cli=True)
-        before, saved = self.digests(), self.profile_path.read_bytes()
+        before, saved = self.digests(), self.settings()
         selection = self.select(app, "calibrate", self.lm_files, "compact_coincidence")
         selection.listbox.selection_set(0)
         selection.buttons["down"].invoke()                         # the operator's order: 2, then 1
@@ -227,7 +236,7 @@ class ProcessingChecks(ConversionBase):
         self.assertEqual((request["options"]["positions"], request["files"]["cog_limits"]), (1, None))
         self.assertTrue(request["outputs"]["encal"].endswith("acq_coinc_resolved.encal"))
         self.assertEqual(self.digests(), before)
-        self.assertEqual(self.profile_path.read_bytes(), saved)
+        self.assertEqual(self.settings(), saved)
         self.assertEqual(app.guard.violations, [])
 
     @pytest.mark.slow  # ~6 s
@@ -385,7 +394,7 @@ class ProcessingChecks(ConversionBase):
         self.assertIn("3 position(s) per slab", app.pipeline_plan.cget("text"))
         self.assertIn("header acquisition/measurement time 10 s (Acq. Time)", app.pipeline_plan.cget("text"))
         self.initialized(app)
-        before, saved, ui = self.digests(), self.profile_path.read_bytes(), self.ui_state(app)
+        before, saved, ui = self.digests(), self.settings(), self.ui_state(app)
         text = self.finish(app, "pipeline", app.pipeline_status)
         self.assertTrue(text.startswith("Complete pipeline succeeded"), text)
         self.assertEqual(self.launched_since(0), [("acquisition", "acquire_sipm_data"),
@@ -427,7 +436,7 @@ class ProcessingChecks(ConversionBase):
         # Nothing persistent or selected changed; the new calibration is offered, not applied.
         self.assertEqual(self.ui_state(app), ui)
         self.assertEqual(self.digests(), before)
-        self.assertEqual(self.profile_path.read_bytes(), saved)
+        self.assertEqual(self.settings(), saved)
         self.assertEqual(load_profile(self.profile_path), app.session.profile)
         self.assertEqual(app.last_calibration[1], Path(encal))
         self.assertEqual(self.state(app, "offer_lm_calibration"), "normal")
@@ -438,7 +447,7 @@ class ProcessingChecks(ConversionBase):
         app = self.processing_app("lm")
         self.settle_edit(app, app.splits, "2")
         self.initialized(app)
-        before, saved, ui = self.digests(), self.profile_path.read_bytes(), self.ui_state(app)
+        before, saved, ui = self.digests(), self.settings(), self.ui_state(app)
         stages = ("acquisition", "conversion", "calibration", "listmode")
         for stage, fault, status in (("conversion", "nonzero", "failed"), ("calibration", "invalid", "failed"),
                                      ("calibration", "stale", "failed"), ("listmode", "nonzero", "failed"),
@@ -474,7 +483,7 @@ class ProcessingChecks(ConversionBase):
         values["lists"]["calibrate"] = []
         self.assertEqual((values, profile), ui)                         # only the calibration list was edited
         self.assertEqual(self.digests(), before)
-        self.assertEqual(self.profile_path.read_bytes(), saved)
+        self.assertEqual(self.settings(), saved)
         self.assertEqual(app.guard.violations, [])
 
     @pytest.mark.slow  # ~13 s
@@ -588,3 +597,134 @@ class CalibrationOfferChecks(RunPanelBase):
         app._workflow_done(WorkflowResult(1, outcome, ""), [])
         app._refresh_controls()
         self.assertEqual(app.buttons["offer_lm_calibration"].cget("state"), "disabled")
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-6")  # spec 005 T13-T14
+class LastFolderChecks(GUIBase):
+    fixture_prefix = "pm-gui-last-folder-"
+    STORED = ("raw_input", "ldat_inputs.calibrate", "conversion_run", "cog_limits_file", "data_dir")
+
+    def window(self, last_folders=None, name="w"):
+        self.world = self.base / name
+        profile = world(self.world)
+        self.path = save_profile(replace(profile, last_folders=last_folders or {}), self.base / f"{name}.yaml")
+        app = self.open(self.path, repo_root=self.world)
+        self.asked = []
+        return app
+
+    def answer(self, kind, value):
+        def ask(**options):
+            self.asked.append((kind, options.get("initialdir")))
+            return value
+        return ask
+
+    def stored(self):
+        folders = {key: self.base / "stored" / key.replace(".", "_") for key in self.STORED}
+        for folder in folders.values():
+            folder.mkdir(parents=True)
+        return {key: str(folder) for key, folder in folders.items()}
+
+    def open_every_dialog(self, app):
+        """Cancel each remembered dialog once; the start folders in order."""
+        self.asked = []
+        app.ask_file, app.ask_directory, app.ask_files = (self.answer("file", ""), self.answer("directory", ""),
+                                                          self.answer("files", ()))
+        app._browse("cog_limits_file", "file")
+        app._browse("data_dir", "dir")
+        app._browse_raw()
+        app.selections["calibrate"].add()
+        app.selections["calibrate"].buttons["run"].invoke()
+        return [folder for _, folder in self.asked]
+
+    def test_last_folder_dialogs_open_in_the_stored_folder_or_fall_back(self):
+        folders = self.stored()
+        app = self.window(folders)
+        saved = self.path.read_bytes()
+        self.assertEqual(self.open_every_dialog(app), [folders[key] for key in (
+            "cog_limits_file", "data_dir", "raw_input", "ldat_inputs.calibrate", "conversion_run")])
+        self.assertEqual(self.path.read_bytes(), saved)                 # cancelled: nothing remembered
+        self.assertEqual(dict(app.session.profile.last_folders), folders)
+        self.assertNotIn("Conversion run not added", self.log(app))
+        # A stored folder that no longer exists is ignored: today's start folders.
+        app = self.window({key: str(self.base / "gone" / key) for key in self.STORED}, name="w2")
+        self.assertEqual(self.open_every_dialog(app), [str(self.world / "lim"), str(self.world / "data"),
+                                                       str(self.world / "data"), None, str(self.world / "data")])
+
+    def test_last_folder_choice_saved_without_marking_the_profile_edited(self):
+        app = self.window()
+        before = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        ldats = self.base / "ldats"
+        ldats.mkdir()
+        (ldats / "a.ldat").write_bytes(b"x")
+        app.ask_files = self.answer("files", (str(ldats / "a.ldat"),))
+        app.selections["listmode"].add()
+        self.assertEqual(dict(app.session.profile.last_folders), {"ldat_inputs.listmode": str(ldats)})
+        after = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(after.pop("last_folders"), {"ldat_inputs.listmode": str(ldats)})
+        self.assertEqual(after, before)
+        self.assertEqual(app.profile_from_ui(), app.session.profile)
+        pump(app.root, timeout=0.3)
+        self.assertNotIn("unsaved edits", app.profile_status.cget("text"))
+        # With an unsaved edit pending: the folder is written, the edit is neither saved nor lost.
+        app.vars["data_dir"].set(str(self.base / "elsewhere"))
+        self.assertTrue(pump(app.root, lambda: "unsaved edits" in app.profile_status.cget("text")))
+        app.ask_file = self.answer("file", str(self.world / "lim" / "doi.txt"))
+        app._browse("cog_limits_file", "file")
+        self.assertEqual(app.vars["cog_limits_file"].get(), str(self.world / "lim" / "doi.txt"))
+        after = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(after.pop("last_folders"), {"ldat_inputs.listmode": str(ldats),
+                                                     "cog_limits_file": str(self.world / "lim")})
+        self.assertEqual(after, before)
+        self.assertEqual(app.session.profile.data_dir, before["data_dir"])
+        self.assertEqual(app.vars["data_dir"].get(), str(self.base / "elsewhere"))
+        self.assertNotEqual(app.profile_from_ui(), app.session.profile)
+        pump(app.root, timeout=0.3)
+        self.assertIn("unsaved edits", app.profile_status.cget("text"))
+        app.ask_file = self.answer("file", str(self.world / "data" / "run ; & $x.rawf"))
+        app._browse_raw()
+        app.ask_directory = self.answer("directory", str(self.world / "encal"))
+        app._browse("report_dir", "dir")
+        self.assertEqual({key: load_profile(self.path).last_folders[key] for key in ("raw_input", "report_dir")},
+                         {"raw_input": str(self.world / "data"), "report_dir": str(self.world / "encal")})
+
+    def test_conversion_run_folder_lists_exactly_its_recorded_ldats(self):
+        app = self.window()
+        run = recorded_run(self.world / "data", ["conversion"], {"conversion": SPLITS})
+        recorded = sorted(run.rglob("x_coincCompact_*.ldat"))
+        (recorded[0].parent / "x_coincCompact_3.ldat").write_bytes(b"not an output")
+        selection = app.selections["calibrate"]
+        self.assertEqual(selection.buttons["run"].cget("text"), "Add conversion run...")
+        app.ask_directory = self.answer("directory", str(run))
+        selection.buttons["run"].invoke()
+        self.assertEqual(selection.paths, recorded)
+        self.assertEqual([path.name for path in selection.paths], [name for name, _, _ in SPLITS])
+        self.assertTrue(selection.confirmed.get())
+        self.assertIn(f"from conversion run {run.name}", selection.summary.cget("text"))
+        self.assertIn(f"3 output(s) of conversion run {run.name}", self.log(app))
+        self.assertEqual(dict(app.session.profile.last_folders), {"conversion_run": str(run.parent)})
+        self.assertEqual([folder for _, folder in self.asked], [str(self.world / "data")])
+
+    def test_refused_conversion_run_folders_leave_the_list_unchanged(self):
+        app = self.window()
+        destination = self.world / "data"
+        plain = self.base / "plain"
+        plain.mkdir()
+        refused = (plain, recorded_run(destination, ["calibration"], {"calibration": CALIBRATION}, name="cal"),
+                   recorded_run(destination, ["conversion"], {"conversion": (SPLITS, ResultStatus.FAILED)}, name="bad"))
+        listed = self.base / "listed.ldat"
+        listed.write_bytes(b"x")
+        selection = app.selections["qc_analyze"]
+        selection.add([listed])
+        for folder in refused:
+            app.ask_directory = self.answer("directory", str(folder))
+            selection.buttons["run"].invoke()
+            self.assertEqual((selection.paths, selection.origin), ([listed], None))
+            last = self.log(app).splitlines()[-1]
+            self.assertIn("Conversion run not added: ", last)
+            self.assertIn(folder.name, last)
+        lines = len(self.log(app).splitlines())
+        app.ask_directory = self.answer("directory", "")
+        selection.buttons["run"].invoke()
+        self.assertEqual(len(self.log(app).splitlines()), lines)
+        self.assertEqual(selection.paths, [listed])

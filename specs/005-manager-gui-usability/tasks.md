@@ -239,7 +239,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
 ## Last folders and run-folder picking
 
-- [ ] **T13 — Profile `last_folders`** (FR-6). In `settings.py`, `MachineProfile.last_folders` (fixed key set, absolute folders) and `save_last_folders(path, folders)` (re-read from disk, replace only `last_folders`, atomic write); `session.save_last_folders(key, folder)`.
+- [x] **T13 — Profile `last_folders`** (FR-6). In `settings.py`, `MachineProfile.last_folders` (fixed key set, absolute folders) and `save_last_folders(path, folders)` (re-read from disk, replace only `last_folders`, atomic write); `session.save_last_folders(key, folder)`.
 
   **Done when:** `python -m pytest tests/test_manager_settings.py -k last_folders` passes, covering:
   - round trip; an unknown key or a relative path → `ProfileError`;
@@ -249,7 +249,16 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - no profile file → nothing written, folders in memory, one log line;
   - write failure → logged, folders in memory.
 
-- [ ] **T14 — Dialog folders and "Add conversion run..."** (FR-6).
+  Verified 2026-10-10 (Windows), test-first. Seam: `MachineProfile.last_folders`, `settings.save_last_folders`, `session.save_last_folders`.
+  - `settings.LAST_FOLDER_KEYS` is the fixed key set: `raw_input`, `ldat_inputs.{calibrate,listmode,qc_analyze}`, `conversion_run` and every profile path field. Folders are stored sorted by key, so key order never makes a different profile.
+  - `save_profile` leaves out an empty `last_folders`, so a profile saved by 1.1.0 before any dialog is used still loads in 1.0.0.
+  - `save_last_folders` re-reads the file, replaces only the section, validates the whole result as a profile and writes it with the same temp-file + `os.replace` path as `save_profile` (now the shared `_replace_file`). A file that is not a valid profile is refused unchanged.
+  - `session.save_last_folders` updates `session.profile` first. Without a profile file it logs once per session; a write failure is logged on each attempt.
+  - `python -m pytest tests/test_manager_settings.py -k last_folders` → 9 passed: round trip and key-order equality; unknown key, relative/empty/non-text folder, non-mapping and an unknown key in a file → `ProfileError`; a 1.0.0 profile loads and a save without folders omits the section; `save_last_folders` keeps every other field equal (parsed), also on a 1.0.0 file with a retired capability; a bad folder, a processing YAML and a failing `os.replace` leave the files byte-identical with no temp file; the session writes file and memory; a file changed by another window keeps its fields (the session's in-memory profile is ignored); no file → nothing written, one log line for two calls; write failure → one log line, folders in memory.
+  - The `profile_from_ui() != session.profile` item is checked through a real window in T14 (`test_last_folder_choice_saved_without_marking_the_profile_edited`): `test_manager_settings.py` asserts that importing it loads no Tk.
+  - Negatives (scratch copies; unmodified copy passed), each failing: no unknown-key check; no absolute-path check; unsorted storage; empty section written; fields taken from defaults instead of disk; no validation before writing; non-atomic write; the no-file line logged on every call; the session saving its whole in-memory profile (killed after adding the "changed by another window" test); `session.profile` not updated; `OSError` not caught.
+
+- [x] **T14 — Dialog folders and "Add conversion run..."** (FR-6).
   - Every dialog except the profile file starts in `last_folders[key]` when it exists and saves the chosen folder through `session.save_last_folders`.
   - `InputSelection` gains "Add conversion run...": a directory dialog, then `conversion_outputs`, then `use_outputs`, with refusals logged.
 
@@ -260,6 +269,17 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - a non-run folder and a run without conversion outputs are refused in the log with the list unchanged.
 
   The full run passes.
+
+  Verified 2026-10-10 (Windows), test-first. Seam: the window (`ask_file`, `ask_directory`, `ask_files`, `_browse(name, kind)`, `_browse_raw`, `InputSelection.buttons["run"]`).
+  - `start_folder(key, fallback)` returns `last_folders[key]` while it is a folder, else today's start folder; `remember_folder` calls `session.save_last_folders` as soon as a dialog returns a choice. A cancelled dialog remembers nothing.
+  - What is remembered: a file dialog stores the chosen file's folder; a profile folder dialog stores the chosen folder; "Add conversion run..." stores the run folder's parent (the destination holding the runs), so the next pick starts among the runs. Its fallback is the Output Data Folder, else home.
+  - "Add conversion run..." goes through `conversion_outputs` and then `apply_offer` (T11): the list is replaced by the recorded LDATs, confirmed with the converter's declaration, origin "conversion run <folder>", logged with any replaced count. A refusal logs "Conversion run not added: <reason>" and leaves the list and origin as they were.
+  - The profile-file dialog is unchanged.
+  - Spec 003 `ProcessingChecks` compared the profile file byte for byte and `session.profile` exactly; picking LDATs now writes `last_folders`, as FR-6 requires. They now compare the parsed profile and `session.profile` with `last_folders` left out (`settings()`, `ui_state`); every other field is still checked.
+  - `python -m pytest tests/test_manager_gui_processing.py -k "last_folder or conversion_run"` → 4 passed: five dialogs (COG limits file, Output Data Folder, RAW, LDAT list, conversion run) open in their stored folders, and with stored folders gone in today's folders; cancelling writes nothing; an LDAT choice is written under `ldat_inputs.listmode` with every other on-disk field equal and no "unsaved edits"; with an unsaved Output Data Folder edit pending, a COG file choice writes only the folder, the edit stays in the field and unsaved, `session.profile` keeps the disk value; RAW and Report folder choices are written; a run folder lists exactly its three recorded LDATs in order (an unrecorded LDAT beside them is left out) with the origin shown; a plain folder, a calibration run and a failed conversion are refused with the list unchanged; a cancelled run dialog logs nothing.
+  - Serial run of the settings file and the four Manager GUI files with `-n 0 --slow-limit 5` → 106 passed, 2 failed: the two spec 003 tests above, before they were changed. The processing file after the change → 12 passed.
+  - Full run `-m "not real_data"` → 1134 passed, 23 skipped. Two earlier full runs each failed spec 003 conversion GUI tests: `test_close_during_conversion_closes_on_the_first_request` in both (10 s wait for "Writing to:") and `test_conversion_request_format_population_and_exact_outputs` in one. Neither opens a dialog. Both pass serially, and the conversion, processing and shell files passed three parallel runs (51 passed each). Recorded as load flakes to watch in T16, with T12's.
+  - Negatives (scratch copies; unmodified copy 4 passed), each failing: a stored folder used when gone; stored folders never used; nothing saved; the whole profile saved instead; a file's own path stored; the run folder stored instead of its parent; LDATs globbed from the folder; refusal not logged; RAW choice not saved (killed after extending the save test); LDAT choice not saved; LDAT dialog ignoring the stored folder; RAW dialog reading another key; a cancelled run dialog treated as a folder.
 
 ## Advanced settings
 

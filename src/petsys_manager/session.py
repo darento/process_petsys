@@ -14,7 +14,7 @@ destinations before a workflow starts, or writes processing configuration/maps.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from pathlib import Path
 import queue
@@ -23,7 +23,7 @@ import time
 
 from .contracts import Action
 from .settings import (MachineProfile, PrerequisiteIssue, SystemProbe, default_profile_path,
-                       load_profile, preflight, save_profile)
+                       load_profile, preflight, save_last_folders, save_profile)
 
 
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -99,6 +99,7 @@ class ManagerSession:
         self._probes = {}        # selection key -> (request, cancellation Event)
         self._map_cache = None   # (file stamps, mapping) for the event-limit plan
         self._probe_request = 0
+        self._folders_unsaved = False   # "no profile file" for dialog folders is logged once
 
     @property
     def generation(self):
@@ -140,6 +141,23 @@ class ManagerSession:
         written = save_profile(profile, target, overwrite=target.exists())
         self.profile_path, self.profile = written, profile
         return written
+
+    def save_last_folders(self, key, folder):
+        """Remember a file dialog's folder (spec 005 FR-6). Only ``last_folders`` is written, at once;
+        the file's other fields come from disk, so unsaved edits are neither saved nor lost."""
+        folders = {**self.profile.last_folders, key: str(folder)}
+        self.profile = replace(self.profile, last_folders=folders)
+        if not self.profile_path.is_file():
+            if not self._folders_unsaved:
+                self._folders_unsaved = True
+                self.log(f"No profile at {self.profile_path}; dialog folders are remembered until the window closes")
+            return False
+        try:
+            save_last_folders(self.profile_path, folders)
+        except (OSError, ValueError) as exc:
+            self.log(f"Last folder not saved to the profile; remembered until the window closes: {exc}")
+            return False
+        return True
 
     # Prerequisite checks ------------------------------------------------------------------------
 

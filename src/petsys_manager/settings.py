@@ -7,6 +7,7 @@ the current directory or the directory containing a selected processing YAML.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 import math
 import os
@@ -158,6 +159,9 @@ PETSYS_PYTHON_TOOLS = ("init_system", "acquire_sipm_data", "set_bias")
 _PATH_FIELDS = ("petsys_folder", "petsys_python", "processing_root", "ini_file", "yaml_file", "data_dir",
                 "calibration_dir", "report_dir", "lm_dir", "cog_limits_file", "doi_limits_file",
                 "calibration_file", "pair_map_file", "region_map_file")
+# Spec 005 FR-6: file dialogs whose last folder the profile remembers. The profile-file dialog has none.
+LAST_FOLDER_KEYS = ("raw_input", "ldat_inputs.calibrate", "ldat_inputs.listmode", "ldat_inputs.qc_analyze",
+                    "conversion_run", *_PATH_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,7 @@ class MachineProfile:
     limits: ProcessingLimits = field(default_factory=ProcessingLimits)
     capabilities: ToolCapabilities = field(default_factory=ToolCapabilities)
     lm_metadata: LMMetadata = field(default_factory=LMMetadata)
+    last_folders: FrozenMapping = field(default_factory=FrozenMapping)   # dialog key -> absolute folder (FR-6)
 
     def __post_init__(self):
         if type(self.schema_version) is not int or self.schema_version != SCHEMA_VERSION:
@@ -210,6 +215,20 @@ class MachineProfile:
                           ("capabilities", ToolCapabilities), ("lm_metadata", LMMetadata)):
             if not isinstance(getattr(self, name), cls):
                 raise ProfileError(f"{name} must be {cls.__name__}")
+        object.__setattr__(self, "last_folders", _last_folders(self.last_folders))
+
+
+def _last_folders(value):
+    if not isinstance(value, Mapping):
+        raise ProfileError("last_folders must be a mapping")
+    unknown = set(value) - set(LAST_FOLDER_KEYS)
+    if unknown:
+        raise ProfileError(f"Unknown last_folders keys: {', '.join(sorted(map(str, unknown)))}")
+    for key, folder in value.items():
+        _text(folder, f"last_folders.{key}")
+        if not _absolute_path(folder):
+            raise ProfileError(f"last_folders.{key} must be an absolute folder")
+    return FrozenMapping(tuple(sorted(value.items())))   # key order does not make a different profile
 
 
 ACQUISITION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}")
@@ -354,13 +373,38 @@ def save_profile(profile, path=None, *, overwrite=False):
     if not isinstance(profile, MachineProfile):
         raise ProfileError("Expected a typed manager profile")
     target = default_profile_path() if path is None else Path(path)
-    content = yaml.safe_dump(to_plain(profile), sort_keys=False, allow_unicode=True)
+    plain = to_plain(profile)
+    if not plain["last_folders"]:
+        del plain["last_folders"]   # Manager 1.0.0 rejects unknown fields: write the section only when used
+    content = yaml.safe_dump(plain, sort_keys=False, allow_unicode=True)
     target.parent.mkdir(parents=True, exist_ok=True)
     if not overwrite or not target.exists():
         with target.open("x", encoding="utf-8") as out:
             out.write(content)
         return target
     load_profile(target)  # Refuse replacing arbitrary INI/YAML/data with a profile.
+    return _replace_file(target, content)
+
+
+def save_last_folders(path, folders):
+    """Replace only the profile file's ``last_folders`` (spec 005 FR-6).
+
+    Every other field is re-read from the file on disk, never taken from memory or the UI;
+    the whole result must be a valid profile before the atomic replace.
+    """
+    target = Path(path)
+    data = _read_yaml(target)
+    if not isinstance(data, dict):
+        raise ProfileError(f"Not a manager profile: {target}")
+    data = dict(data)
+    data["last_folders"] = {key: folders[key] for key in folders}
+    if not data["last_folders"]:
+        del data["last_folders"]
+    profile_from_mapping(data)
+    return _replace_file(target, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+
+
+def _replace_file(target, content):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,

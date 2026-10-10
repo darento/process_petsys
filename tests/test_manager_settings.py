@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import pickle
+import queue
 import sys
 import unittest
 from unittest.mock import patch
@@ -26,7 +27,8 @@ from src.petsys_manager.contracts import (Action, Artifact, CommandResult, Comma
     to_plain)
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, MachineProfile, ProcessingLimits,
     ProfileError, RunOptions, RunSettings, ToolCapabilities, default_profile_path, load_profile, preflight,
-    profile_from_mapping, save_profile, validate_calibration_factor)
+    profile_from_mapping, save_last_folders, save_profile, validate_calibration_factor)
+from src.petsys_manager.session import ManagerSession
 
 
 @pytest.mark.fr("003-FR-2", "003-FR-3", "003-FR-16")  # spec 003 T2
@@ -412,3 +414,145 @@ class SettingsChecks(SettingsFixtures, PrivateOutput, unittest.TestCase):
         recursive.append(recursive)
         with self.assertRaises(ValueError):
             freeze({"recursive": recursive})
+
+
+@pytest.mark.fr("005-FR-6")  # spec 005 T13
+class LastFoldersChecks(SettingsFixtures, PrivateOutput, unittest.TestCase):
+    fixture_prefix = "petsys-manager-last-folders-"
+
+    def folders(self, *names):
+        return {name: str(self.root / "picked" / name) for name in names}
+
+    def test_last_folders_round_trip(self):
+        folders = self.folders("raw_input", "ldat_inputs.listmode", "conversion_run", "cog_limits_file")
+        profile = replace(self.profile, last_folders=folders)
+        self.assertEqual(dict(profile.last_folders), folders)
+        path = save_profile(profile, self.root / "manager.yaml")
+        self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["last_folders"], folders)
+        self.assertEqual(load_profile(path), profile)
+        self.assertEqual(replace(self.profile, last_folders=dict(reversed(folders.items()))), profile)
+
+    def test_last_folders_unknown_key_or_relative_path_rejected(self):
+        for folders in ({"unknown_dialog": str(self.root)}, {"profile_path": str(self.root)},
+                        {"raw_input": "relative/folder"}, {"raw_input": ""}, {"raw_input": 3}, ["raw_input"]):
+            with self.subTest(folders=folders), self.assertRaises(ProfileError):
+                replace(self.profile, last_folders=folders)
+        plain = to_plain(self.profile)
+        plain["last_folders"] = {"unknown_dialog": str(self.root)}
+        path = self.root / "bad.yaml"
+        path.write_text(yaml.safe_dump(plain, sort_keys=False), encoding="utf-8")
+        with self.assertRaisesRegex(ProfileError, "unknown_dialog"):
+            load_profile(path)
+
+    def test_last_folders_absent_from_1_0_0_profiles_and_from_saves_without_folders(self):
+        old = to_plain(self.profile)
+        old.pop("last_folders", None)
+        path = self.root / "old.yaml"
+        path.write_text(yaml.safe_dump(old, sort_keys=False), encoding="utf-8")
+        self.assertEqual(dict(load_profile(path).last_folders), {})
+        self.assertEqual(load_profile(path), self.profile)
+        save_profile(load_profile(path), path, overwrite=True)   # 1.0.0 rejects unknown fields: stay readable
+        self.assertNotIn("last_folders", yaml.safe_load(path.read_text(encoding="utf-8")))
+
+    def test_save_last_folders_replaces_only_last_folders(self):
+        on_disk = replace(self.profile, data_dir="disk/data", last_folders=self.folders("raw_input"))
+        path = save_profile(on_disk, self.root / "manager.yaml")
+        before = yaml.safe_load(path.read_text(encoding="utf-8"))
+        folders = self.folders("raw_input", "ldat_inputs.calibrate")
+        self.assertEqual(save_last_folders(path, folders), path)
+        after = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertEqual(after.pop("last_folders"), folders)
+        before.pop("last_folders")
+        self.assertEqual(after, before)
+        self.assertEqual(load_profile(path), replace(on_disk, last_folders=folders))
+        old = to_plain(self.profile)           # a 1.0.0 file: the section is added, the rest kept as parsed
+        old.pop("last_folders", None)
+        old["capabilities"]["fixed_output_confirmed"] = True
+        path.write_text(yaml.safe_dump(old, sort_keys=False), encoding="utf-8")
+        save_last_folders(path, folders)
+        after = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertEqual(after.pop("last_folders"), folders)
+        self.assertEqual(after, old)
+
+    def test_save_last_folders_refuses_bad_folders_and_bad_files_unchanged(self):
+        path = save_profile(self.profile, self.root / "manager.yaml")
+        before = path.read_bytes()
+        with self.assertRaises(ProfileError):
+            save_last_folders(path, {"raw_input": "relative"})
+        selected = self.root / "configs/selected.yaml"         # not a manager profile: never rewritten
+        processing = selected.read_bytes()
+        with self.assertRaises(ProfileError):
+            save_last_folders(selected, self.folders("raw_input"))
+        self.assertEqual((path.read_bytes(), selected.read_bytes()), (before, processing))
+        with patch("src.petsys_manager.settings.os.replace", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            save_last_folders(path, self.folders("raw_input"))
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(sorted(item.name for item in path.parent.iterdir() if item.name.startswith(".petsys")), [])
+
+
+@pytest.mark.fr("005-FR-6")  # spec 005 T13
+class SessionLastFoldersChecks(SettingsFixtures, PrivateOutput, unittest.TestCase):
+    fixture_prefix = "petsys-manager-session-folders-"
+
+    def session(self, path):
+        session = ManagerSession(path, probe=self.probe, repo_root=self.root)
+        session.open()
+        self.logs(session)
+        return session
+
+    def logs(self, session):
+        found = []
+        while True:
+            try:
+                event = session.events.get_nowait()
+            except queue.Empty:
+                return found
+            if event.kind == "log":
+                found.append(event.payload)
+
+    def test_session_save_last_folders_writes_the_file_and_memory(self):
+        path = save_profile(self.profile, self.root / "manager.yaml")
+        session = self.session(path)
+        session.save_last_folders("raw_input", self.root / "data")
+        session.save_last_folders("conversion_run", str(self.root / "runs"))
+        expected = {"raw_input": str(self.root / "data"), "conversion_run": str(self.root / "runs")}
+        self.assertEqual(dict(session.profile.last_folders), expected)
+        self.assertEqual(load_profile(path), replace(self.profile, last_folders=expected))
+        self.assertEqual(self.logs(session), [])
+        with self.assertRaises(ProfileError):
+            session.save_last_folders("unknown_dialog", self.root)
+        self.assertEqual(dict(session.profile.last_folders), expected)
+
+    def test_session_save_last_folders_keeps_the_files_other_fields(self):
+        path = save_profile(self.profile, self.root / "manager.yaml")
+        session = self.session(path)
+        changed = replace(self.profile, data_dir="elsewhere")     # saved by another window meanwhile
+        save_profile(changed, path, overwrite=True)
+        session.save_last_folders("raw_input", self.root / "data")
+        self.assertEqual(load_profile(path), replace(changed, last_folders={"raw_input": str(self.root / "data")}))
+        self.assertEqual(session.profile.data_dir, self.profile.data_dir)
+
+    def test_session_save_last_folders_without_a_profile_file_writes_nothing(self):
+        path = self.root / "absent" / "manager.yaml"
+        session = self.session(path)
+        session.save_last_folders("raw_input", self.root / "data")
+        session.save_last_folders("ldat_inputs.qc_analyze", self.root / "data")
+        self.assertEqual(dict(session.profile.last_folders), {"raw_input": str(self.root / "data"),
+                                                              "ldat_inputs.qc_analyze": str(self.root / "data")})
+        self.assertFalse(path.parent.exists())
+        logs = self.logs(session)
+        self.assertEqual(len(logs), 1, logs)
+        self.assertIn(str(path), logs[0])
+
+    def test_session_save_last_folders_write_failure_is_logged_and_kept_in_memory(self):
+        path = save_profile(self.profile, self.root / "manager.yaml")
+        before = path.read_bytes()
+        session = self.session(path)
+        with patch("src.petsys_manager.settings.os.replace", side_effect=OSError("disk full")):
+            session.save_last_folders("raw_input", self.root / "data")
+        self.assertEqual(dict(session.profile.last_folders), {"raw_input": str(self.root / "data")})
+        self.assertEqual(path.read_bytes(), before)
+        logs = self.logs(session)
+        self.assertEqual(len(logs), 1, logs)
+        self.assertIn("disk full", logs[0])

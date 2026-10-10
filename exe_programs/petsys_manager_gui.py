@@ -47,7 +47,8 @@ from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, Population, ResultStatus,
                                           SourceMode)
 from src.petsys_manager.progress import Banners, GrowthBanner, RunTracker
-from src.petsys_manager.recent import OFFER_LABELS, RunRecordError, main_report, run_offers
+from src.petsys_manager.recent import (OFFER_LABELS, Offer, RunRecordError, conversion_outputs, main_report,
+                                       run_offers)
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
                                          RunOptions, default_profile_path)
@@ -315,7 +316,8 @@ class InputSelection:
         row = ctk.CTkFrame(frame, fg_color="transparent")
         row.grid(row=2, column=0, columnspan=4, sticky="w", padx=10, pady=2)
         self.buttons = {}
-        for name, text, command in (("add", "Add files...", self.add), ("remove", "Remove", self.remove),
+        for name, text, command in (("add", "Add files...", self.add),
+                                    ("run", "Add conversion run...", self.add_run), ("remove", "Remove", self.remove),
                                     ("up", "Up", lambda: self.move(-1)), ("down", "Down", lambda: self.move(1)),
                                     ("clear", "Clear", self.clear), ("check", "Check structure", self.check)):
             self.buttons[name] = ctk.CTkButton(row, text=text, width=90, command=command)
@@ -371,9 +373,12 @@ class InputSelection:
     def add(self, chosen=None):
         """Append operator-chosen files in natural order; offer only same-prefix split siblings."""
         if chosen is None:
-            start = str(self.paths[-1].parent) if self.paths else None
+            key = f"ldat_inputs.{self.key}"
+            start = self.app.start_folder(key, str(self.paths[-1].parent) if self.paths else None)
             chosen = self.app.ask_files(title="Select LDAT files", initialdir=start,
                                         filetypes=[("LDAT files", "*.ldat"), ("All files", "*")])
+            if chosen:
+                self.app.remember_folder(key, Path(chosen[0]).parent)
         chosen = sorted({Path(item) for item in chosen or ()}, key=natural_key)
         if not chosen:
             return
@@ -406,6 +411,22 @@ class InputSelection:
         self.origin = None
         self._set(confirmed=False)  # the confirmation covers the listed files: confirm again
         self._changed()
+
+    def add_run(self):
+        """Replace the list with exactly the LDATs a conversion run folder recorded as its outputs (spec 005 FR-6)."""
+        data = self.app.vars["data_dir"].get().strip()
+        chosen = self.app.ask_directory(title="Select a conversion run folder",
+                                        initialdir=self.app.start_folder("conversion_run", data or str(Path.home())))
+        if not chosen:
+            return
+        root = Path(chosen)
+        self.app.remember_folder("conversion_run", root.parent)   # the destination holding the runs
+        try:
+            outputs = conversion_outputs(root)
+        except RunRecordError as exc:
+            self.app.log(f"Conversion run not added: {exc}")
+            return
+        self.app.apply_offer(Offer(OFFER_LABELS[self.key], self.key, outputs), root.name)
 
     def _selected(self):
         chosen = self.listbox.curselection()
@@ -746,6 +767,8 @@ class PETsysManager:
         self._issues = {}               # check key -> reasons of the newest shown readiness
         self.selections = {}
         self.ask_files = filedialog.askopenfilenames   # dialogs are attributes so checks can answer them
+        self.ask_file = filedialog.askopenfilename
+        self.ask_directory = filedialog.askdirectory
         self.ask_yes_no = messagebox.askyesno
         self.open_path = open_path                    # Recent Runs: open a folder or report (spec 005 FR-3)
         self.ask_offer = self._ask_offer              # Recent Runs: which next step "Use as input" fills
@@ -852,7 +875,7 @@ class PETsysManager:
         for row, name in enumerate(names, first_row):
             label, kind = PROFILE_FIELDS[name]
             entry = self._row(frame, row, label, self.vars[name],
-                              lambda name=name, kind=kind: self._browse(self.vars[name], kind))
+                              lambda name=name, kind=kind: self._browse(name, kind))
             self.entries.setdefault(name, []).append(entry)
 
     @staticmethod
@@ -2081,20 +2104,32 @@ class PETsysManager:
             self.qc_slabs.set(False)
             self.qc_slabs_check.configure(state="disabled")
 
-    def _browse(self, variable, kind):
+    def start_folder(self, key, fallback):
+        """A dialog's start folder (spec 005 FR-6): its last folder while that still exists, else ``fallback``."""
+        folder = self.session.profile.last_folders.get(key)
+        return folder if folder is not None and Path(folder).is_dir() else fallback
+
+    def remember_folder(self, key, folder):
+        """Written at once, alone: other profile fields and unsaved edits are untouched (spec 005 FR-6)."""
+        self.session.save_last_folders(key, folder)
+
+    def _browse(self, name, kind):
+        variable = self.vars[name]
         current = variable.get().strip()
-        start = str(Path(current).parent if kind == "file" and current else current or Path.home())
-        chosen = (filedialog.askopenfilename(initialdir=start) if kind == "file"
-                  else filedialog.askdirectory(initialdir=start))
+        start = self.start_folder(name, str(Path(current).parent if kind == "file" and current
+                                            else current or Path.home()))
+        chosen = self.ask_file(initialdir=start) if kind == "file" else self.ask_directory(initialdir=start)
         if chosen:
+            self.remember_folder(name, Path(chosen).parent if kind == "file" else chosen)
             variable.set(chosen)
 
     def _browse_raw(self):
         current = self.raw_input.get().strip() or self.vars["data_dir"].get().strip()
-        chosen = filedialog.askopenfilename(initialdir=str(Path(current).parent if current.endswith(".rawf")
-                                                           else current or Path.home()),
-                                            filetypes=[("PETsys RAW", "*.rawf"), ("All files", "*")])
+        start = self.start_folder("raw_input", str(Path(current).parent if current.endswith(".rawf")
+                                                   else current or Path.home()))
+        chosen = self.ask_file(initialdir=start, filetypes=[("PETsys RAW", "*.rawf"), ("All files", "*")])
         if chosen:
+            self.remember_folder("raw_input", Path(chosen).parent)
             self.raw_input.set(chosen)
 
     def _browse_profile(self):
