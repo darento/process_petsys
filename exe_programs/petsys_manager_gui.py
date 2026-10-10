@@ -1,4 +1,4 @@
-"""PETsys Manager window: the five Cornell workflow tabs, command log and machine profile.
+"""PETsys Manager window: the five Cornell workflow tabs, Recent Runs, command log and machine profile.
 
 Views and main-thread event polling only. Profiles, prerequisite checks, DAQD,
 initialization and workflows live in the toolkit-free `src.petsys_manager.session`;
@@ -17,6 +17,10 @@ compact coincidence only (FR-10); the operator confirms that listed LDAT files
 are compact coincidence, since an extension cannot tell.
 A run panel above the tabs shows the foreground run: its stage, progress, elapsed
 time and estimate, and the stages of a multi-stage run (spec 005).
+Banners above it show failures, stopped runs and SiPM bias unknown until dismissed
+(the bias banner only by confirming the bias), and, during an acquisition, whether
+its RAW file is growing. Result frames offer the next step and Recent Runs lists
+each destination's runs.tsv; both fill a tab from the run record, never start a run.
 Nothing launches at startup. Closing stops the workflow, waits for its bias-off,
 then stops the owned DAQD, while the window keeps polling.
 """
@@ -31,16 +35,19 @@ import os
 from pathlib import Path
 import queue
 import re
+import subprocess
+import sys
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
 from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.contracts import (Action, DataFormat, InputDescriptor, Population, ResultStatus,
                                           SourceMode)
-from src.petsys_manager.progress import RunTracker
+from src.petsys_manager.progress import Banners, GrowthBanner, RunTracker
+from src.petsys_manager.recent import OFFER_LABELS, RunRecordError, main_report, run_offers
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, PrerequisiteIssue, ProfileError,
                                          RunOptions, default_profile_path)
@@ -49,12 +56,14 @@ from src.petsys_manager.workflow import format_elapsed, portable_name
 
 __version__ = "1.0.0"
 TITLE = "PETsys Manager - Cornell"
+RECENT_TAB = "Recent Runs"     # spec 005 FR-3
 TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processing",
-        "LM File Generation", "System Quality Control")
+        "LM File Generation", "System Quality Control", RECENT_TAB)
 LOGO = Path(__file__).resolve().parent / "assets" / "onco_logo.jpeg"  # optional, module-relative
 POLL_MS = 100
 PANEL_REFRESH_S = 0.25   # the run panel redraws at most this often (spec 005 FR-1)
 BREATH_PERIOD_S, BREATH_STEP_MS = 3.0, 100   # the idle panel's empty bar fades in and out
+BREATH_STEPS = round(BREATH_PERIOD_S * 1000 / BREATH_STEP_MS)
 IDLE_TITLE, IDLE_HINT = "● Ready", "Pick a tab, set inputs, press START."
 MAX_EVENTS_PER_POLL = 200
 CHECK_DELAY_MS = 400
@@ -102,6 +111,7 @@ LM_FIELDS = {
     "timestamp_unit": ("Timestamp unit:", str),
 }
 LIVE_KEYS = ("acquire", "pipeline", "qc")      # need an initialized system from this manager's DAQD
+LIVE_ACTIONS = (Action.ACQUIRE, Action.PIPELINE, Action.QC)    # their acquisition time feeds the growth banner
 PROCESSING_KEYS = ("calibrate", "listmode", "qc_analyze")
 STOP_KEYS = ("stop", "convert_stop", "qc_stop")
 ACTION_TEXT = {Action.ACQUIRE: "Acquisition", Action.CONVERT: "Conversion", Action.CALIBRATE: "Energy calibration",
@@ -129,7 +139,7 @@ SELECTIONS = {
     "qc_analyze": ("Existing LDAT Files for Offline QC (compact coincidence)", "compact_coincidence"),
 }
 # Which processing lists may take a conversion's validated outputs.
-OUTPUT_TARGETS = {(DataFormat.COMPACT, Population.COINCIDENCE): ("calibrate", "listmode", "qc_analyze")}
+CONVERSION_OFFERS = ("calibrate", "listmode", "qc_analyze")   # the conversion result's offers (spec 005 FR-4)
 SPLIT_NAME = re.compile(r"(.+)_(\d+)\.ldat\Z")
 MAX_FOLDER_ENTRIES = 20000  # bound for the split-sibling folder scan
 PROBE_RECORDS = 10000
@@ -153,6 +163,13 @@ CHECKS = {
     "qc_analyze": (Action.QC_ANALYZE, "Analyze existing compact LDAT", 4),
 }
 GREEN, GREEN_HOVER, RED, RED_HOVER = "#2ecc71", "#27ae60", "#e74c3c", "#c0392b"
+# Warning banners (FR-7): kind -> (background, border, text tone).
+BANNER_STYLE = {"bias": (("#fde2e1", "#5c1a1a"), RED, "error"), "failure": (("#fde2e1", "#5c1a1a"), RED, "error"),
+                "stopped": (("#fff1d6", "#4d3a12"), "#e67e22", "warn")}
+# Acquisition growth banner (FR-8): state -> (background, border, text tone).
+GROWTH_STYLE = {"growing": (("#dff5e5", "#173d22"), GREEN, "ok"), "stalled": BANNER_STYLE["failure"]}
+BANNER_ORDER = ("bias", "growth", "failure", "stopped")
+GROWTH_REFRESH_S = 1.0   # the growth banner's times refresh at most this often (FR-8)
 ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
@@ -496,6 +513,100 @@ class InputSelection:
         return True
 
 
+def growth_text(view):
+    """The growth banner's line: run name, attempt elapsed time, time remaining, .rawf size and rate (FR-8)."""
+    if view.state == "growing":
+        text = f"{view.run_name}: RAW file growing as expected."
+    else:
+        text = f"{view.run_name}: RAW stopped growing {format_elapsed(view.since_growth_s)} ago."
+    text += f" Elapsed {format_elapsed(view.elapsed_s)}"
+    if view.remaining_s is not None:
+        text += f", {format_elapsed(view.remaining_s)} remaining"
+    if isinstance(view.size, int):
+        text += f". RAW {view.size / 1e6:,.1f} MB"
+        if view.state == "growing" and isinstance(view.bytes_per_s, (int, float)):
+            text += f" at {view.bytes_per_s / 1e6:.2f} MB/s"
+    return text
+
+
+def set_text(label, text):
+    """Configure only a changed text: each configure redraws the widget."""
+    if label.cget("text") != text:
+        label.configure(text=text)
+
+
+def open_path(path):
+    """Open a folder or file with the desktop's default application, detached (Recent Runs)."""
+    if sys.platform == "win32":
+        os.startfile(str(path))
+    else:
+        subprocess.Popen(["xdg-open", str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+class BannerArea(ctk.CTkFrame):
+    """Banners above the tabs, so every tab shows them (spec 005): the warnings of ``Banners.items()``, one
+    row per kind with the bias row's button as the operator's bias confirmation (FR-7), and the acquisition
+    growth row (FR-8)."""
+
+    def __init__(self, parent, on_dismiss, on_acknowledge_bias):
+        super().__init__(parent, fg_color="transparent")
+        self.rows = {}
+        self._banners, self._growth, self._packed = (), None, ()
+        growth = ctk.CTkFrame(self, border_width=2)
+        growth.kind, growth.button = "growth", None
+        growth.label = ctk.CTkLabel(growth, text="", justify="left", anchor="w", font=ctk.CTkFont(size=14, weight="bold"),
+                                    wraplength=820)
+        growth.label.pack(side="left", padx=10, pady=8, fill="x", expand=True)
+        self.rows["growth"] = growth
+        for kind, (background, border, tone) in BANNER_STYLE.items():
+            row = ctk.CTkFrame(self, fg_color=background, border_color=border, border_width=2)
+            row.kind = kind
+            row.label = ctk.CTkLabel(row, text="", text_color=STATUS_COLOURS[tone], justify="left", anchor="w",
+                                     font=ctk.CTkFont(size=14, weight="bold"), wraplength=640)
+            row.label.pack(side="left", padx=10, pady=8, fill="x", expand=True)
+            if kind == "bias":
+                row.button = ctk.CTkButton(row, text="I checked the bias", width=140, command=on_acknowledge_bias)
+            else:
+                row.button = ctk.CTkButton(row, text="Dismiss", width=100, command=lambda kind=kind: on_dismiss(kind))
+            row.button.pack(side="right", padx=10, pady=8)
+            self.rows[kind] = row
+
+    def show(self, banners, before):
+        self._banners = tuple(banners)
+        for banner in self._banners:
+            self.rows[banner.kind].label.configure(text=banner.text)
+        self._layout(before)
+
+    def show_growth(self, state, text, before):
+        """``state`` growing (green) or stalled (red); None removes the row."""
+        if state is not None:
+            background, border, tone = GROWTH_STYLE[state]
+            row = self.rows["growth"]
+            if row.cget("border_color") != border:
+                row.configure(fg_color=background, border_color=border)
+                row.label.configure(text_color=STATUS_COLOURS[tone])
+            row.label.configure(text=text)
+        self._growth = state
+        self._layout(before)
+
+    def _layout(self, before):
+        """Only active banners take space; with none the area itself is gone."""
+        active = {banner.kind for banner in self._banners} | ({"growth"} if self._growth else set())
+        packed = tuple(kind for kind in BANNER_ORDER if kind in active)
+        if packed == self._packed:
+            return
+        self._packed = packed
+        for row in self.rows.values():
+            row.pack_forget()
+        for kind in packed:
+            self.rows[kind].pack(fill="x", pady=(0, 4))
+        if not packed:
+            self.pack_forget()
+        elif self.winfo_manager() != "pack":
+            self.pack(fill="x", padx=10, pady=(5, 0), before=before)
+
+
 class RunPanel(ctk.CTkFrame):
     """The foreground run above the tabs (spec 005 FR-1): what runs, a bar, its counter, elapsed time and
     the estimate. It only shows a ``RunView``; the last run's final state stays until the next run."""
@@ -519,18 +630,19 @@ class RunPanel(ctk.CTkFrame):
         self._glow = tuple(ctk.ThemeManager.theme["CTkProgressBar"]["progress_color"])
         self._breath = None     # after() id while the idle bar breathes
         self._breath_step = 0
+        self._palette = [tuple(self._mix(low, high, 0.6 * (1 - math.cos(2 * math.pi * step / BREATH_STEPS)) / 2)
+                               for low, high in zip(self._trough, self._glow)) for step in range(BREATH_STEPS)]
 
     def show(self, view):
         if view.idle:
             self._show_idle()
             return
         self._stop_breathing()
-        self.title.configure(text=view.title)
-        self.counter.configure(text=view.counter)
         timing = f"Elapsed {format_elapsed(view.elapsed_s)}"
         if view.remaining_s is not None:
             timing += f"  -  about {format_elapsed(view.remaining_s)} remaining"
-        self.timing.configure(text=timing)
+        for label, text in ((self.title, view.title), (self.counter, view.counter), (self.timing, timing)):
+            set_text(label, text)
         indeterminate = view.fraction is None and not view.finished
         if indeterminate and not self._running:
             self.bar.configure(mode="indeterminate")
@@ -538,23 +650,23 @@ class RunPanel(ctk.CTkFrame):
         elif not indeterminate:
             if self._running:
                 self.bar.stop()
-            self.bar.configure(mode="determinate")
-            self.bar.set(view.fraction or 0.0)
+            if self.bar.cget("mode") != "determinate":
+                self.bar.configure(mode="determinate")
+            if self._running or self.bar.get() != (view.fraction or 0.0):
+                self.bar.set(view.fraction or 0.0)
         self._running = indeterminate
         self._show_stages(view)
 
     def _show_idle(self):
         """Before the first run: a still, empty bar whose colour slowly breathes; nothing spins."""
-        self.title.configure(text=IDLE_TITLE)
-        self.counter.configure(text=IDLE_HINT)
-        self.timing.configure(text="")
+        for label, text in ((self.title, IDLE_TITLE), (self.counter, IDLE_HINT), (self.timing, "")):
+            set_text(label, text)
         if self._breath is None:
             self._breath = self.after(BREATH_STEP_MS, self._breathe)
 
     def _breathe(self):
         self._breath_step += 1
-        level = (1 - math.cos(2 * math.pi * self._breath_step * BREATH_STEP_MS / 1000 / BREATH_PERIOD_S)) / 2
-        self.bar.configure(fg_color=tuple(self._mix(low, high, 0.6 * level) for low, high in zip(self._trough, self._glow)))
+        self.bar.configure(fg_color=self._palette[self._breath_step % BREATH_STEPS])
         self._breath = self.after(BREATH_STEP_MS, self._breathe)
 
     def _mix(self, low, high, level):
@@ -573,7 +685,8 @@ class RunPanel(ctk.CTkFrame):
 
     def _show_stages(self, view):
         if not view.stages:
-            self.stage_row.grid_forget()
+            if self.stage_row.winfo_manager():
+                self.stage_row.grid_forget()
             return
         if len(self.stage_labels) != len(view.stages):
             for label in self.stage_labels:
@@ -586,7 +699,9 @@ class RunPanel(ctk.CTkFrame):
             text = f"{STAGE_TEXT.get(row.stage, row.stage)}: {state}"
             if row.elapsed_s is not None:
                 text += f" {format_elapsed(row.elapsed_s)}"
-            label.configure(text=text, text_color=STATUS_COLOURS[STAGE_TONES.get(row.state, "info")])
+            colour = STATUS_COLOURS[STAGE_TONES.get(row.state, "info")]
+            if (label.cget("text"), label.cget("text_color")) != (text, colour):
+                label.configure(text=text, text_color=colour)
         if not self.stage_row.winfo_manager():
             self.stage_row.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
 
@@ -624,16 +739,24 @@ class PETsysManager:
         self.shutdown_timeout_s = SHUTDOWN_TIMEOUT_S
         self._action = None             # the action of this window's workflow token
         self._status_label = None       # where that workflow's progress is shown
-        self.last_conversion = None     # (run id, exact validated output descriptors) of the last conversion
-        self.last_calibration = None    # (run id, recorded .encal) of the last successful calibration stage
+        self.last_conversion = None     # (run id, exact validated output descriptors, run folder) of the last conversion
+        self.last_calibration = None    # (run id, recorded .encal, run folder) of the last successful calibration stage
         self._last_raw = None           # the RAW input the running conversion reported
         self._stages = ()               # stage ids of this window's running workflow
         self._issues = {}               # check key -> reasons of the newest shown readiness
         self.selections = {}
         self.ask_files = filedialog.askopenfilenames   # dialogs are attributes so checks can answer them
         self.ask_yes_no = messagebox.askyesno
+        self.open_path = open_path                    # Recent Runs: open a folder or report (spec 005 FR-3)
+        self.ask_offer = self._ask_offer              # Recent Runs: which next step "Use as input" fills
+        self.recent_rows = ()                         # RecentRun rows shown in Recent Runs
+        self._recent_selected = None                  # (RecentRun, main report or None) of the selected row
+        self._shown_tab = None
         self.clock = time.monotonic                   # the run panel's clock; checks replace it
         self.run_tracker = RunTracker(STAGE_TEXT)
+        self.banners = Banners()
+        self.growth = GrowthBanner()
+        self._growth_shown = None                     # (clock(), state) of the last growth-banner redraw
         self._panel_shown = None                      # clock() of the last run-panel redraw
         self.root.title(f"{TITLE} {__version__}")
         self.root.geometry("900x950")
@@ -673,6 +796,9 @@ class PETsysManager:
     # Layout -------------------------------------------------------------------------------------
 
     def _build(self):
+        self.banner_area = BannerArea(self.root, self.dismiss_banner, self.acknowledge_bias)   # packed when active
+        self.bias_frame = self.banner_area.rows["bias"]     # FR-19 warning, above everything
+        self.bias_label, self.bias_ack = self.bias_frame.label, self.bias_frame.button
         self.run_panel = RunPanel(self.root)
         self.run_panel.pack(fill="x", padx=10, pady=(5, 0))
         self.tabview = ctk.CTkTabview(self.root)
@@ -688,6 +814,7 @@ class PETsysManager:
         self._ldat_tab(self.tabs[2])
         self._lm_tab(self.tabs[3])
         self._qc_tab(self.tabs[4])
+        self._recent_tab(self.tabs[5])
         output = ctk.CTkFrame(self.root)
         output.pack(fill="x", padx=10, pady=5)  # the tabs take any extra height
         header = ctk.CTkFrame(output, fg_color="transparent")
@@ -746,17 +873,7 @@ class PETsysManager:
             self.readiness[key] = label
 
     def _setup_tab(self, tab):
-        # FR-19 warning, shown above everything once a bias-off could not be confirmed.
-        self.bias_frame = ctk.CTkFrame(tab, fg_color=("#fde2e1", "#5c1a1a"), border_color=RED, border_width=2)
-        self.bias_label = ctk.CTkLabel(self.bias_frame, text="", text_color=STATUS_COLOURS["error"],
-                                       font=ctk.CTkFont(size=14, weight="bold"), justify="left", anchor="w",
-                                       wraplength=640)
-        self.bias_label.pack(side="left", padx=10, pady=8, fill="x", expand=True)
-        self.bias_ack = ctk.CTkButton(self.bias_frame, text="I checked the bias", width=140,
-                                      command=self.acknowledge_bias)
-        self.bias_ack.pack(side="right", padx=10, pady=8)
         profile = self._frame(tab, "Machine Profile")
-        self._first_setup_frame = profile
         self.entries["profile"] = [self._row(profile, 1, "Profile File:", self.profile_path, self._browse_profile)]
         buttons = ctk.CTkFrame(profile, fg_color="transparent")
         buttons.grid(row=2, column=1, sticky="w", padx=5, pady=2)
@@ -859,8 +976,11 @@ class PETsysManager:
         status = self._frame(tab, "Conversion Result")
         self.convert_status = ctk.CTkLabel(status, text="No conversion run in this session", **small)
         self.convert_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
-        self._button(status, "use_outputs", "Use these outputs as processing inputs",
-                     command=self.use_conversion_outputs).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
+        offers = ctk.CTkFrame(status, fg_color="transparent")    # next steps; the operator starts them (FR-4)
+        offers.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 8))
+        for target in CONVERSION_OFFERS:
+            self._button(offers, f"offer_{target}", OFFER_LABELS[target], width=140,
+                         command=lambda target=target: self.offer(target)).pack(side="left", padx=(0, 8))
         self._readiness(tab, ("convert_coincidence",))
 
     def _ldat_tab(self, tab):
@@ -887,9 +1007,37 @@ class PETsysManager:
         status = self._frame(tab, "Energy Calibration Result")
         self.cal_status = ctk.CTkLabel(status, text="No calibration run in this session", **self._small())
         self.cal_status.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=2)
-        self._button(status, "use_calibration", "Use this .encal as the LM System Energy cal file",
-                     command=self.use_calibration).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
+        self._button(status, "offer_lm_calibration", OFFER_LABELS["lm_calibration"],
+                     command=lambda: self.offer("lm_calibration")).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
         self._readiness(tab, ("calibrate",))
+
+    def _recent_tab(self, tab):
+        """Runs recorded in each destination's runs.tsv (FR-3). Nothing here changes, moves or deletes a run."""
+        frame = self._frame(tab, "Recent Runs (from each destination's runs.tsv; read only)")
+        buttons = ctk.CTkFrame(frame, fg_color="transparent")
+        buttons.grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=5)
+        for key, text, command in (("recent_refresh", "Refresh", self.refresh_recent),
+                                   ("recent_open_folder", "Open folder", self.open_recent_folder),
+                                   ("recent_open_report", "Open report", self.open_recent_report),
+                                   ("recent_use", "Use as input", self.use_recent)):
+            self._button(buttons, key, text, width=120, command=command).pack(side="left", padx=(0, 8))
+        self.recent_status = ctk.CTkLabel(frame, text="Open this tab or press Refresh to read the runs",
+                                          **self._small())
+        self.recent_status.grid(row=2, column=0, columnspan=4, sticky="w", padx=10, pady=2)
+        table = ctk.CTkFrame(frame, fg_color="transparent")
+        table.grid(row=3, column=0, columnspan=4, sticky="nsew", padx=10, pady=(2, 10))
+        columns = (("finished", "Finished", 130), ("folder", "Run folder", 240), ("action", "Action", 80),
+                   ("inputs", "Inputs", 170), ("status", "Status", 80), ("main", "Main output", 170))
+        self.recent_tree = ttk.Treeview(table, columns=[name for name, _, _ in columns], show="headings",
+                                        height=18, selectmode="browse")
+        for name, heading, width in columns:
+            self.recent_tree.heading(name, text=heading, anchor="w")
+            self.recent_tree.column(name, width=width, anchor="w", stretch=name in ("folder", "inputs", "main"))
+        scroll = ttk.Scrollbar(table, orient="vertical", command=self.recent_tree.yview)
+        self.recent_tree.configure(yscrollcommand=scroll.set)
+        self.recent_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.recent_tree.bind("<<TreeviewSelect>>", self._recent_select)
 
     def _lm_tab(self, tab):
         self._selection(tab, "listmode")
@@ -1012,6 +1160,8 @@ class PETsysManager:
                     self._accept_daqd(outcome.status, lines)
                 lines.append("System initialized" if outcome.initialized
                              else f"Initialization failed; acquisition stays locked: {outcome.message}")
+                if not outcome.initialized:
+                    self.show_banner("failure", f"Initialization failed: {outcome.message}")
             elif event.kind == "refused":
                 key, message = event.payload
                 if key == "daqd":
@@ -1023,6 +1173,8 @@ class PETsysManager:
                 self._workflow_event(event.payload)
             elif event.kind == "workflow_done":
                 self._workflow_done(event.payload, lines)
+            elif event.kind == "recent":
+                self._show_recent(event.payload)
             elif event.kind == "shutdown":
                 if daemon:
                     self.daqd_output(*daemon)
@@ -1039,15 +1191,29 @@ class PETsysManager:
         if lines:
             self.log(*lines)
         self._refresh_controls()
+        self._watch_tab()
         self._refresh_run_panel()
         if not self._closing:
             self._poll_id = self.root.after(POLL_MS, self._poll)
+
+    def _watch_tab(self):
+        tab = self.tabview.get()
+        if tab != self._shown_tab:
+            self._shown_tab = tab
+            if tab == RECENT_TAB:
+                self.refresh_recent()              # read each time the tab is opened
 
     def _refresh_run_panel(self):
         now = self.clock()
         if self._panel_shown is None or not 0 <= now - self._panel_shown < PANEL_REFRESH_S:
             self._panel_shown = now
             self.run_panel.show(self.run_tracker.view(now))
+        view = self.growth.view(now)
+        state = None if view is None else view.state
+        shown = self._growth_shown
+        if shown is None or shown[1] != state or (state is not None and not 0 <= now - shown[0] < GROWTH_REFRESH_S):
+            self._growth_shown = now, state
+            self.banner_area.show_growth(state, None if view is None else growth_text(view), self.run_panel)
 
     def log(self, *messages):
         """Append lines in one widget update, each starting with the local time (FR-1); bounded tail."""
@@ -1175,6 +1341,9 @@ class PETsysManager:
                 current.state, current.message, current.initialized):
             lines.append(f"{DAQD_TEXT[status.state]}: {status.message}" if status.message
                          else DAQD_TEXT[status.state])
+        if status.state == DaqdState.FAILED and (current is None or current.state != DaqdState.FAILED):
+            self.show_banner("failure", f"{DAQD_TEXT[status.state]}: {status.message}" if status.message
+                             else DAQD_TEXT[status.state])
         self.daqd_status = status
 
     def _workflow_event(self, event):
@@ -1185,6 +1354,7 @@ class PETsysManager:
         if event.identity.run_id != self._run_id:
             return
         self.run_tracker.event(self.clock(), event.kind, event.identity.stage_id, event.payload)
+        self.growth.event(self.clock(), event.kind, event.identity.stage_id, event.payload)
         kind = event.kind.removeprefix("acquisition_")
         payload = event.payload
         text, tone = None, "info"
@@ -1250,6 +1420,8 @@ class PETsysManager:
         self._token, self._run_id, self._stop_requested, self._stages = None, None, False, ()
         outcome = result.outcome
         self.run_tracker.finish(self.clock(), "not started" if outcome is None else outcome.status.value)
+        self.growth.reset(None)           # the acquisition, if any, has ended
+        self.refresh_recent()
         if outcome is None:
             text, tone = f"{ACTION_TEXT.get(action, action.value)} {result.message}", "warn"
         else:
@@ -1257,6 +1429,11 @@ class PETsysManager:
             if outcome.run_root is not None:
                 text += f"\nRun directory: {outcome.run_root}"
             tone = {ResultStatus.SUCCEEDED: "ok", ResultStatus.CANCELLED: "warn"}.get(outcome.status, "error")
+            name = ACTION_TEXT.get(action, action.value)
+            if outcome.status == ResultStatus.CANCELLED:
+                self.show_banner("stopped", f"{name} stopped: {outcome.message}")
+            elif outcome.status != ResultStatus.SUCCEEDED:
+                self.show_banner("failure", f"{name} {outcome.status.value}: {outcome.message}")
             if action == Action.CONVERT:
                 text += self._conversion_report(outcome, run_id)
             elif action != Action.ACQUIRE:
@@ -1320,7 +1497,7 @@ class PETsysManager:
             if stage.stage_id == "calibration":
                 encal = next((a.path for a in stage.artifacts if a.kind == "encal"), None)
                 if encal is not None:
-                    self.last_calibration = (run_id, Path(encal))
+                    self.last_calibration = (run_id, Path(encal), outcome.run_root)
         return text
 
     def _conversion_report(self, outcome, run_id):
@@ -1342,7 +1519,7 @@ class PETsysManager:
                 note = (f"{records:,} records" if records is not None else
                         f"first {checked:,} records checked" if checked is not None else "")
                 text += f"\n  {index}. {artifact.path}" + (f"   ({note})" if note else "")
-            self.last_conversion = (run_id, tuple(artifact.input_descriptor for artifact in outputs))
+            self.last_conversion = (run_id, tuple(artifact.input_descriptor for artifact in outputs), outcome.run_root)
         removed = stage.details.get("removed", ())
         if removed:     # T34: after a successful conversion
             splits = [Path(path).name for path in removed if path.endswith(".ldat")]
@@ -1354,15 +1531,22 @@ class PETsysManager:
             text += "\nEmpty split files (kept, not outputs): " + ", ".join(Path(path).name for path in empty)
         return text
 
+    def show_banner(self, kind, text):
+        self.banners.show(kind, text)
+        self.banner_area.show(self.banners.items(), self.run_panel)
+
+    def dismiss_banner(self, kind):
+        self.banners.dismiss(kind)
+        self.banner_area.show(self.banners.items(), self.run_panel)
+
     def show_bias_unknown(self, message):
         self.bias_unknown = True
-        self.bias_label.configure(text=f"SiPM bias state unknown. {message}")
-        if not self.bias_frame.winfo_ismapped():
-            self.bias_frame.pack(padx=10, pady=5, fill="x", before=self._first_setup_frame)
+        self.show_banner("bias", f"SiPM bias state unknown. {message}")
 
     def acknowledge_bias(self):
         self.bias_unknown = False
-        self.bias_frame.pack_forget()
+        self.banners.acknowledge_bias()
+        self.banner_area.show(self.banners.items(), self.run_panel)
         self.log("Operator confirmed the SiPM bias state after the unknown-bias warning")
         self._refresh_controls()
 
@@ -1381,8 +1565,12 @@ class PETsysManager:
             "daqd": not busy and not self._daqd_pending and not initializing and (
                 live or (state in (DaqdState.OFF, DaqdState.FAILED) and self._ready.get("daqd", False))),
             "initialize": not busy and ready and not initializing and self._ready.get("initialize", False),
-            "use_outputs": not busy and self.last_conversion is not None,
-            "use_calibration": not busy and self.last_calibration is not None,
+            **{f"offer_{target}": not busy and self.last_conversion is not None for target in CONVERSION_OFFERS},
+            "offer_lm_calibration": not busy and self.last_calibration is not None,
+            "recent_refresh": True,
+            "recent_open_folder": self._recent_selected is not None,
+            "recent_open_report": self._recent_selected is not None and self._recent_selected[1] is not None,
+            "recent_use": not busy and self._recent_selected is not None,
         }
         for key in LIVE_KEYS:
             enable[key] = not busy and system and self._ready.get(key, False)
@@ -1475,8 +1663,11 @@ class PETsysManager:
         self._run_id, self._stop_requested, self._stages = None, False, ()
         self.run_tracker.reset(self.clock(), ACTION_TEXT.get(action, action.value))
         self._panel_shown = None          # the next poll shows the new run at once
+        self.banners.new_run()            # failure and stopped banners go; bias unknown stays (FR-7)
+        self.growth.reset(getattr(options, "duration_s", None) if action in LIVE_ACTIONS else None)
+        self.banner_area.show(self.banners.items(), self.run_panel)
         if action == Action.CONVERT:
-            self.last_conversion = None  # "Use these outputs" only ever means the run shown
+            self.last_conversion = None  # an offer only ever means the run shown
         if action in (Action.CALIBRATE, Action.PIPELINE):
             self.last_calibration = None
         label.configure(text=text, text_color=STATUS_COLOURS["info"])
@@ -1525,25 +1716,123 @@ class PETsysManager:
             self.log("STOP requested")
         self._refresh_controls()
 
-    def use_calibration(self):
-        """Operator choice: put the last recorded .encal into the LM field (an unsaved profile edit)."""
-        if self.last_calibration is None:
-            return
-        run_id, path = self.last_calibration
-        self.vars["calibration_file"].set(str(path))
-        self.log(f"System Energy cal file set to {path} from run {run_id} (unsaved profile edit)")
+    # Recent Runs (spec 005 FR-3): read only ----------------------------------------------------------
 
-    def use_conversion_outputs(self):
-        """Hand the last conversion's exact validated outputs to the processing lists that accept them."""
-        if self.last_conversion is None:
+    def refresh_recent(self):
+        self.session.list_recent()
+
+    def _show_recent(self, recent):
+        selected = self._recent_selected[0].run_root if self._recent_selected else None
+        self.recent_rows = recent.rows
+        self.recent_tree.delete(*self.recent_tree.get_children())
+        for index, row in enumerate(recent.rows):
+            self.recent_tree.insert("", "end", iid=str(index), values=(
+                row.finished.strftime("%Y-%m-%d %H:%M:%S"), row.run_root.name, row.action, row.inputs, row.status,
+                row.main_output))
+            if row.run_root == selected:
+                self.recent_tree.selection_set(str(index))
+        self._recent_selected = None if selected is None else self._recent_selected
+        text = f"{len(recent.rows)} run(s) from runs.tsv, newest first"
+        if recent.skipped:
+            text += f"; {recent.skipped} malformed runs.tsv line(s) skipped"
+        if recent.unrecorded:
+            text += "; no runs recorded in " + ", ".join(PROFILE_FIELDS[key][0].rstrip(":") for key in recent.unrecorded)
+        self.recent_status.configure(text=text)
+        self._recent_select()
+
+    def _recent_select(self, *_):
+        chosen = self.recent_tree.selection()
+        if not chosen or int(chosen[0]) >= len(self.recent_rows):
+            self._recent_selected = None
+        else:
+            row = self.recent_rows[int(chosen[0])]
+            try:
+                report = main_report(row.run_root)
+            except RunRecordError:
+                report = None
+            self._recent_selected = (row, report)
+        self._refresh_controls()
+
+    def _open(self, path):
+        try:
+            self.open_path(path)
+        except OSError as exc:
+            self.log(f"Could not open {path}: {exc}")
+
+    def open_recent_folder(self):
+        if self._recent_selected is not None:
+            self._open(self._recent_selected[0].run_root)
+
+    def open_recent_report(self):
+        if self._recent_selected is not None and self._recent_selected[1] is not None:
+            self._open(self._recent_selected[1])
+
+    def use_recent(self):
+        """The selected run's next-step offers (FR-4); the chosen one fills its tab, nothing starts."""
+        if self._recent_selected is None:
             return
-        run_id, descriptors = self.last_conversion
-        targets = OUTPUT_TARGETS[(descriptors[0].format, descriptors[0].population)]
-        for key in targets:
-            replaced = len(self.selections[key].paths)
-            self.selections[key].use_outputs(descriptors, run_id)
-            self.log(f"{CHECKS[key][1]} inputs: {len(descriptors)} output(s) of conversion run {run_id}"
+        root = self._recent_selected[0].run_root
+        try:
+            offers = run_offers(root)
+        except RunRecordError as exc:
+            self.log(f"Use as input not done: {exc}")
+            return
+        if not offers:
+            self.log(f"Use as input: run {root.name} records no next-step inputs")
+            return
+        chosen = self.ask_offer(offers)
+        if chosen is not None:
+            self.apply_offer(chosen, root.name)
+
+    def _ask_offer(self, offers):
+        """A small modal choice of the run's offers; None when cancelled."""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Use as input")
+        dialog.transient(self.root)
+        chosen = []
+        ctk.CTkLabel(dialog, text="Fill which tab with this run's recorded outputs?").pack(padx=20, pady=(15, 5))
+        for item in offers:
+            ctk.CTkButton(dialog, text=item.label, width=260,
+                          command=lambda item=item: (chosen.append(item), dialog.destroy())).pack(padx=20, pady=3)
+        ctk.CTkButton(dialog, text="Cancel", width=260, fg_color="gray40", command=dialog.destroy).pack(padx=20, pady=(3, 15))
+        try:
+            dialog.grab_set()
+        except tk.TclError:
+            pass    # not viewable yet: still modal enough, the window waits below
+        self.root.wait_window(dialog)
+        return chosen[0] if chosen else None
+
+    def offer(self, target):
+        """A result frame's next step: read the shown run's record when clicked, then fill one tab (FR-4)."""
+        source = self.last_calibration if target == "lm_calibration" else self.last_conversion
+        if source is None:
+            return
+        run_id, _, root = source
+        try:
+            chosen = next((item for item in run_offers(root) if item.target == target), None)
+        except RunRecordError as exc:
+            self.log(f"{OFFER_LABELS[target]} not offered: {exc}")
+            return
+        if chosen is None:
+            self.log(f"{OFFER_LABELS[target]} not offered: run {run_id} records no such output")
+            return
+        self.apply_offer(chosen, run_id)
+
+    def apply_offer(self, offer, run_id):
+        """Fill only the offer's target and switch to its tab; never starts a run. A calibration goes into the LM
+        field as an unsaved profile edit, never saved by itself (spec 003)."""
+        if offer.target == "lm_calibration":
+            self.vars["calibration_file"].set(str(offer.payload))
+            self.log(f"System Energy cal file set to {offer.payload} from run {run_id} (unsaved profile edit)")
+            tab = CHECKS["listmode"][2]
+        else:
+            selection = self.selections[offer.target]
+            replaced = len(selection.paths)
+            selection.use_outputs(offer.payload, run_id)
+            self.log(f"{CHECKS[offer.target][1]} inputs: {len(offer.payload)} output(s) of conversion run {run_id}"
                      + (f" (replaced {replaced} listed file(s))" if replaced else ""))
+            tab = CHECKS[offer.target][2]
+        self.tabview.set(TABS[tab])
 
     def _update_conversion_plan(self):
         """Exact converter input/output naming and split time for the current fields (display only)."""

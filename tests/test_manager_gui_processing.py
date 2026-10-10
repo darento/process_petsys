@@ -16,12 +16,14 @@ import pytest
 
 from exe_programs import petsys_manager_gui as gui
 from helpers import REPO
-from manager_gui_helpers import ConversionBase, FAST, Hardware, SAFETY, SHM, TOOLS
+from manager_gui_helpers import ConversionBase, FAST, Hardware, RunPanelBase, SAFETY, SETTLE_S, SHM, TOOLS, pump
 from manager_helpers import METADATA, FakeChild, ListmodeFixtures, QCFixtures, ToolWorld
 from src.petsys_manager.acquisition import DaqdState
-from src.petsys_manager.contracts import to_plain
+from src.petsys_manager.artifacts import RunStore
+from src.petsys_manager.contracts import Action, Artifact, CommandResult, ResultStatus, to_plain
+from src.petsys_manager.session import WorkflowResult
 from src.petsys_manager.settings import MachineProfile, ToolCapabilities, load_profile, save_profile
-from src.petsys_manager.workflow import WorkflowCoordinator
+from src.petsys_manager.workflow import StageOutcome, WorkflowCoordinator, WorkflowOutcome
 
 
 class ProcessingWorld(ToolWorld):
@@ -108,7 +110,7 @@ class ProcessingChecks(ConversionBase):
 
     def settled(self, app):
         self.wait(app, lambda: app._check_id is None and app._awaiting is not None
-                  and app.shown_generation == app._awaiting, 5, "readiness never settled")
+                  and app.shown_generation == app._awaiting, SETTLE_S, "readiness never settled")
 
     def select(self, app, key, paths, declared):
         selection = app.selections[key]
@@ -193,9 +195,12 @@ class ProcessingChecks(ConversionBase):
         self.assertTrue(any(": fits " in status and " keys" in status for status in app.statuses))   # T25.4 progress
         self.assertTrue(any("(read)" in status for status in app.statuses))
         self.assertEqual(app.vars["calibration_file"].get(), self.files["calibration_file"])   # never applied by itself
-        self.assertEqual(self.state(app, "use_calibration"), "normal")
-        app.buttons["use_calibration"].invoke()
+        self.assertEqual(self.state(app, "offer_lm_calibration"), "normal")
+        self.assertEqual(app.buttons["offer_lm_calibration"].cget("text"), "Generate LM with this calibration")
+        app.buttons["offer_lm_calibration"].invoke()
         self.settled(app)
+        self.assertEqual(app.tabview.get(), gui.TABS[3])                     # spec 005: switched to LM, not started
+        self.assertIsNone(app._token)
         self.assertEqual(app.vars["calibration_file"].get(), str(encal))
         self.assertIn("unsaved edits", app.profile_status.cget("text"))
         self.assertIn(f"System Energy cal file set to {encal} from run {run_root.name}", self.log(app))
@@ -252,7 +257,7 @@ class ProcessingChecks(ConversionBase):
         self.assertIn("Calibration event limit (target): ", app.pipeline_plan.cget("text"))
         self.assertIn("over 1 split(s)", app.pipeline_plan.cget("text"))         # the pipeline's own file count
         app.target_per_key.set("x")                                              # a profile error: no check runs
-        self.wait(app, lambda: app._check_id is None and app._awaiting is None, 5)
+        self.wait(app, lambda: app._check_id is None and app._awaiting is None, SETTLE_S)
         self.assertIn("Profile: Target sides per histogram (T) must be a positive integer",
                       self.reason(app, "calibrate"))
         self.assertEqual(app.limit_plan.cget("text"), "Event limit: shown when the calibration prerequisites are met")
@@ -274,10 +279,10 @@ class ProcessingChecks(ConversionBase):
         self.settle_edit(app, app.workers, "3")
         self.assertEqual(app.limit_plan.cget("text"), plan(workers=3, limit_mode="reference", target_per_key=500))
         app.workers.set("x")
-        self.wait(app, lambda: app._check_id is None and app._awaiting is None, 5)
+        self.wait(app, lambda: app._check_id is None and app._awaiting is None, SETTLE_S)
         self.assertIn("Profile: Workers must be a whole number (0 = automatic)", self.reason(app, "calibrate"))
         app.workers.set("-1")
-        self.wait(app, lambda: app._check_id is None and app._awaiting is None, 5)
+        self.wait(app, lambda: app._check_id is None and app._awaiting is None, SETTLE_S)
         self.assertIn("workers must be an integer in 0..", self.reason(app, "calibrate"))
         self.settle_edit(app, app.workers, "0")
         self.settle_edit(app, app.positions, "0")                                # not ready: no plan shown
@@ -425,7 +430,7 @@ class ProcessingChecks(ConversionBase):
         self.assertEqual(self.profile_path.read_bytes(), saved)
         self.assertEqual(load_profile(self.profile_path), app.session.profile)
         self.assertEqual(app.last_calibration[1], Path(encal))
-        self.assertEqual(self.state(app, "use_calibration"), "normal")
+        self.assertEqual(self.state(app, "offer_lm_calibration"), "normal")
         self.wait(app, lambda: self.state(app, "pipeline") == "normal")
         self.assertEqual(app.guard.violations, [])
 
@@ -464,7 +469,7 @@ class ProcessingChecks(ConversionBase):
         text = self.finish(app, "calibrate", app.cal_status)
         self.assertTrue(text.startswith("Energy calibration failed"), text)
         self.assertNotIn("Energy cal file:", text)
-        self.assertEqual(self.state(app, "use_calibration"), "disabled")
+        self.assertEqual(self.state(app, "offer_lm_calibration"), "disabled")
         values, profile = self.ui_state(app)
         values["lists"]["calibrate"] = []
         self.assertEqual((values, profile), ui)                         # only the calibration list was edited
@@ -506,7 +511,7 @@ class ProcessingChecks(ConversionBase):
                                     ("detector_pixels_x", "200", "detector_pixels_x must be an integer in 1..127"),
                                     ("ring_distance_mm", "-1", "ring_distance_mm must be greater than 0")):
             app.lm_vars[name].set(value)
-            self.wait(app, lambda: app._check_id is None and app._awaiting is None, 5)
+            self.wait(app, lambda: app._check_id is None and app._awaiting is None, SETTLE_S)
             for key, text in self.reasons(app).items():
                 self.assertIn(f"Profile: {reason}", text, key)
             self.assertEqual(self.state(app, "listmode"), "disabled")
@@ -535,3 +540,51 @@ class ProcessingChecks(ConversionBase):
 
 
 STAGE_LABELS = getattr(gui, "STAGE_TEXT", {})
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-4")  # spec 005 T11
+class CalibrationOfferChecks(RunPanelBase):
+    fixture_prefix = "pm-gui-cal-offer-"
+
+    def calibration_run(self, status=ResultStatus.SUCCEEDED):
+        """A recorded calibration run and the outcome the window receives for it."""
+        destination = self.base / "cal"
+        destination.mkdir()
+        store = RunStore.reserve(destination, {"action": "calibrate"}, name="cal", stages=["calibration"])
+        attempt = store.reserve_attempt("calibration", attempt_id="attempt-1")
+        artifacts = []
+        for name, kind in (("x.encal", "encal"), ("x_plot.png", "calibration_plot")):
+            (attempt.directory / name).write_bytes(name.encode())
+            artifacts.append(Artifact(attempt.directory / name, kind))
+        ok = status == ResultStatus.SUCCEEDED
+        store.finish_attempt(attempt, CommandResult(attempt.identity, status, 0 if ok else 1, "done", artifacts,
+                                                    outputs_validated=ok))
+        store.finish(status, "" if ok else "fits failed")
+        stage = StageOutcome("calibration", status, "done", "attempt-1", store.root, tuple(artifacts))
+        return store.root, WorkflowOutcome(Action.CALIBRATE, status, "done", store.root, (stage,))
+
+    def test_offer_lm_with_this_calibration_is_an_unsaved_edit_and_switches_to_lm(self):
+        app = self.begin()
+        root, outcome = self.calibration_run()
+        app._workflow_done(WorkflowResult(1, outcome, ""), [])
+        saved = (self.base / "profile.yaml").read_bytes()
+        started = []
+        app.session.start_workflow = lambda *args, **kwargs: started.append(args) or 2
+        app._refresh_controls()
+        self.assertEqual(app.buttons["offer_lm_calibration"].cget("state"), "normal")
+        app.buttons["offer_lm_calibration"].invoke()
+        self.assertEqual(app.vars["calibration_file"].get(), str(root / "x.encal"))
+        self.assertEqual(app.tabview.get(), gui.TABS[3])
+        self.assertTrue(pump(app.root, lambda: "unsaved edits" in app.profile_status.cget("text")),
+                        app.profile_status.cget("text"))
+        self.assertIn(f"System Energy cal file set to {root / 'x.encal'} from run run-1 (unsaved profile edit)", self.log(app))
+        self.assertEqual(started, [])
+        self.assertEqual((self.base / "profile.yaml").read_bytes(), saved)
+
+    def test_offer_lm_calibration_disabled_after_a_failed_calibration(self):
+        app = self.begin()
+        root, outcome = self.calibration_run(ResultStatus.FAILED)
+        app._workflow_done(WorkflowResult(1, outcome, ""), [])
+        app._refresh_controls()
+        self.assertEqual(app.buttons["offer_lm_calibration"].cget("state"), "disabled")

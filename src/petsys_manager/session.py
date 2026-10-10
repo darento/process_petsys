@@ -34,7 +34,7 @@ class ShellEvent:
     # "log", "daqd_log" (a line of the daemon's own output), "readiness", "daqd" (DaqdStatus),
     # "init_done" (InitOutcome), "refused" ((key, message)),
     # "workflow" (RunEvent), "workflow_done" (WorkflowResult), "shutdown" (ShutdownResult),
-    # "inputs_probed" (InputProbe)
+    # "inputs_probed" (InputProbe), "recent" (recent.Recent)
     kind: str
     payload: object
 
@@ -254,6 +254,16 @@ class ManagerSession:
         thread = threading.Thread(target=run, name=f"petsys-inputs-{key}", daemon=True)
         thread.start()
         return request
+
+    def list_recent(self):
+        """Read the saved profile's destinations' runs.tsv off the UI thread (spec 005 FR-3); the rows
+        arrive as "recent", a failure as "refused". Read only."""
+        profile, checkout = self.profile, self.repo_root
+
+        def run():
+            from . import recent
+            self.events.put(ShellEvent("recent", recent.list_recent(recent.profile_destinations(profile, checkout))))
+        return self._spawn("recent", run)
 
     # Backend services (created on first use, never at startup) ----------------------------------
 

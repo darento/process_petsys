@@ -45,7 +45,9 @@ from src.cornell.inputs import load_calibration, load_limits, load_processing_co
 from src.detector_features_fixed import calculate_DOI_vectorized
 from src.mapping_generator import ChannelType
 from src.petsys_manager.commands import build_internal
-from src.petsys_manager.contracts import Action, DataFormat, Identity, InputDescriptor, Population
+from src.petsys_manager.artifacts import RunStore
+from src.petsys_manager.contracts import (Action, Artifact, CommandResult, DataFormat, Identity, InputDescriptor,
+                                          Population, ResultStatus)
 from src.petsys_manager.settings import (LMMetadata, MachineProfile, SystemProbe, ToolCapabilities,
                                          preflight)
 from src.read_fixed import read_fixed_file_numpy
@@ -1069,3 +1071,44 @@ class ToolWorld:
                   "request": {"path": str(request_path), "sha256": "f" * 64},
                   "outputs": [write_output(old, b"old", "encal")], "summary": {}, "errors": []}
         result_path.write_text(json.dumps(result), encoding="utf-8")
+
+
+# Spec 005: recorded runs for offers, Recent Runs and run-folder picking ------------------------------------
+
+COMPACT = (DataFormat.COMPACT, Population.COINCIDENCE)
+
+
+def record_stage(store, stage_id, files, status=ResultStatus.SUCCEEDED):
+    """Finish one stage attempt with ``files``: (relative name, kind, bytes)."""
+    attempt = store.reserve_attempt(stage_id, attempt_id="attempt-1")
+    artifacts = []
+    for name, kind, content in files:
+        path = attempt.directory / name
+        path.write_bytes(content)
+        descriptor = InputDescriptor(path, *COMPACT, validated=True) if kind == "ldat" else None
+        artifacts.append(Artifact(path, kind, descriptor))
+    ok = status == ResultStatus.SUCCEEDED
+    store.finish_attempt(attempt, CommandResult(attempt.identity, status, 0 if ok else 1, "done", artifacts,
+                                                outputs_validated=ok))
+    return attempt.directory
+
+
+def recorded_run(destination, stages, results, name="run_2026-10-10_1200"):
+    """A finished run: ``results`` maps each stage to its files, or to (files, status)."""
+    destination.mkdir(parents=True, exist_ok=True)
+    store = RunStore.reserve(destination, {"action": "test"}, name=name, stages=stages)
+    status = ResultStatus.SUCCEEDED
+    for stage_id in stages:
+        files, outcome = results[stage_id] if isinstance(results[stage_id], tuple) else (results[stage_id],
+                                                                                         ResultStatus.SUCCEEDED)
+        record_stage(store, stage_id, files, outcome)
+        if outcome != ResultStatus.SUCCEEDED:
+            status = outcome
+            break
+    store.finish(status, "" if status == ResultStatus.SUCCEEDED else "stopped")
+    return store.root
+
+
+SPLITS = [(f"x_coincCompact_{n}.ldat", "ldat", bytes([n]) * (100 + n)) for n in (0, 1, 2)]
+CALIBRATION = [("x.encal", "encal", b"encal"), ("x_status.tsv", "calibration_status", b"s"),
+               ("x_plot.png", "calibration_plot", b"png")]

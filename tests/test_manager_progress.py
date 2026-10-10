@@ -1,4 +1,5 @@
-"""Spec 005 run-progress logic without Tk: time-remaining estimates (T1) and the stage overview (T6)."""
+"""Spec 005 run-progress logic without Tk: time-remaining estimates (T1), the stage overview (T6), the
+warning banners (T7) and the acquisition growth banner (T8)."""
 
 import os
 import subprocess
@@ -7,7 +8,7 @@ import sys
 import pytest
 
 from helpers import REPO
-from src.petsys_manager.progress import Progress, RateEstimate, StageOverview, split_remaining
+from src.petsys_manager.progress import Banners, GrowthBanner, GrowthView, Progress, RateEstimate, StageOverview, split_remaining
 
 
 @pytest.mark.fr("005-FR-1")
@@ -169,3 +170,140 @@ def test_overview_running_stage_elapsed_ticks_until_recorded():
     assert states(overview, 70.0)[1] == ("conversion", "running", 60.0)
     overview.event(71.0, "stage_finished", "conversion", {"status": "succeeded", "elapsed_s": 60.4})
     assert states(overview, 500.0)[1] == ("conversion", "succeeded", 60.4)
+
+
+def shown(banners):
+    return [(banner.kind, banner.text, banner.dismissible) for banner in banners.items()]
+
+
+@pytest.mark.fr("005-FR-7")
+def test_banners_show_in_fixed_order_and_a_kind_keeps_its_latest_text():
+    banners = Banners()
+    assert shown(banners) == []
+    banners.show("stopped", "Conversion cancelled")
+    banners.show("failure", "DAQD FAILED: daemon exited")
+    banners.show("bias", "SiPM bias state unknown")
+    banners.show("failure", "Initialization failed: no answer")
+    assert shown(banners) == [("bias", "SiPM bias state unknown", False),
+                              ("failure", "Initialization failed: no answer", True),
+                              ("stopped", "Conversion cancelled", True)]
+
+
+@pytest.mark.fr("005-FR-7")
+def test_banners_dismiss_and_new_run_keep_the_bias_banner():
+    banners = Banners()
+    for kind in ("bias", "failure", "stopped"):
+        banners.show(kind, kind)
+    banners.dismiss("failure")
+    banners.dismiss("bias")         # can't be dismissed
+    assert [banner.kind for banner in banners.items()] == ["bias", "stopped"]
+    banners.show("failure", "again")
+    banners.new_run()
+    assert shown(banners) == [("bias", "bias", False)]
+    banners.new_run()
+    assert [banner.kind for banner in banners.items()] == ["bias"]
+
+
+@pytest.mark.fr("005-FR-7")
+def test_banners_only_acknowledge_bias_clears_the_bias_banner():
+    banners = Banners()
+    banners.show("bias", "SiPM bias state unknown")
+    banners.show("stopped", "stopped")
+    banners.acknowledge_bias()
+    assert shown(banners) == [("stopped", "stopped", True)]
+
+
+@pytest.mark.fr("005-FR-7")
+def test_banners_reject_an_unknown_kind():
+    with pytest.raises(ValueError):
+        Banners().show("warning", "processing warnings stay in the log")
+
+
+def growing_acquisition(duration_s=60.0):
+    """Started at 10, attempt at 12, RAW growing, growth check passed at 32."""
+    banner = GrowthBanner()
+    banner.reset(duration_s)
+    banner.event(10.0, "workflow_started", "workflow", {"run_root": "/data/run_2026-10-10_1200", "stages": ["acquisition"]})
+    banner.event(12.0, "acquisition_attempt_started", "acquisition", {"attempt": 1, "max_attempts": 3})
+    banner.event(14.0, "acquisition_growth_started", "acquisition", {"size": 4096})
+    banner.event(17.0, "acquisition_rawf_progress", "acquisition", {"size": 10_000_000, "bytes_per_s": 3e6, "growing": True})
+    assert banner.view(20.0) is None            # hidden until the growth check passes
+    banner.event(32.0, "acquisition_growth_passed", "acquisition", {"growth_bytes": 50_000_000})
+    return banner
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_green_after_the_growth_check_with_run_name_and_times():
+    banner = growing_acquisition()
+    banner.event(37.0, "acquisition_rawf_progress", "acquisition", {"size": 80_000_000, "bytes_per_s": 2.5e6, "growing": True})
+    assert banner.view(38.0) == GrowthView("growing", "run_2026-10-10_1200", 26.0, 34.0, 80_000_000, 2.5e6, None)
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_red_while_stalled_then_green_again():
+    banner = growing_acquisition()
+    banner.event(37.0, "acquisition_rawf_progress", "acquisition", {"size": 80_000_000, "bytes_per_s": 2.5e6, "growing": True})
+    banner.event(42.0, "acquisition_rawf_progress", "acquisition", {"size": 80_000_000, "bytes_per_s": 0.0, "growing": False})
+    assert banner.view(43.0) == GrowthView("stalled", "run_2026-10-10_1200", 31.0, 29.0, 80_000_000, 0.0, 6.0)
+    banner.event(47.0, "acquisition_rawf_progress", "acquisition", {"size": 80_000_000, "bytes_per_s": 0.0, "growing": False})
+    assert banner.view(50.0).since_growth_s == 13.0      # still counted from the last growth at 37
+    banner.event(52.0, "acquisition_rawf_progress", "acquisition", {"size": 90_000_000, "bytes_per_s": 2e6, "growing": True})
+    assert banner.view(52.0) == GrowthView("growing", "run_2026-10-10_1200", 40.0, 20.0, 90_000_000, 2e6, None)
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_stalled_since_the_growth_check_when_no_growth_followed():
+    banner = growing_acquisition()
+    banner.event(36.0, "acquisition_rawf_progress", "acquisition", {"size": 10_000_000, "bytes_per_s": 0.0, "growing": False})
+    assert banner.view(40.0).state == "stalled"
+    assert banner.view(40.0).since_growth_s == 8.0
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_retry_hides_it_with_a_new_clock():
+    banner = growing_acquisition()
+    banner.event(50.0, "acquisition_attempt_started", "acquisition", {"attempt": 2, "max_attempts": 3})
+    assert banner.view(51.0) is None
+    banner.event(60.0, "acquisition_growth_passed", "acquisition", {"growth_bytes": 1})
+    view = banner.view(61.0)
+    assert (view.state, view.elapsed_s, view.remaining_s, view.size) == ("growing", 11.0, 49.0, None)
+
+
+@pytest.mark.fr("005-FR-8")
+@pytest.mark.parametrize("kind, stage, payload", [
+    ("acquisition_aborting", "acquisition", {"reason": "prerequisite_lost"}),
+    ("acquisition_attempt_finished", "acquisition", {"status": "succeeded"}),
+    ("acquisition_finished", "acquisition", {"status": "succeeded"}),
+    ("stage_finished", "acquisition", {"status": "succeeded"}),
+    ("workflow_finished", "workflow", {"status": "cancelled"})])
+def test_growth_banner_removed_when_the_acquisition_ends(kind, stage, payload):
+    banner = growing_acquisition()
+    banner.event(40.0, kind, stage, payload)
+    assert banner.view(41.0) is None
+    banner.event(42.0, "acquisition_rawf_progress", "acquisition", {"size": 1, "bytes_per_s": 1.0, "growing": False})
+    assert banner.view(43.0) is None
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_later_stages_leave_it_alone_until_the_acquisition_ends():
+    banner = growing_acquisition()
+    banner.event(40.0, "stage_finished", "conversion", {"status": "succeeded"})
+    assert banner.view(41.0).state == "growing"
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_time_remaining_never_negative_or_made_up():
+    banner = growing_acquisition(duration_s=10.0)
+    assert banner.view(100.0).remaining_s == 0.0
+    banner = growing_acquisition(duration_s=None)
+    assert banner.view(40.0).remaining_s is None
+
+
+@pytest.mark.fr("005-FR-8")
+def test_growth_banner_reset_forgets_the_previous_run():
+    banner = growing_acquisition()
+    banner.reset(30.0)
+    assert banner.view(40.0) is None
+    banner.event(50.0, "acquisition_attempt_started", "acquisition", {"attempt": 1})
+    banner.event(55.0, "acquisition_growth_passed", "acquisition", {})
+    assert banner.view(56.0).run_name == ""

@@ -1,5 +1,5 @@
 """DAQD, initialization, acquisition, STOP, bias-off and close through the real services with fake
-children (spec 003 T14, T35; spec 007 T15).
+children (spec 003 T14, T35; spec 007 T15), and the acquisition growth banner (spec 005 T8).
 
 Moved from scripts/petsys_manager_gui_check.py --acquisition. ``gui``: skipped without a display.
 """
@@ -14,10 +14,11 @@ from unittest.mock import patch
 import pytest
 
 from exe_programs import petsys_manager_gui as gui
-from manager_gui_helpers import GUIBase, Hardware, SAFETY, SHM, SOCKET, STAMP, pump, wait_threads, world
+from manager_gui_helpers import (GUIBase, Hardware, RunPanelBase, SAFETY, SETTLE_S, SHM, SOCKET, STAMP, pump,
+                                 wait_threads, world)
 from src.petsys_manager.acquisition import DaqdState
 from src.petsys_manager.artifacts import read_manifest
-from src.petsys_manager.contracts import to_plain
+from src.petsys_manager.contracts import Action, to_plain
 from src.petsys_manager.session import ShellEvent, WorkflowResult
 from src.petsys_manager.settings import save_profile
 
@@ -168,7 +169,7 @@ class AcquisitionChecks(GUIBase):
         for value, reason in (("abc", "Profile: Max frame loss (%) must be a number"),  # editable, loss included
                               ("101", "Profile: max_loss_percent must not exceed 100")):
             app.safety_vars["max_loss_percent"].set(value)
-            self.wait(app, lambda: app._check_id is None and app._awaiting is None, 5)
+            self.wait(app, lambda: app._check_id is None and app._awaiting is None, SETTLE_S)
             for text in self.reasons(app).values():
                 self.assertIn(reason, text)
         self.edit(app, app.safety_vars["max_loss_percent"], "2.5")
@@ -327,3 +328,93 @@ class AcquisitionChecks(GUIBase):
         self.assertEqual(hardware.resources.paths, {SOCKET, SHM})  # fake daemon leftovers: reported, not removed
         self.assertEqual(app.guard.violations, [])
         self.assertTrue(wait_threads(("petsys-daqd", "petsys-work", "petsys-acq", "petsys-shut")))
+
+
+def in_order(seen, expected):
+    """``expected`` is a subsequence of ``seen``."""
+    found = iter(seen)
+    return all(item in found for item in expected)
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-8")  # spec 005 T8
+class GrowthBannerChecks(RunPanelBase):
+    fixture_prefix = "pm-gui-gb-"
+
+    def growth(self, app):
+        """(green or red, text) of the growth banner, or None when it is not shown."""
+        row = app.banner_area.rows["growth"]
+        if app.banner_area.winfo_manager() != "pack" or row.winfo_manager() != "pack":
+            return None
+        return {gui.GREEN: "green", gui.RED: "red"}.get(row.cget("border_color"), "?"), row.label.cget("text")
+
+    def growth_at(self, app, now, tone, *parts):
+        self.now = now
+        self.assertTrue(pump(app.root, lambda: (self.growth(app) or (None, ""))[0] == tone
+                             and all(part in self.growth(app)[1] for part in parts)), (self.growth(app), parts))
+
+    def acquisition(self, app):
+        self.now = 101.0
+        self.feed(app, "acquisition_attempt_started", "acquisition", attempt=1, max_attempts=3, directory="d")
+        self.now = 103.0
+        self.feed(app, "acquisition_growth_started", "acquisition", size=4096)
+        self.now = 106.0
+        self.feed(app, "acquisition_rawf_progress", "acquisition", size=10_000_000, bytes_per_s=3e6, growing=True)
+        pump(app.root, timeout=0.3)
+        self.assertIsNone(self.growth(app), "shown before the growth check passed")
+        self.now = 121.0
+        self.feed(app, "acquisition_growth_passed", "acquisition", growth_bytes=10_000_000)
+        self.growth_at(app, 121.0, "green", "acq_2026-10-10_120000", "RAW file growing", "Elapsed 20.0 s",
+                       "40.0 s remaining", "10.0 MB", "3.00 MB/s")
+        self.growth_at(app, 124.0, "green", "Elapsed 23.0 s", "37.0 s remaining")     # ticks without events
+        self.now = 126.0
+        self.feed(app, "acquisition_rawf_progress", "acquisition", size=10_000_000, bytes_per_s=0.0, growing=False)
+        self.growth_at(app, 126.0, "red", "acq_2026-10-10_120000", "RAW stopped growing 5.0 s ago", "Elapsed 25.0 s",
+                       "35.0 s remaining")
+        self.assertNotIn("growing as expected", self.growth(app)[1])
+        self.now = 131.0
+        self.feed(app, "acquisition_rawf_progress", "acquisition", size=20_000_000, bytes_per_s=2e6, growing=True)
+        self.growth_at(app, 131.0, "green", "Elapsed 30.0 s", "20.0 MB", "2.00 MB/s")
+        self.now = 140.0
+        self.feed(app, "acquisition_attempt_finished", "acquisition", status="succeeded")
+        self.assertTrue(pump(app.root, lambda: self.growth(app) is None), self.growth(app))
+
+    def start(self, action, stages):
+        return self.begin(action, stages, options=type("Options", (), {"duration_s": 60.0})(),
+                          run_root=self.base / "acq_2026-10-10_120000")
+
+    def test_growth_banner_acquire_green_red_green_removed(self):
+        self.acquisition(self.start(Action.ACQUIRE, ("acquisition",)))
+
+    def test_growth_banner_pipeline_green_red_green_removed(self):
+        self.acquisition(self.start(Action.PIPELINE, ("acquisition", "conversion", "calibration", "listmode")))
+
+    def test_growth_banner_live_qc_green_red_green_removed(self):
+        self.acquisition(self.start(Action.QC, ("acquisition", "conversion", "qc")))
+
+    def test_growth_banner_real_acquisition_green_red_green_then_removed(self):
+        hardware = Hardware(acquire=("pulse",))
+        app = self.open(save_profile(world(self.base / "w", shm=SHM, safety=SAFETY), self.base / "p.yaml"),
+                        repo_root=self.base / "w", daqd_factory=hardware.daqd_factory,
+                        coordinator_factory=hardware.coordinator_factory)
+        tones = []
+        show = app.banner_area.show_growth
+
+        def record(state, text, before):
+            if not tones or tones[-1] != state:
+                tones.append(state)
+            return show(state, text, before)
+        app.banner_area.show_growth = record
+        app.buttons["daqd"].toggle()
+        self.assertTrue(pump(app.root, lambda: app.buttons["initialize"].cget("state") == "normal", 10), "DAQD")
+        app.buttons["initialize"].invoke()
+        self.assertTrue(pump(app.root, lambda: app.buttons["acquire"].cget("state") == "normal", 10), "initialize")
+        app.buttons["acquire"].invoke()
+        # Real timing: a busy machine can skip a redraw or see an extra stall; the order must hold.
+        self.assertTrue(pump(app.root, lambda: in_order(tones, ["growing", "stalled", "growing"]), 15), tones)
+        app.buttons["stop"].invoke()
+        self.assertTrue(pump(app.root, lambda: app._token is None, 20), "workflow did not finish")
+        self.assertTrue(pump(app.root, lambda: self.growth(app) is None), self.growth(app))
+        self.assertIsNone(tones[-1])
+        self.assertNotIn(None, tones[tones.index("growing"):-1], "removed while the acquisition ran")
+        self.assertEqual(app.guard.violations, [])

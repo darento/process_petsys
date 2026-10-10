@@ -6,6 +6,8 @@ Moved from scripts/petsys_manager_gui_check.py --shell. Withdrawn windows on fix
 """
 
 import ast
+from datetime import datetime
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,11 +18,15 @@ import pytest
 
 from exe_programs import petsys_manager_gui as gui
 from helpers import REPO
-from manager_gui_helpers import FixtureProbe, GUIBase, PY, STAMP, child, pump, texts, world
-from src.petsys_manager.contracts import Action, Identity, RunEvent
-from src.petsys_manager.session import WorkflowResult
+from manager_gui_helpers import FixtureProbe, GUIBase, PY, RunPanelBase, STAMP, child, pump, texts, world
+from manager_helpers import SPLITS, recorded_run
+from src.petsys_manager.acquisition import DaqdState, DaqdStatus
+from src.petsys_manager.contracts import Action, ResultStatus
+from src.petsys_manager.session import ShellEvent, WorkflowResult
 from src.petsys_manager.settings import MachineProfile, SystemProbe, load_profile, save_profile
-from src.petsys_manager.workflow import format_elapsed
+from src.petsys_manager import recent
+from src.petsys_manager.recent import Recent, RecentRun
+from src.petsys_manager.workflow import RUNS, WorkflowOutcome, append_overview
 
 
 PRIVATE = ("/home/sie", "/data/nvmDisk", "nvmDisk")
@@ -43,7 +49,7 @@ class ShellChecks(GUIBase):
         app = self.open(path, repo_root=self.base / "w")
         self.assertEqual(tuple(app.tabview._name_list), gui.TABS)
         self.assertEqual(gui.TABS, ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processing",
-                                    "LM File Generation", "System Quality Control"))
+                                    "LM File Generation", "System Quality Control", "Recent Runs"))   # spec 005 T12
         self.assertIn("Output Log:", texts(app.root))
         log = self.log(app)
         self.assertIn(f"PETsys Manager {gui.__version__}; checkout", log)
@@ -52,7 +58,8 @@ class ShellChecks(GUIBase):
         self.assertEqual(new, {"petsys-preflight"})
         self.assertTrue(all(name == "petsys-preflight" for name in app.session.probe.threads))
         for key, button in app.buttons.items():  # T14: only DAQD start is possible before a daemon runs
-            self.assertEqual(button.cget("state"), "normal" if key == "daqd" else "disabled", key)
+            # spec 005 T12: reading Recent Runs is always possible
+            self.assertEqual(button.cget("state"), "normal" if key in ("daqd", "recent_refresh") else "disabled", key)
         expected_met = {"daqd", "initialize", "acquire", "pipeline", "qc"}
         for key, text in self.reasons(app).items():
             if key in expected_met:
@@ -369,33 +376,6 @@ def _capture(sink, function):
         sink.append(exc)
 
 
-class RunPanelBase(GUIBase):
-    """The run panel above the tabs, fed workflow events on a fake GUI clock (spec 005)."""
-
-    def begin(self, action=Action.CALIBRATE, stages=("calibration",)):
-        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
-        self.now = 100.0
-        app.clock = lambda: self.now
-        app.session.start_workflow = lambda *args, **kwargs: 1     # nothing launches; events are fed below
-        app._start(app.session.profile, action, None, app.cal_status, "Starting...")
-        self.feed(app, "workflow_started", "workflow", run_root=str(self.base / "run"), stages=list(stages))
-        return app
-
-    def feed(self, app, kind, stage, **payload):
-        app._workflow_event(RunEvent(Identity("run-1", stage, "attempt-1"), 0, kind, "", payload))
-
-    def at(self, app, now):
-        """Advance the GUI clock and wait for the panel to show that instant."""
-        self.now = now
-        self.assertTrue(pump(app.root, lambda: f"Elapsed {format_elapsed(now - 100.0)}" in app.run_panel.timing.cget("text")),
-                        app.run_panel.timing.cget("text"))
-        panel = app.run_panel
-        counter = panel.counter.cget("text")
-        self.assertFalse([word for word in ("event", "pair", "single") if word in counter.lower()], counter)
-        return panel.bar.cget("mode"), counter, panel.timing.cget("text")
-
-
-
 @pytest.mark.gui
 @pytest.mark.fr("005-FR-1")  # spec 005 T5
 class RunPanelChecks(RunPanelBase):
@@ -596,3 +576,240 @@ class StageRowChecks(RunPanelBase):
         self.feed(app, "stage_started", "calibration", directory="d")
         self.at(app, 103.0)
         self.assertEqual(app.run_panel.stage_row.winfo_manager(), "")
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-7")  # spec 005 T7
+class BannerChecks(RunPanelBase):
+    fixture_prefix = "pm-gui-bn-"
+
+    def shown(self, app):
+        """(kind, text, button text) of each banner row shown, top to bottom."""
+        area = app.banner_area
+        if area.winfo_manager() != "pack":
+            return []
+        rows = sorted((row for row in area.rows.values() if row.winfo_manager() == "pack"),
+                      key=lambda row: area.pack_slaves().index(row))
+        return [(row.kind, row.label.cget("text"), row.button.cget("text") if row.button else "") for row in rows]
+
+    def done(self, app, status, message):
+        app._workflow_done(WorkflowResult(app._token, WorkflowOutcome(app._action, status, message, None), ""), [])
+
+    def restart(self, app, action=Action.LISTMODE):
+        app._start(app.session.profile, action, None, app.lm_status, "Starting...")
+
+    def test_banner_failed_run_shows_a_dismissible_red_banner_on_every_tab_until_the_next_run(self):
+        app = self.begin()
+        self.done(app, ResultStatus.FAILED, "fits failed")
+        self.assertEqual(self.shown(app), [("failure", "Energy calibration failed: fits failed", "Dismiss")])
+        self.assertEqual(app.banner_area.rows["failure"].cget("border_color"), gui.RED)
+        self.assertFalse(str(app.banner_area).startswith(str(app.tabview)), "the banner sits inside a tab")
+        for label in gui.TABS:
+            app.tabview.set(label)
+            pump(app.root, timeout=0.05)
+            self.assertEqual(len(self.shown(app)), 1, label)
+        self.restart(app)
+        self.assertEqual(app.banner_area.winfo_manager(), "", "an empty banner area still takes space")
+        self.done(app, ResultStatus.LAUNCH_ERROR, "converter missing")
+        self.assertEqual(self.shown(app), [("failure", "LM generation launch_error: converter missing", "Dismiss")])
+        app.banner_area.rows["failure"].button.invoke()
+        self.assertEqual(self.shown(app), [])
+
+    def test_banner_stopped_run_until_dismissed_and_success_adds_none(self):
+        app = self.begin()
+        self.done(app, ResultStatus.CANCELLED, "stopped by the operator")
+        self.assertEqual(self.shown(app), [("stopped", "Energy calibration stopped: stopped by the operator", "Dismiss")])
+        app.banner_area.rows["stopped"].button.invoke()
+        self.assertEqual(self.shown(app), [])
+        self.restart(app)
+        self.done(app, ResultStatus.SUCCEEDED, "done")
+        self.assertEqual(self.shown(app), [])
+
+    def test_banner_failed_initialization_and_daqd_failed(self):
+        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
+        outcome = type("O", (), {"status": None, "initialized": False, "message": "no answer from the cards"})()
+        app.session.events.put(ShellEvent("init_done", outcome))
+        self.assertTrue(pump(app.root, lambda: self.shown(app)), "no banner")
+        self.assertEqual(self.shown(app), [("failure", "Initialization failed: no answer from the cards", "Dismiss")])
+        app.session.events.put(ShellEvent("daqd", DaqdStatus(10, DaqdState.FAILED, 1, message="daemon exited (1)")))
+        self.assertTrue(pump(app.root, lambda: "DAQD" in self.shown(app)[0][1]), self.shown(app))
+        self.assertEqual(self.shown(app), [("failure", "DAQD FAILED: daemon exited (1)", "Dismiss")])
+        app.session.events.put(ShellEvent("daqd", DaqdStatus(11, DaqdState.FAILED, 1, message="daemon exited (1)")))
+        app.banner_area.rows["failure"].button.invoke()
+        pump(app.root, timeout=0.3)
+        self.assertEqual(self.shown(app), [], "an unchanged FAILED status brought the banner back")
+
+    def test_banner_bias_unknown_stays_across_a_new_run_until_the_bias_is_confirmed(self):
+        app = self.begin()
+        app.show_bias_unknown("Bias-off was not confirmed.")
+        self.done(app, ResultStatus.FAILED, "acquisition failed")
+        bias = ("bias", "SiPM bias state unknown. Bias-off was not confirmed.", "I checked the bias")
+        self.assertEqual(self.shown(app), [bias, ("failure", "Energy calibration failed: acquisition failed", "Dismiss")])
+        self.assertIs(app.bias_ack, app.banner_area.rows["bias"].button)
+        self.restart(app)
+        self.assertEqual(self.shown(app), [bias])
+        self.assertTrue(app.bias_unknown)
+        self.assertEqual(app._live_hint("acquire"), " (confirm the SiPM bias state to enable)")
+        app.bias_ack.invoke()
+        self.assertEqual(self.shown(app), [])
+        self.assertFalse(app.bias_unknown)
+        self.assertIn("Operator confirmed the SiPM bias state", app.log_text.get("1.0", "end"))
+
+
+def tree_digest(root):
+    """Every file under ``root`` with its content hash and modification time."""
+    return {str(path.relative_to(root)): (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns)
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-3")  # spec 005 T12
+class RecentRunsChecks(GUIBase):
+    fixture_prefix = "pm-gui-recent-"
+
+    def recent_app(self):
+        """A window whose data and report destinations each record one run in runs.tsv."""
+        root = self.base / "w"
+        app = self.open(save_profile(world(root), self.base / "profile.yaml"), repo_root=root)
+        self.opened, self.asked, self.started = [], [], []
+        app.open_path = self.opened.append
+        app.session.start_workflow = lambda *args, **kwargs: self.started.append(args) or 99
+        self.conversion = recorded_run(root / "data", ["conversion"], {"conversion": SPLITS}, name="conv_2026-10-10_1000")
+        self.qc = recorded_run(root / "rep", ["qc"], {"qc": [("report.pdf", "qc_report", b"pdf"),
+                                                            ("summary.json", "qc_summary", b"{}")]},
+                               name="qc_2026-10-10_1100")
+        append_overview(root / "data", ("2026-10-10 10:00:00", self.conversion.name, "convert", "acq.rawf",
+                                        "succeeded", "x_coincCompact_0.ldat (+2 more)"))
+        append_overview(root / "rep", ("2026-10-10 11:00:00", self.qc.name, "qc_analyze", "3 file(s): x.ldat",
+                                       "succeeded", "report.pdf"))
+        with open(root / "rep" / RUNS, "ab") as out:
+            out.write(b"not a run line\n")
+        return root, app
+
+    def rows(self, app):
+        return [tuple(app.recent_tree.item(item, "values")) for item in app.recent_tree.get_children()]
+
+    def show_tab(self, app, count):
+        app.tabview.set("Recent Runs")
+        self.assertTrue(pump(app.root, lambda: len(self.rows(app)) == count), self.rows(app))
+
+    def select(self, app, folder):
+        item = next(item for item in app.recent_tree.get_children() if app.recent_tree.item(item, "values")[1] == folder)
+        app.recent_tree.selection_set(item)
+        pump(app.root, timeout=0.1)
+
+    def state(self, app, key):
+        return app.buttons[key].cget("state")
+
+    def test_recent_runs_fake_event_fills_rows_newest_first_with_skipped_count(self):
+        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
+        self.assertIn("Recent Runs", gui.TABS)
+        rows = (RecentRun(datetime(2026, 10, 10, 12, 30, 5), "calibration_dir", self.base / "cal_run", "calibrate",
+                          "2 file(s): a.ldat", "failed", "-"),
+                RecentRun(datetime(2026, 10, 9, 8, 0, 0), "data_dir", self.base / "conv_run", "convert", "acq.rawf",
+                          "succeeded", "acq_coincCompact.ldat"))
+        app.session.events.put(ShellEvent("recent", Recent(rows, 3, ("lm_dir",))))
+        self.assertTrue(pump(app.root, lambda: len(self.rows(app)) == 2), self.rows(app))
+        self.assertEqual(self.rows(app), [
+            ("2026-10-10 12:30:05", "cal_run", "calibrate", "2 file(s): a.ldat", "failed", "-"),
+            ("2026-10-09 08:00:00", "conv_run", "convert", "acq.rawf", "succeeded", "acq_coincCompact.ldat")])
+        status = app.recent_status.cget("text")
+        self.assertIn("2 run(s)", status)
+        self.assertIn("3 malformed runs.tsv line(s) skipped", status)
+        self.assertIn("no runs recorded in LM Destination", status)
+        self.assertEqual([self.state(app, key) for key in ("recent_open_folder", "recent_open_report", "recent_use")],
+                         ["disabled"] * 3)
+
+    def test_recent_runs_tab_reads_off_the_tk_thread_opens_folders_and_reports_and_writes_nothing(self):
+        root, app = self.recent_app()
+        before = tree_digest(root)
+        threads = []
+        original = recent.list_recent
+
+        def recorded(destinations):
+            threads.append(__import__("threading").current_thread().name)
+            return original(destinations)
+        recent.list_recent = recorded
+        try:
+            self.show_tab(app, 2)
+            self.assertEqual([row[1] for row in self.rows(app)], [self.qc.name, self.conversion.name])  # newest first
+            self.assertTrue(threads and "MainThread" not in threads, threads)
+            self.assertIn("1 malformed runs.tsv line(s) skipped", app.recent_status.cget("text"))
+            self.select(app, self.conversion.name)
+            self.assertEqual([self.state(app, key) for key in ("recent_open_folder", "recent_open_report", "recent_use")],
+                             ["normal", "disabled", "normal"])
+            app.buttons["recent_open_folder"].invoke()
+            self.select(app, self.qc.name)
+            self.assertEqual(self.state(app, "recent_open_report"), "normal")
+            app.buttons["recent_open_report"].invoke()
+            self.assertEqual(self.opened, [self.conversion, self.qc / "report.pdf"])
+            append_overview(root / "lm", ("2026-10-10 12:00:00", "lm_2026-10-10_1200", "listmode", "-", "failed", "-"))
+            calls = len(threads)
+            app.buttons["recent_refresh"].invoke()
+            self.assertTrue(pump(app.root, lambda: len(self.rows(app)) == 3), self.rows(app))
+            self.assertEqual(self.rows(app)[0][1], "lm_2026-10-10_1200")
+            self.assertGreater(len(threads), calls)
+        finally:
+            recent.list_recent = original
+        before[str((root / "lm" / RUNS).relative_to(root))] = tree_digest(root)[str((root / "lm" / RUNS).relative_to(root))]
+        self.assertEqual(tree_digest(root), before)
+        self.assertEqual(self.started, [])
+
+    def test_recent_runs_refresh_after_a_run_finishes(self):
+        root, app = self.recent_app()
+        self.show_tab(app, 2)
+        append_overview(root / "lm", ("2026-10-10 12:00:00", "lm_2026-10-10_1200", "listmode", "-", "failed", "-"))
+        app._start(app.session.profile, Action.LISTMODE, None, app.lm_status, "Starting...")
+        app._workflow_done(WorkflowResult(99, WorkflowOutcome(Action.LISTMODE, ResultStatus.FAILED, "x", None), ""), [])
+        self.assertTrue(pump(app.root, lambda: len(self.rows(app)) == 3), self.rows(app))
+
+    @pytest.mark.fr("005-FR-4")
+    def test_recent_runs_use_as_input_offers_the_three_targets_and_applies_one(self):
+        root, app = self.recent_app()
+        self.show_tab(app, 2)
+        self.select(app, self.conversion.name)
+        app.ask_offer = lambda offers: self.asked.append([offer.label for offer in offers])
+        app.buttons["recent_use"].invoke()                       # cancelled: nothing changes
+        self.assertEqual([list(selection.paths) for selection in app.selections.values()], [[], [], []])
+        app.ask_offer = lambda offers: self.asked.append([offer.label for offer in offers]) or offers[1]
+        app.buttons["recent_use"].invoke()
+        self.assertEqual(self.asked, [["Calibrate", "Generate LM", "Run QC"]] * 2)
+        self.assertEqual(app.selections["listmode"].paths, [self.conversion / name for name, _, _ in SPLITS])
+        self.assertEqual([app.selections[key].paths for key in ("calibrate", "qc_analyze")], [[], []])
+        self.assertEqual(app.tabview.get(), gui.TABS[3])
+        self.assertIn("from conversion run conv_2026-10-10_1000", app.selections["listmode"].summary.cget("text"))
+        self.select(app, self.qc.name)                           # a QC run records no next step
+        app.tabview.set("Recent Runs")
+        app.buttons["recent_use"].invoke()
+        self.assertIn(f"Use as input: run {self.qc.name} records no next-step inputs", self.log(app))
+        self.assertEqual(len(self.asked), 2)
+        self.assertEqual(self.started, [])
+
+    @pytest.mark.fr("005-FR-4")
+    def test_recent_runs_offer_dialog_returns_the_clicked_offer(self):
+        root, app = self.recent_app()
+        offers = recent.run_offers(self.conversion)
+        stuck = []
+
+        def dialogs():
+            return [widget for widget in app.root.winfo_children()
+                    if isinstance(widget, gui.ctk.CTkToplevel) and widget.winfo_exists()]
+
+        def click(label):
+            buttons = [widget for dialog in dialogs() for widget in dialog.winfo_children()
+                       if isinstance(widget, gui.ctk.CTkButton) and widget.cget("text") == label]
+            if buttons:
+                buttons[-1].invoke()
+            else:
+                app.root.after(50, lambda: click(label))
+
+        def watchdog():                 # never leave a modal dialog waiting: close it and fail
+            for dialog in dialogs():
+                stuck.append(dialog.title())
+                dialog.destroy()
+        for label, expected in (("Run QC", offers[2]), ("Cancel", None)):
+            guard = app.root.after(10000, watchdog)
+            app.root.after(100, lambda label=label: click(label))
+            self.assertEqual(app.ask_offer(offers), expected)
+            app.root.after_cancel(guard)
+        self.assertEqual(stuck, [])

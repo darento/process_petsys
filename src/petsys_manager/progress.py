@@ -3,12 +3,14 @@
 Estimates use only the running stage's own counters and rate (FR-1); the GUI
 supplies its monotonic clock as ``now``. ``RunTracker`` turns RunEvents into what
 the run panel shows and ``StageOverview`` lists a multi-stage run's stages (FR-2).
-Nothing here imports Tk.
+``Banners`` holds the warning banners above the tabs (FR-7) and ``GrowthBanner`` the acquisition's RAW
+growth banner (FR-8). Nothing here imports Tk.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -216,3 +218,105 @@ class StageOverview:
     def rows(self, now):
         return tuple(StageRow(stage, self._state[stage], now - self._started[stage] if self._state[stage] == "running"
                               else self._elapsed.get(stage)) for stage in self._stages)
+
+
+@dataclass(frozen=True)
+class Banner:
+    kind: str                   # bias, failure, stopped
+    text: str
+    dismissible: bool
+
+
+BANNER_KINDS = ("bias", "failure", "stopped")     # display order
+
+
+class Banners:
+    """Failures, stopped runs and SiPM bias unknown, shown until dismissed (FR-7). One banner per kind holds
+    its latest text. The bias banner can't be dismissed and a new run keeps it: only the operator's bias
+    confirmation clears it (spec 003 lock). Processing warnings never come here."""
+
+    def __init__(self):
+        self._text = {}
+
+    def show(self, kind, text):
+        if kind not in BANNER_KINDS:
+            raise ValueError(f"unknown banner kind {kind!r}")
+        self._text[kind] = text
+
+    def dismiss(self, kind):
+        if kind != "bias":
+            self._text.pop(kind, None)
+
+    def new_run(self):
+        for kind in ("failure", "stopped"):
+            self._text.pop(kind, None)
+
+    def acknowledge_bias(self):
+        self._text.pop("bias", None)
+
+    def items(self):
+        return tuple(Banner(kind, self._text[kind], kind != "bias") for kind in BANNER_KINDS if kind in self._text)
+
+
+@dataclass(frozen=True)
+class GrowthView:
+    state: str                      # growing (green) or stalled (red)
+    run_name: str
+    elapsed_s: float                # since this attempt started
+    remaining_s: float | None       # acquisition time - elapsed, never negative; None without a duration
+    size: int | None                # latest .rawf size, bytes
+    bytes_per_s: float | None
+    since_growth_s: float | None    # stalled: time since the file last grew
+
+
+GROWTH_ENDS = ("aborting", "attempt_finished", "finished")    # acquisition events that end an attempt
+
+
+class GrowthBanner:
+    """The acquisition's RAW growth banner (FR-8), from the current run's acquisition events. Hidden until
+    the attempt's growth check passes; then green while the file grows and red once a check finds it not
+    growing (the existing stall detection), never green while stalled. A retry starts hidden with its own
+    clock; the end of the attempt, of the acquisition stage or of the workflow removes it."""
+
+    def __init__(self):
+        self.reset(None)
+
+    def reset(self, duration_s):
+        """A new run was requested; ``duration_s`` is its acquisition time (the request's, or the QC preset)."""
+        self._duration, self._run_name = duration_s, ""
+        self._attempt(None)
+        self._state = None
+
+    def _attempt(self, now):
+        self._state, self._started, self._grew = None, now, None
+        self._size = self._rate = None
+
+    def event(self, now, kind, stage, payload):
+        if kind == "workflow_started":
+            self._run_name = Path(str(payload.get("run_root") or "")).name
+            return
+        if kind == "workflow_finished" or (kind == "stage_finished" and stage == "acquisition"):
+            self._state = None
+            return
+        kind = kind.removeprefix("acquisition_")
+        if kind == "attempt_started":
+            self._attempt(now)
+        elif kind in GROWTH_ENDS:
+            self._state = None
+        elif kind == "growth_passed" and self._started is not None:
+            self._state, self._grew = "growing", now
+        elif kind == "rawf_progress" and self._started is not None:
+            self._size, self._rate = payload.get("size"), payload.get("bytes_per_s")
+            if self._state is not None:
+                growing = bool(payload.get("growing"))
+                self._state = "growing" if growing else "stalled"
+                if growing:
+                    self._grew = now
+
+    def view(self, now):
+        if self._state is None:
+            return None
+        elapsed = now - self._started
+        remaining = None if self._duration is None else max(0.0, self._duration - elapsed)
+        since = now - self._grew if self._state == "stalled" else None
+        return GrowthView(self._state, self._run_name, elapsed, remaining, self._size, self._rate, since)

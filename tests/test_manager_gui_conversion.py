@@ -1,5 +1,5 @@
 """Conversion controls, exact ordered LDAT selection and structure checks (spec 003 T15, T20;
-spec 007 T15).
+spec 007 T15), and the next-step offers after a conversion (spec 005 T11).
 
 Moved from scripts/petsys_manager_gui_check.py --conversion and --real. ``gui``: skipped without a
 display. ``RealSelectionChecks`` is ``real_data``: Cornell acquisitions under PETSYS_DATA_DIR, read only.
@@ -13,9 +13,12 @@ import pytest
 
 from exe_programs import petsys_manager_gui as gui
 from helpers import REPO
-from manager_gui_helpers import (COMPACT_COINC, ConversionBase, FIXED_COINC, encode, pump, synthetic_sides, texts,
-                                 wait_threads)
+from manager_gui_helpers import (COMPACT_COINC, ConversionBase, FIXED_COINC, SETTLE_S, encode, pump, synthetic_sides,
+                                 texts, wait_threads)
 from src.petsys_manager.artifacts import read_manifest
+
+
+OFFERS = ("calibrate", "listmode", "qc_analyze")
 
 
 @pytest.mark.gui
@@ -67,10 +70,12 @@ class ConversionChecks(ConversionBase):
         self.assertEqual((options["output_format"], options["population"], options["splits"], options["duration_s"],
                           options["hit_limit"]), ("compact", "coincidence", 2, 30.0, 16))
         self.assertEqual(Path(options["raw_input"]), raw)
-        # Hand the exact outputs to processing: compact coincidence -> calibration, LM and offline QC.
-        self.assertEqual(self.state(app, "use_outputs"), "normal")
-        app.buttons["use_outputs"].invoke()
-        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, 5)
+        # Hand the exact outputs to processing: compact coincidence -> calibration, LM and offline QC (spec 005:
+        # one offer per tab).
+        for key in ("calibrate", "listmode", "qc_analyze"):
+            self.assertEqual(self.state(app, f"offer_{key}"), "normal")
+            app.buttons[f"offer_{key}"].invoke()
+        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, SETTLE_S)
         for key in ("calibrate", "listmode", "qc_analyze"):
             selection = app.selections[key]
             self.assertEqual(selection.paths, outputs)
@@ -193,9 +198,9 @@ class ConversionChecks(ConversionBase):
         self.wait(app, lambda: bool(self.converter.launched), 10)
         self.wait(app, lambda: "Writing to:" in app.convert_status.cget("text"), 10)
         self.assertEqual({key: self.state(app, key) for key in ("convert_coincidence", "acquire",
-                                                                 "use_outputs", "stop", "convert_stop")},
+                                                                 "offer_calibrate", "stop", "convert_stop")},
                          {"convert_coincidence": "disabled", "acquire": "disabled",
-                          "use_outputs": "disabled", "stop": "normal", "convert_stop": "normal"})
+                          "offer_calibrate": "disabled", "stop": "normal", "convert_stop": "normal"})
         app.buttons["convert_stop"].invoke()
         self.assertEqual(self.state(app, "convert_stop"), "disabled")
         self.wait(app, lambda: app._token is None, 15)
@@ -203,7 +208,7 @@ class ConversionChecks(ConversionBase):
         self.assertTrue(text.startswith("Conversion cancelled"), text)
         self.assertNotIn("Outputs (", text)
         self.assertIsNone(app.last_conversion)
-        self.assertEqual(self.state(app, "use_outputs"), "disabled")
+        self.assertEqual(self.state(app, "offer_calibrate"), "disabled")
         for child in self.converter.children:
             self.assertIsNotNone(child.poll())
         for behaviour, expected in (("wrong", "Converter output invalid"), ("fail", "Conversion failed")):
@@ -241,7 +246,7 @@ class ConversionChecks(ConversionBase):
         self.assertEqual([selection.listbox.get(i).split("   (")[0] for i in range(3)],
                          [f"{i}. {folder / name}" for i, name in
                           enumerate(("acq_coincCompact_4.ldat", "acq_coincCompact_5.ldat", "acq_coincCompact_12.ldat"), 1)])
-        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, 5)
+        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, SETTLE_S)
         self.assertIn("NOT confirmed", selection.summary.cget("text"))
         self.assertIn("Confirm that the listed files are compact coincidence", self.reason(app, "calibrate"))
         self.settle_edit(app, selection.confirmed, True)
@@ -263,7 +268,7 @@ class ConversionChecks(ConversionBase):
                          ["acq_coincCompact_12.ldat", "acq_coincCompact_4.ldat", "acq_coincCompact_5.ldat"])
         selection.buttons["remove"].invoke()
         self.assertEqual([path.name for path in selection.paths], ["acq_coincCompact_4.ldat", "acq_coincCompact_5.ldat"])
-        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, 5)
+        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, SETTLE_S)
         self.assertEqual([d.path.name for d in app.requests()[0]["calibrate"][2]],
                          ["acq_coincCompact_4.ldat", "acq_coincCompact_5.ldat"])
         self.assertTrue(selection.confirmed.get())  # removing/reordering keeps the declaration
@@ -494,3 +499,76 @@ class RealSelectionChecks(ConversionBase):
         after = {path.name: (path.stat().st_size, path.stat().st_mtime_ns) for path in self.DATA.iterdir()}
         self.assertEqual(before, after)
         self.assertEqual(app.guard.violations, [])
+
+
+@pytest.mark.gui
+@pytest.mark.fr("005-FR-4")  # spec 005 T11
+class OfferChecks(ConversionBase):
+    fixture_prefix = "pm-gui-offer-"
+
+    def converted(self):
+        root, app = self.converter_app()
+        app.splits.set("2")
+        app.convert_duration.set("30")
+        self.settle_edit(app, app.raw_input, str(self.raw(root, "acq.rawf")))
+        text = self.run_conversion(app, "convert_coincidence")
+        self.assertTrue(text.startswith("Conversion succeeded"), text)
+        outputs = [Path(line.split(". ", 1)[1].split("   (")[0]) for line in text.splitlines() if line.startswith("  ")]
+        self.assertEqual(len(outputs), 2)
+        self.started = []
+        app.session.start_workflow = lambda *args, **kwargs: self.started.append(args) or 99
+        return root, app, outputs
+
+    def lists(self, app):
+        return {key: list(selection.paths) for key, selection in app.selections.items()}
+
+    def test_offer_fills_only_its_tab_switches_to_it_and_starts_nothing(self):
+        root, app, outputs = self.converted()
+        self.assertEqual([app.buttons[f"offer_{key}"].cget("text") for key in OFFERS],
+                         ["Calibrate", "Generate LM", "Run QC"])
+        self.assertNotIn("use_outputs", app.buttons)
+        for key in OFFERS:
+            before = self.lists(app)
+            app.buttons[f"offer_{key}"].invoke()
+            after = self.lists(app)
+            self.assertEqual(after[key], outputs)
+            self.assertEqual({k: v for k, v in after.items() if k != key}, {k: v for k, v in before.items() if k != key})
+            self.assertEqual(app.selections[key].declared.get(), "compact_coincidence")
+            self.assertTrue(app.selections[key].confirmed.get())
+            self.assertIn("from conversion run", app.selections[key].summary.cget("text"))
+            self.assertEqual(app.tabview.get(), gui.TABS[gui.CHECKS[key][2]])
+        pump(app.root, timeout=0.3)
+        self.assertEqual(self.started, [])
+        self.assertIsNone(app._token)
+        self.assertEqual(app.guard.violations, [])
+
+    def test_offer_of_a_changed_output_is_refused_and_changes_nothing(self):
+        root, app, outputs = self.converted()
+        outputs[1].write_bytes(b"truncated")
+        before, tab = self.lists(app), app.tabview.get()
+        app.buttons["offer_listmode"].invoke()
+        self.assertEqual((self.lists(app), app.tabview.get()), (before, tab))
+        self.assertIn("Generate LM not offered: Recorded output changed size", self.log(app))
+        self.assertIn(outputs[1].name, self.log(app))
+
+    def test_offers_disabled_after_a_failed_conversion(self):
+        root, app, outputs = self.converted()
+        app.session.start_workflow = type(app.session).start_workflow.__get__(app.session)
+        self.assertEqual({self.state(app, f"offer_{key}") for key in OFFERS}, {"normal"})
+        self.converter.behaviour = "fail"
+        self.assertTrue(self.run_conversion(app, "convert_coincidence").startswith("Conversion failed"))
+        self.assertEqual({self.state(app, f"offer_{key}") for key in OFFERS}, {"disabled"})
+
+    def test_offer_keeps_the_confirmation_and_validation_gates(self):
+        root, app, outputs = self.converted()
+        app.buttons["offer_calibrate"].invoke()
+        self.wait(app, lambda: app._check_id is None and app.shown_generation == app._awaiting, SETTLE_S)
+        self.assertIn("prerequisites met", self.reason(app, "calibrate"))
+        self.settle_edit(app, app.selections["calibrate"].confirmed, False)
+        self.assertIn("Confirm that the listed files are compact coincidence", self.reason(app, "calibrate"))
+        self.assertEqual(self.state(app, "calibrate"), "disabled")
+        self.settle_edit(app, app.selections["calibrate"].confirmed, True)
+        self.settle_edit(app, app.positions, "zero")
+        self.assertEqual(self.state(app, "calibrate"), "disabled")
+        app.calibrate()
+        self.assertEqual(self.started, [])

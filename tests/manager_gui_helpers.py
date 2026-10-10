@@ -38,12 +38,12 @@ from manager_helpers import FakeChild, FakeDaemon, FakeResources, PrivateOutput,
 from src.cornell.inputs import load_processing_config
 from src.petsys_manager import acquisition, runner, workflow
 from src.petsys_manager.acquisition import DaqdPolicy, DaqdService
-from src.petsys_manager.contracts import DataFormat, Population
+from src.petsys_manager.contracts import Action, DataFormat, Identity, Population, RunEvent
 from src.petsys_manager.runner import CommandRunner, RunnerPolicy
 from src.petsys_manager.session import ManagerSession
 from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, MachineProfile, ProcessingLimits,
                                          SystemProbe, ToolCapabilities, save_profile)
-from src.petsys_manager.workflow import WorkflowCoordinator
+from src.petsys_manager.workflow import WorkflowCoordinator, format_elapsed
 
 
 PY = sys.executable
@@ -173,6 +173,9 @@ def child(code, *, cwd, timeout=120):
     return json.loads(run.stdout.strip().splitlines()[-1])
 
 
+SETTLE_S = 15.0   # readiness wait: returns once settled; parallel full runs can take over 5 s
+
+
 class GUIBase(PrivateOutput, unittest.TestCase):
     """Withdrawn Manager windows on fixture profiles; launching anything from the shell fails the test.
     Each subclass sets ``fixture_prefix``; without a display the class is skipped."""
@@ -244,7 +247,7 @@ class GUIBase(PrivateOutput, unittest.TestCase):
             self.settle(app)
         return app
 
-    def settle(self, app, timeout=5.0):
+    def settle(self, app, timeout=SETTLE_S):
         self.assertTrue(pump(app.root, lambda: app._check_id is None and app._awaiting is not None
                              and app.shown_generation == app._awaiting, timeout), "readiness never settled")
 
@@ -275,6 +278,32 @@ DAQD_POLICY = DaqdPolicy(startup_timeout_s=20.0, probe_interval_s=0.01, probe_ti
 SAFETY = AcquisitionSafety(startup_timeout_s=10.0, growth_window_s=0.3, poll_interval_s=0.05, min_growth_bytes=1,
                            max_attempts=3, retry_delay_s=0.0, terminate_grace_s=0.3)
 SOCKET, SHM = "/tmp/d.sock", "/dev/shm/daqd_shm"
+
+
+class RunPanelBase(GUIBase):
+    """The run panel above the tabs, fed workflow events on a fake GUI clock (spec 005)."""
+
+    def begin(self, action=Action.CALIBRATE, stages=("calibration",), options=None, run_root=None):
+        app = self.open(save_profile(world(self.base / "w"), self.base / "profile.yaml"), repo_root=self.base / "w")
+        self.now = 100.0
+        app.clock = lambda: self.now
+        app.session.start_workflow = lambda *args, **kwargs: 1     # nothing launches; events are fed below
+        app._start(app.session.profile, action, options, app.cal_status, "Starting...")
+        self.feed(app, "workflow_started", "workflow", run_root=str(run_root or self.base / "run"), stages=list(stages))
+        return app
+
+    def feed(self, app, kind, stage, **payload):
+        app._workflow_event(RunEvent(Identity("run-1", stage, "attempt-1"), 0, kind, "", payload))
+
+    def at(self, app, now):
+        """Advance the GUI clock and wait for the panel to show that instant."""
+        self.now = now
+        self.assertTrue(pump(app.root, lambda: f"Elapsed {format_elapsed(now - 100.0)}" in app.run_panel.timing.cget("text")),
+                        app.run_panel.timing.cget("text"))
+        panel = app.run_panel
+        counter = panel.counter.cget("text")
+        self.assertFalse([word for word in ("event", "pair", "single") if word in counter.lower()], counter)
+        return panel.bar.cget("mode"), counter, panel.timing.cget("text")
 
 
 class GatedChild(FakeChild):
@@ -325,7 +354,8 @@ class Hardware:
     """Fake children for the REAL DaqdService, WorkflowCoordinator and AcquisitionService.
 
     ``acquire`` lists per-attempt behaviours: ok, nodata, fail, block (runs until TERM)
-    or grow (writes the .rawf for ~0.8 s, then stalls until TERM). ``bias``: ok or fail;
+    grow (writes the .rawf for ~0.8 s, then stalls until TERM) or pulse (writes ~0.5 s, pauses ~0.6 s,
+    writes ~0.9 s, then stalls until TERM). ``bias``: ok or fail;
     ``bias_gate`` holds set_bias until set. No hardware, sockets or shared memory.
     """
 
@@ -384,11 +414,12 @@ class Hardware:
         else:
             def grow():
                 with open(prefix + ".rawf", "ab") as out:
-                    for _ in range(16):
+                    for step in range(16 if behaviour == "grow" else 40):
                         if child.code is not None:
                             return
-                        out.write(b"\x01" * 100_000)
-                        out.flush()
+                        if behaviour == "grow" or not 10 <= step < 22:
+                            out.write(b"\x01" * 100_000)
+                            out.flush()
                         time.sleep(0.05)
             threading.Thread(target=grow, daemon=True).start()
         return child
@@ -536,5 +567,5 @@ class ConversionBase(GUIBase):
     def settle_edit(self, app, variable, value):
         variable.set(value)
         self.wait(app, lambda: app._check_id is None and app._awaiting is not None
-                  and app.shown_generation == app._awaiting, 5, "readiness never settled")
+                  and app.shown_generation == app._awaiting, SETTLE_S, "readiness never settled")
 

@@ -129,7 +129,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
 ## Banners
 
-- [ ] **T7 — Warning banners** (FR-7). `progress.Banners` and a `BannerArea` above the tabs.
+- [x] **T7 — Warning banners** (FR-7). `progress.Banners` and a `BannerArea` above the tabs.
   - The existing bias frame and `acknowledge_bias` move there; the lock is unchanged.
   - Failure banners: a failed workflow, failed initialization, DAQD `FAILED`. A stopped banner: a cancelled workflow.
   - `_start` calls `new_run()`.
@@ -138,7 +138,13 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - `python -m pytest tests/test_manager_progress.py -k banners` passes, covering: show; dismiss; `new_run` clears failure/stopped and keeps bias; bias can't be dismissed and only `acknowledge_bias` clears it.
   - `python -m pytest tests/test_manager_gui_shell.py -k banner` passes: a failed outcome shows a dismissible red banner on every tab; a new run clears it; a bias banner stays across a new run and live actions stay locked until acknowledged (existing spec 003 bias tests pass unchanged).
 
-- [ ] **T8 — Growth banner** (FR-8). `progress.GrowthBanner` and its `BannerArea` row show run name, attempt elapsed, time remaining (duration from the request or the QC preset), `.rawf` size and MB/s, refreshed once per second.
+  Verified 2026-10-10 (Windows), test-first. Seams: `Banners.show/dismiss/new_run/acknowledge_bias/items` and the window (`banner_area` rows, `_workflow_done`, `init_done`/`daqd` shell events, `_start`, `bias_ack`).
+  - One banner per kind holds its latest text, shown in the order bias, failure, stopped. Failure covers `failed` and `launch_error`; a cancelled workflow gives "<action> stopped: ...". A run that never started (refused) gives no banner. DAQD `FAILED` shows once per transition into it, so an unchanged FAILED revision doesn't bring a dismissed banner back. The banner area is packed only while a banner is active. `bias_frame`/`bias_label`/`bias_ack` are now the bias row of the area.
+  - `python -m pytest tests/test_manager_progress.py -k banners` → 4 passed; `tests/test_manager_gui_shell.py -k banner` → 4 passed.
+  - `python -m py_compile exe_programs/petsys_manager_gui.py` OK. `python -m pytest tests/test_manager_gui_shell.py tests/test_manager_gui_acquisition.py tests/test_manager_progress.py -m "not real_data" -n 0 --slow-limit 5` → 56 passed (spec 003 bias test unchanged). Full run `-m "not real_data"` → 1062 passed, 23 skipped.
+  - Negatives (scratch copies; unmodified copy 8 passed), each failing: bias dismissible; `new_run` clears bias; `_start` not calling `new_run`; DAQD FAILED re-shown each revision; cancelled shown as failure; failed initialization not shown; empty area kept packed; `launch_error` not shown.
+
+- [x] **T8 — Growth banner** (FR-8). `progress.GrowthBanner` and its `BannerArea` row show run name, attempt elapsed, time remaining (duration from the request or the QC preset), `.rawf` size and MB/s, refreshed once per second.
 
   **Done when:**
   - `python -m pytest tests/test_manager_progress.py -k growth` passes, covering:
@@ -149,9 +155,16 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
     - time remaining is never negative.
   - `python -m pytest tests/test_manager_gui_acquisition.py -k growth_banner` passes: the acquisition event sequence from the existing fake acquisition shows green → red → green → removed, with the run name and both times in the text, for Acquire, pipeline and live QC.
 
+  Verified 2026-10-10 (Windows), test-first. Seams: `GrowthBanner.reset/event/view` and the window (`banner_area` growth row through `_workflow_event` and `_poll`).
+  - `GrowthView` carries numbers only; the window formats "<run>: RAW file growing as expected. Elapsed …, … remaining. RAW x MB at y MB/s" or "<run>: RAW stopped growing … ago. …". Stalled time counts from the last growth (the growth check or a growing `rawf_progress`). The duration comes from the request options of Acquire, pipeline and QC (QC carries its preset). Order in the area: bias, growth, failure, stopped. The row redraws at once when its state changes and otherwise at most once per second; `_workflow_done` also clears it.
+  - The GUI test base `RunPanelBase` moved to `tests/manager_gui_helpers.py` (gains `options`, `run_root`). The fake acquisition gains a `pulse` behaviour (grow, pause ~0.6 s, grow).
+  - `python -m pytest tests/test_manager_progress.py -k growth` → 12 passed; `tests/test_manager_gui_acquisition.py -k growth_banner` → 4 passed: fed sequences for Acquire, pipeline and live QC, and one real Acquire on the `pulse` fake (green → red → green in order, then removed after STOP). That test passed 8 of 8 when run 8 at once; it checks order, not exact redraws, because a loaded machine may skip one.
+  - `python -m py_compile exe_programs/petsys_manager_gui.py` OK. `python -m pytest tests/test_manager_gui_acquisition.py tests/test_manager_gui_shell.py tests/test_manager_progress.py -m "not real_data" -n 0 --slow-limit 5` → 72 passed. Full run `-m "not real_data"` → 1078 passed, 23 skipped.
+  - Negatives (scratch copies; unmodified copy 16 passed), each failing: shown before the growth check; never red; retry keeping the clock; stalled time from the stall check; negative remaining; any stage's end hiding it; `workflow_finished` ignored; no once-per-second refresh; duration not taken from the request; red text saying growing; window not feeding events.
+
 ## Runs and inputs
 
-- [ ] **T9 — Reading runs.tsv** (FR-3). New `src/petsys_manager/recent.py` (no Tk): `read_overview(destination)`, which reads the last 1 MiB and returns rows plus a skipped count, and `list_recent(destinations)` (merge newest first, cap 500, duplicate destinations read once).
+- [x] **T9 — Reading runs.tsv** (FR-3). New `src/petsys_manager/recent.py` (no Tk): `read_overview(destination)`, which reads the last 1 MiB and returns rows plus a skipped count, and `list_recent(destinations)` (merge newest first, cap 500, duplicate destinations read once).
 
   **Done when:** `python -m pytest tests/test_manager_recent.py -k overview` passes, covering:
   - missing file → no rows plus a "no runs recorded" state; empty file and header only → no rows;
@@ -160,7 +173,13 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - merge order across two destinations; cap 500;
   - files written by `workflow.append_overview` parse back to their rows.
 
-- [ ] **T10 — Run records: offers, outputs, main report** (FR-3, FR-4, FR-6). In `recent.py`, `run_offers(root)`, `conversion_outputs(root)` and `main_report(root)` use `artifacts.read_manifest`. Before an offer, each file's existence and recorded `size_bytes` are checked.
+  Verified 2026-10-10 (Windows), test-first. Seam: `read_overview(destination, key)` → `Overview(rows, skipped, recorded)` and `list_recent([(key, destination), ...])` → `Recent(rows, skipped, unrecorded)`, rows being `RecentRun`.
+  - The header, a partial last line and the line cut at the 1 MiB tail start are dropped without counting; lines without 6 columns, a `%Y-%m-%d %H:%M:%S` time or a portable run folder (`[A-Za-z0-9][A-Za-z0-9_-]*`) are counted. Equal finish times keep the later line first. A destination listed twice (same absolute path) is read once, under its first key.
+  - `python -m pytest tests/test_manager_recent.py -k "overview or recent or reading"` → 18 passed, including a check that reading changes neither content nor mtime.
+  - Negatives (scratch copies; unmodified copy 18 passed), each failing: whole file read; partial last line kept; header counted; folder not checked; duplicate read twice; no cap; equal times in file order; missing file not reported.
+  - Serial and full runs as in T10.
+
+- [x] **T10 — Run records: offers, outputs, main report** (FR-3, FR-4, FR-6). In `recent.py`, `run_offers(root)`, `conversion_outputs(root)` and `main_report(root)` use `artifacts.read_manifest`. Before an offer, each file's existence and recorded `size_bytes` are checked.
 
   **Done when:** `python -m pytest tests/test_manager_recent.py -k "offers or outputs or main_report"` passes on synthetic `RunStore` runs, covering:
   - a conversion run gives 3 LDAT offers with exactly its recorded outputs in order, and a look-alike `.ldat` in the folder is ignored;
@@ -170,7 +189,13 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - a non-run folder → refused;
   - `main_report`: QC → `qc_report`, calibration → `calibration_plot`, LM → first debug plot or none, conversion → none.
 
-- [ ] **T11 — Next-step offers** (FR-4).
+  Verified 2026-10-10 (Windows), test-first. Seam: `run_offers(root)` → `Offer(label, target, payload)`, `conversion_outputs(root)`, `main_report(root)`; refusals raise `RunRecordError` with the file or folder named.
+  - Each stage's latest attempt counts. Only files in a succeeded attempt's `outputs` are used; a file recorded during the run but not an output is never offered. LDAT descriptors come from the record (format, population, `validated`). `main_report` looks at the run's last stage only (a pipeline gives its LM debug plot) and returns None when that file is gone.
+  - `python -m pytest tests/test_manager_recent.py` → 31 passed (13 for T10).
+  - Negatives (scratch copies; unmodified copy 13 passed), each failing: failed stage offered; size not checked; `.encal` not checked; last debug plot instead of first; first stage's report; non-output artifacts offered; no refusal without conversion outputs; `validated` dropped.
+  - `python -m pytest tests/test_manager_recent.py -m "not real_data" -n 0 --slow-limit 5` → 31 passed. Full run `-m "not real_data"` → 1110 passed, 23 skipped. One earlier full run had 1 failure in `test_injected_failures_and_stop_never_become_success` (pipeline acquisition not launched within 20 s under load); it passed alone 3 of 3, 8 of 8 run at once, and on the next full run. Nothing it uses changed in T9/T10, so it is recorded as a flake.
+
+- [x] **T11 — Next-step offers** (FR-4).
   - The conversion result frame's offers ("Calibrate", "Generate LM", "Run QC") replace "Use these outputs as processing inputs".
   - The calibration frame's "Generate LM with this calibration" replaces "Use this .encal...".
   - `apply_offer` fills one target and switches to its tab, never starting a run.
@@ -184,7 +209,15 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
   The full run passes.
 
-- [ ] **T12 — Recent Runs tab** (FR-3, FR-4). The tab has a `ttk.Treeview` with the spec columns and buttons Refresh / Open folder / Open report / Use as input. It is filled by a session worker job (`ShellEvent("recent", ...)`) when the tab is opened, on Refresh and after `workflow_done`. `open_path` is an attribute.
+  Verified 2026-10-10 (Windows), test-first. Seam: the window (`offer_calibrate`/`offer_listmode`/`offer_qc_analyze`/`offer_lm_calibration` buttons, `apply_offer`).
+  - `offer(target)` reads `run_offers(run folder)` of the run shown in the result frame when clicked; a `RunRecordError` is logged as "<offer> not offered: …" and nothing changes. `last_conversion`/`last_calibration` gain the run folder as a third element. `use_conversion_outputs`, `use_calibration` and `OUTPUT_TARGETS` are gone; labels come from `recent.OFFER_LABELS`.
+  - Spec 003 tests: the conversion test clicks the three offers instead of "Use these outputs" and the processing test clicks "Generate LM with this calibration" instead of "Use this .encal"; their expected inputs are unchanged. The processing test now also checks the switch to the LM tab with no run started.
+  - `python -m pytest tests/test_manager_gui_conversion.py tests/test_manager_gui_processing.py -k offer` → 6 passed: each offer fills only its list, switches tab and starts nothing; a resized output is refused with the file named; offers disabled after a failed conversion; confirmation and validation still gate the start; the calibration offer is an unsaved edit, switches to LM and leaves the profile file unchanged; it is disabled after a failed calibration (synthetic run record fed through `_workflow_done`).
+  - `python -m py_compile exe_programs/petsys_manager_gui.py` OK. `python -m pytest tests/test_manager_gui_conversion.py tests/test_manager_gui_processing.py -m "not real_data" -n 0 --slow-limit 5` → 19 passed, 1 deselected.
+  - Full run `-m "not real_data"` → 1116 passed, 23 skipped, twice. Two earlier full runs failed `test_conversion_stop_and_failures_never_publish_outputs` at window open ("readiness never settled" within 5 s). It passes serially, with 4 workers and in a verbose full run. The idle breathing measured about 2 % of a core per window, so it is not the cause. `GUIBase.settle` and `settle_edit` now wait up to `SETTLE_S` = 15 s. They return once readiness settles, and AGENTS.md asserts wall-clock bounds only in serial runs.
+  - Negatives (scratch copies; unmodified copy 6 passed), each failing: no tab switch; conversion offers enabled after a failure; all three lists filled; refusal not caught; calibration offer switching to the calibration tab; calibration offer enabled after a failure; a run started by the offer.
+
+- [x] **T12 — Recent Runs tab** (FR-3, FR-4). The tab has a `ttk.Treeview` with the spec columns and buttons Refresh / Open folder / Open report / Use as input. It is filled by a session worker job (`ShellEvent("recent", ...)`) when the tab is opened, on Refresh and after `workflow_done`. `open_path` is an attribute.
 
   **Done when:** `python -m pytest tests/test_manager_gui_shell.py -k recent_runs` passes, covering:
   - a fake `recent` event fills rows newest first;
@@ -193,6 +226,16 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - the skipped count shows in the status line;
   - no file in the destinations changes (tree hash before and after);
   - reading runs off the Tk thread (the session job is used).
+
+  Verified 2026-10-10 (Windows), test-first. Seam: the window (`recent_tree`, `recent_status`, `recent_*` buttons, `open_path`, `ask_offer`) and `session.list_recent()`.
+  - `session.list_recent()` reads `recent.profile_destinations(saved profile)` → `list_recent` in a `petsys-recent` worker and posts `ShellEvent("recent", Recent)`; a failure arrives as "refused". The tab refreshes when it becomes the shown tab (checked each poll), on Refresh and after every `workflow_done`. Open report is enabled only when `main_report` finds a file. Use as input calls `run_offers` and asks with `ask_offer`, a small modal dialog by default. The chosen offer goes through `apply_offer` (T11); a run without offers is logged. Refresh is always enabled; Use as input is disabled while a run is active.
+  - The synthetic run helpers (`record_stage`, `recorded_run`, `SPLITS`, `CALIBRATION`) moved from `test_manager_recent.py` to `tests/manager_helpers.py`.
+  - Spec 003 `test_tabs_log_and_startup` now expects the sixth tab "Recent Runs" and Refresh enabled at startup, as FR-3 requires; nothing else in it changed.
+  - The panel now configures labels and the bar only when they change, and the breathing uses a precomputed palette. An idle window's CPU is then back to the pre-T5 level within measurement noise (about 0.1–0.2 s per 5 s, both trees).
+  - Readiness waits in the GUI tests use `SETTLE_S` (15 s) instead of a hard-coded 5 s (see T11).
+  - `python -m pytest tests/test_manager_gui_shell.py -k recent_runs` → 5 passed: a fake event fills rows in order with the skipped count and the unrecorded destinations; real runs.tsv files read off the Tk thread (thread names recorded); Open folder / Open report call `open_path` with the run folder / `main_report`; Open report disabled for a conversion; Refresh and `workflow_done` re-read; Use as input offers the three targets, a cancel changes nothing and a choice fills only LM and switches tab; a QC run has no offers; file contents and mtimes under the destinations are unchanged; the real dialog returns the clicked offer, or None on Cancel. That test retries until the button exists and closes the dialog after 10 s, because an earlier version left a full run waiting on the open dialog.
+  - Serial run of the GUI, recent and progress test files with `-n 0 --slow-limit 5` → 127 passed, 1 deselected. Full run `-m "not real_data"` → 1121 passed, 23 skipped. Two earlier full runs failed `test_incomplete_metadata_options_and_prerequisites_cannot_start` (readiness not settled within 15 s, at two different steps). It passes serially (13 s), and in a scratch export of this tree run as a full suite. The export of HEAD passes it as well. It is recorded as a scheduling-dependent flake to watch in T16.
+  - Negatives (scratch copies; unmodified copy 5 passed), each failing: reading on the Tk thread; no refresh when the tab opens; no refresh after a run; Open report enabled without a report; Open folder opening the report; first offer applied without asking; skipped count not shown; rows reversed; Use as input enabled without a selection.
 
 ## Last folders and run-folder picking
 
