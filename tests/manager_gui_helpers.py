@@ -140,7 +140,14 @@ def world(root, *, shm="/dev/shm/fixture_marker_shm", safety=None):
         lm_metadata=metadata)
 
 
+PARALLEL_WAIT_FACTOR = 6   # GUI steps under 1 s serially took over 10 s in parallel full runs (2026-10-11)
+
+
 def pump(root, until=None, timeout=5.0):
+    """Process Tk events until ``until()`` holds (then True) or for ``timeout`` s. Like other wall-clock
+    bounds, a condition wait is strict only serially: parallel workers stretch it by PARALLEL_WAIT_FACTOR."""
+    if until is not None and "PYTEST_XDIST_WORKER" in os.environ:
+        timeout *= PARALLEL_WAIT_FACTOR
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         root.update()

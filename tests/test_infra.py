@@ -298,3 +298,20 @@ def test_no_sys_path_edits_or_script_imports(path):
             assert top not in {"scripts", "scripts_cornell", "scripts_imas"}, \
                 f"{path.name}:{node.lineno} imports {module}"
             assert not top.startswith("test_"), f"{path.name}:{node.lineno} imports test file {module}"
+
+
+@pytest.mark.fr("bug-gui-waits-parallel")
+@pytest.mark.parametrize("worker, reached", [(None, False), ("gw3", True)])
+def test_gui_condition_waits_stretch_only_in_parallel_workers(monkeypatch, worker, reached):
+    """Parallel full runs made 10 s GUI waits time out (2026-10-11): a condition wait is stretched in workers."""
+    import time
+    from manager_gui_helpers import pump
+    if worker is None:
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    else:
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", worker)
+    root, start = SimpleNamespace(update=lambda: None), time.monotonic()
+    assert pump(root, lambda: time.monotonic() - start > 0.3, timeout=0.1) is reached
+    start = time.monotonic()
+    pump(root, timeout=0.1)                     # a fixed-time pump is never stretched
+    assert time.monotonic() - start < 0.3
