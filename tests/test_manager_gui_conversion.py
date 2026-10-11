@@ -105,6 +105,29 @@ class ConversionChecks(ConversionBase):
         self.assertEqual((root / "data" / "cornell run.v2_coincCompact_1.ldat").read_bytes(), b"old look-alike")
         self.assertEqual(app.guard.violations, [])
 
+    @pytest.mark.fr("bug-conversion-status-overwritten")
+    def test_conversion_status_keeps_raw_and_output_folder_during_progress(self):
+        """Bug fix 2026-10-11: each 1 s conversion progress event replaced "RAW input: ...\\nWriting to: ..."
+        with just "Conversion"; the bytes are in the run panel, so the status keeps where the run writes."""
+        root, app = self.converter_app()
+        handled, handle = [], app._workflow_event
+
+        def counting(event):
+            handle(event)
+            if event.kind == "stage_progress" and event.identity.stage_id == "conversion":
+                handled.append(app.convert_status.cget("text"))
+        app._workflow_event = counting
+        self.settle_edit(app, app.raw_input, str(self.raw(root, "watched.rawf")))
+        self.converter.behaviour = "block"
+        app.buttons["convert_coincidence"].invoke()
+        self.wait(app, lambda: len(handled) >= 2, 10, "no conversion progress")
+        for text in handled:
+            self.assertIn("RAW input: ", text)
+            self.assertIn("Writing to: ", text)
+        app.buttons["convert_stop"].invoke()
+        self.wait(app, lambda: app._token is None, 15)
+        self.assertEqual(app.guard.violations, [])
+
     def test_close_during_conversion_closes_on_the_first_request(self):
         """Bug fix 2026-10-05 (T19 step 13): the shutdown thread read the finished workflow's handle before the
         request thread cleared it, reported "A workflow started during shutdown" and needed a second close."""

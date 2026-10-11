@@ -1498,6 +1498,8 @@ class PETsysManager:
             text = f"{step}{event.message}\nRAW input: {payload.get('raw')}\nWriting to: {payload.get('directory')}"
         elif event.kind == "stage_started":
             text = f"{step}{event.message}\nWriting to: {payload.get('directory')}"
+        elif event.kind == "stage_progress" and stage == "conversion":
+            pass        # bytes and estimate are in the run panel; the status keeps RAW input and Writing to:
         elif event.kind == "stage_progress":
             index, files, phase = payload.get("file_index"), payload.get("files"), payload.get("phase")
             text = f"{step}{STAGE_TEXT.get(stage, stage)}"
