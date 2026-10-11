@@ -55,7 +55,7 @@ from src.petsys_manager.settings import (AcquisitionSafety, LMMetadata, MachineP
 from src.petsys_manager.workflow import format_elapsed, portable_name
 
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 TITLE = "PETsys Manager - Cornell"
 RECENT_TAB = "Recent Runs"     # spec 005 FR-3
 TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processing",
