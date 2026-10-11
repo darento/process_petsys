@@ -308,7 +308,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
 
 ## Validation
 
-- [ ] **T16 — Windows validation and release files** (all FRs).
+- [x] **T16 — Windows validation and release files** (all FRs).
   - `__version__ = "1.1.0"`, plus a `CHANGELOG.md` entry noting that a profile with `last_folders` needs 1.1.0 or later.
   - Walk FR-1…FR-8 with `-m "not real_data" --fr 005-FR-n` each.
 
@@ -319,6 +319,21 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
   - `python -m py_compile exe_programs/petsys_manager_gui.py`.
 
   Each FR's selection count is recorded.
+
+  Verified 2026-10-10 (Windows), release files uncommitted:
+  - `__version__ = "1.1.0"`; `CHANGELOG.md` 1.1.0 entry (spec 005 summary, `last_folders` needs 1.1.0 or later). No tag yet: tagged after T17.
+  - `python -m py_compile exe_programs/petsys_manager_gui.py` → OK.
+  - FR walk, `-m "not real_data" --fr 005-FR-n` (selection = passed; `-m ""` selects the same, so no `real_data` test cites spec 005): FR-1 44, FR-2 8, FR-3 25, FR-4 17, FR-5 17, FR-6 15, FR-7 8, FR-8 16.
+  - `-m "not real_data" -n 0 --slow-limit 5` → 1151 passed, 23 skipped (17 `linux`, 1 Linux-only artifact, 5 checkout audits skipped while the GUI file differs from HEAD).
+  - `-m real_data` (`PETSYS_DATA_DIR=C:\Users\dsanchez\Desktop\data`, `PETSYS_CAL_DIR=<repo>\encal_files`) → 25 passed in 1339 s.
+  - `git status --short tests/data/` → empty.
+  - `-m "not real_data"` → 3 runs, each 1–2 failed, 1149–1150 passed: `ConversionChecks.test_close_during_conversion_closes_on_the_first_request` (10 s wait for "Writing to:") and once also `test_conversion_request_format_population_and_exact_outputs` ("readiness never settled"). Both pass alone (3/3), in their file in parallel (11 passed), in all `test_manager_gui_*` files in parallel (66 passed) and serially (above). With `__version__` reverted to HEAD's, so the 5 checkout audits run, the full run → 1156 passed, 18 skipped. Taken as load timing from the changed xdist schedule, not a 1.1.0 defect; the full run is repeated on the committed tree before this task is ticked.
+  - 2026-10-11, committed tree (f4b6c5a): the full run still failed (3 runs, 2–3 conversion GUI tests), so the cause was not the uncommitted file. Two separate fixes:
+    - `bug-conversion-status-overwritten` (from T4): every 1 s conversion `stage_progress` replaced the status "RAW input: …\nWriting to: …" with just "Conversion". The close test saw "Writing to:" only when the worker handled `stage_started` before the first tick. Conversion progress now leaves the status label alone (bytes and estimate are in the run panel). Regression test `test_conversion_status_keeps_raw_and_output_folder_during_progress` failed before the fix (`'RAW input: ' not found in 'Conversion'`). Negatives: the branch for calibration instead → failed; for every stage → the calibration fits-progress status test failed.
+    - `bug-gui-waits-parallel`: GUI tests under 5 s serially took 50–110 s in parallel full runs, past the 10–20 s waits (readiness, conversion finish). `pump` condition waits are stretched ×6 in xdist workers only (wall-clock bounds stay strict serially); fixed-time pumps are unchanged. Regression test in `test_infra.py` (serial and worker cases) failed before the fix. Negatives: stretching fixed-time pumps, factor 1, stretching serially → each failed.
+    - Full run with both fixes (uncommitted, so the 5 checkout audits skip) → 3 runs, each 1154 passed, 23 skipped.
+    - `-m "not real_data" -n 0 --slow-limit 5` → 1154 passed, 23 skipped.
+    - Committed tree (4cea42f): `-m "not real_data"` → 1159 passed, 18 skipped (17 `linux`, 1 Linux-only artifact; the 5 checkout audits ran and passed). `tests/data/` unchanged. `-m real_data` not repeated: the fixes change only a GUI status label and test waits, no real-data result.
 
 - [ ] **T17 — Cornell full run and operator check** (all FRs).
   - On a clean checkout with an env matching `process_petsys.yml`, run the full run and `-m real_data` from a desktop-session terminal on the Cornell PC.
