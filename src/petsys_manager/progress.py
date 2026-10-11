@@ -90,6 +90,7 @@ class RunTracker:
         if now is not None:
             self._estimate.start(now)      # the first phase's clock starts with the stage
         self._fraction, self._counter, self._remaining = None, "", None
+        self._estimated_at, self._closed = None, None   # when the estimate was made; closed splits it counts
 
     def event(self, now, kind, stage, payload):
         if kind == "workflow_started":
@@ -120,7 +121,7 @@ class RunTracker:
     def _progress(self, now, payload):
         phase, phases = payload.get("phase"), list(payload.get("phases") or ())
         if phase == "convert":
-            self._conversion(payload)
+            self._conversion(now, payload)
             return
         step = f"phase {phases.index(phase) + 1} of {len(phases)}" if len(phases) > 1 and phase in phases else ""
         if phase == "fits":
@@ -128,7 +129,7 @@ class RunTracker:
             known = isinstance(total, int) and total > 0
             self._counter = f"fits {done or 0:,} / {total:,} keys" if known else "fits"
             self._counter += f" ({step})" if step else ""
-            self._show(self._estimate.update(now, done or 0, total if known else None, phase))
+            self._show(now, self._estimate.update(now, done or 0, total if known else None, phase))
             return
         read, total = payload.get("bytes_read"), payload.get("bytes_total")
         if not isinstance(read, int):
@@ -137,27 +138,31 @@ class RunTracker:
         self._counter = f"{read / 1e9:.2f} / {total / 1e9:.2f} GB input read" if known else \
             f"{read / 1e9:.2f} GB input read"
         self._counter += f" ({phase}, {step})" if step else ""
-        self._show(self._estimate.update(now, read, total if known else None, phase))
+        self._show(now, self._estimate.update(now, read, total if known else None, phase))
 
-    def _conversion(self, payload):
+    def _conversion(self, now, payload):
         """LDAT bytes written beside the RAW size, never as a fraction; the bar and estimate count closed
-        splits, and a single split has no known total (FR-1)."""
+        splits, and a single split has no known total (FR-1). The estimate is made when a split closes and
+        counts down from there: later events with the same closed splits keep it."""
         ldat, raw = payload.get("ldat_bytes") or 0, payload.get("rawf_bytes")
         splits, durations = payload.get("splits") or 0, list(payload.get("split_durations_s") or ())
         self._counter = f"LDAT {ldat / 1e9:.1f} GB written, " + \
             (f"RAW {raw / 1e9:.1f} GB" if isinstance(raw, int) else "RAW size unknown") + \
             f"; splits {len(durations)} / {splits} closed"
-        self._remaining = split_remaining(splits, durations)
+        if len(durations) != self._closed:
+            self._closed, self._estimated_at = len(durations), now
+            self._remaining = split_remaining(splits, durations)
         self._fraction = None if self._remaining is None else min(1.0, len(durations) / splits)
 
-    def _show(self, progress):
+    def _show(self, now, progress):
         """The bar stays indeterminate until the estimate's gate opens (FR-1)."""
-        self._remaining = progress.remaining_s
+        self._remaining, self._estimated_at = progress.remaining_s, now
         self._fraction = None if progress.remaining_s is None else progress.fraction
 
     def view(self, now):
         end = self._ended if self._ended is not None else now
         elapsed = 0.0 if self._origin is None else max(0.0, end - self._origin)
+        remaining = None if self._remaining is None else max(0.0, self._remaining - (end - self._estimated_at))
         title = self._action
         if self._stage in self._stages and len(self._stages) > 1:
             title += f" - step {self._stages.index(self._stage) + 1}/{len(self._stages)}: " \
@@ -165,7 +170,7 @@ class RunTracker:
         if self._status is not None:
             title += f" {self._status}"
         rows = self._overview.rows(end) if self._overview is not None else ()
-        return RunView(title, self._fraction, self._counter, elapsed, self._remaining, self._ended is not None, rows,
+        return RunView(title, self._fraction, self._counter, elapsed, remaining, self._ended is not None, rows,
                        idle=not self._action)
 
 

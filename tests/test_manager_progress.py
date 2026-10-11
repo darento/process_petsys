@@ -8,8 +8,8 @@ import sys
 import pytest
 
 from helpers import REPO
-from src.petsys_manager.progress import (Banners, GrowthBanner, GrowthView, Progress, RateEstimate, StageOverview,
-                                        changed_fields, split_remaining)
+from src.petsys_manager.progress import (Banners, GrowthBanner, GrowthView, Progress, RateEstimate, RunTracker,
+                                        StageOverview, changed_fields, split_remaining)
 
 
 @pytest.mark.fr("005-FR-1")
@@ -96,6 +96,43 @@ def test_rate_estimate_overshoot_is_done_not_negative():
     estimate = RateEstimate()
     estimate.start(0.0)
     assert estimate.update(20.0, 1100, 1000) == Progress(1.0, 0.0)
+
+
+def conversion(tracker, now, durations, splits=3):
+    tracker.event(now, "stage_progress", "conversion", {"phase": "convert", "ldat_bytes": 0, "rawf_bytes": 1,
+                                                        "splits": splits, "split_durations_s": durations})
+
+
+@pytest.mark.fr("bug-static-remaining")
+def test_conversion_remaining_counts_down_between_split_closes():
+    # Split 1 closes at 112 s after 12 s: 24 s left, then counting down while split 2 is written,
+    # also through progress events that close no split; split 2 closing re-estimates.
+    tracker = RunTracker()
+    tracker.reset(100.0, "Convert")
+    tracker.event(100.0, "workflow_started", "workflow", {"stages": ["conversion"]})
+    conversion(tracker, 105.0, [])
+    conversion(tracker, 112.0, [12.0])
+    assert tracker.view(112.0).remaining_s == pytest.approx(24.0)
+    assert tracker.view(118.0).remaining_s == pytest.approx(18.0)
+    conversion(tracker, 120.0, [12.0])
+    assert tracker.view(122.0).remaining_s == pytest.approx(14.0)
+    conversion(tracker, 126.0, [12.0, 14.0])
+    assert tracker.view(126.0).remaining_s == pytest.approx(13.0)
+    assert tracker.view(150.0).remaining_s == 0.0     # a slow last split: never negative
+
+
+@pytest.mark.fr("bug-static-remaining")
+def test_rate_remaining_counts_down_between_progress_events():
+    # 25 % read at 110 s: 30 s left, 20 s left 10 s later without a new event.
+    tracker = RunTracker()
+    tracker.reset(100.0, "Calibrate")
+    tracker.event(100.0, "workflow_started", "workflow", {"stages": ["calibration"]})
+    tracker.event(100.0, "stage_started", "calibration", {})
+    tracker.event(110.0, "stage_progress", "calibration", {"phase": "read", "bytes_read": 250, "bytes_total": 1000})
+    assert tracker.view(110.0).remaining_s == pytest.approx(30.0)
+    assert tracker.view(120.0).remaining_s == pytest.approx(20.0)
+    tracker.finish(125.0, "succeeded")
+    assert tracker.view(130.0).remaining_s is None
 
 
 @pytest.mark.fr("005-FR-1")
