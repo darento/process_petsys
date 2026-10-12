@@ -46,11 +46,11 @@ First versioned release. Offline LDAT inspection as shipped by:
 
 ## PETsys Manager
 
-### 1.1.0 — 2026-10-10
+### 1.1.0 — 2026-10-11
 
 Usability release, as shipped by [spec 005](specs/005-manager-gui-usability/spec.md). No output file, run record or numerical result changes.
 
-- Progress bar, counter, elapsed time and time remaining per stage (input bytes, calibration phases, fit keys, conversion splits); stage overview for pipeline and live QC.
+- Progress bar, counter, elapsed time and time remaining per stage (input bytes, calibration phases, fit keys, conversion splits); the time remaining counts down between progress updates and closed splits; stage overview for pipeline and live QC.
 - Warning banner for failures, stopped runs and SiPM bias unknown; acquisition banner green while the RAW file grows, red when it stops.
 - Recent Runs tab from each destination's `runs.tsv`; next-step offers and "use as input" fill the target tab from `run.json`.
 - A conversion run folder can be picked as input; file dialogs open in the last folder used.
