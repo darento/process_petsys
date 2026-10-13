@@ -1,0 +1,314 @@
+{
+ "schema_version": 1,
+ "task": "008 T6",
+ "created_utc": "2026-10-13T11:54:37+00:00",
+ "description": "Run7 two-branch channel-pair fits (FR-9) and transverse-handedness evidence from the T5 observation sets.",
+ "harness": "scratch script over src/cornell/timing_pairs.py; Windows, process_petsys env, numba parallel",
+ "inputs": {
+  "observation_sets": [
+   "observations_v1_ts+1",
+   "observations_v1_ts-1"
+  ],
+  "source_counts": "run7-ingest-counts.json",
+  "timing_pairs_sha256": "d9887d943f9e1c695555f2e1e54d3b6c40ddf1e96af45f165220248c7d0ea31f",
+  "commit": "bfef2324a221277f320b3cec5f0075d403427702",
+  "fit_options": {
+   "min_branch_events": 3.0,
+   "min_alias_margin": 3.0,
+   "min_separation_sigmas": 2.0,
+   "scan_ps": 14000.0,
+   "step_ps": 25.0,
+   "scan_events": 256,
+   "candidates": 4
+  }
+ },
+ "kernel": {
+  "+1 train": {
+   "sigma_ps": 242.41185811774176,
+   "background_fraction": 0.19223985313784756,
+   "window_ps": 30000.0,
+   "history": [
+    {
+     "sigma_ps": 241.44801041311774,
+     "background_fraction": 0.19310815824403166,
+     "pairs": 1997,
+     "log_likelihood": -549396.3664851525
+    },
+    {
+     "sigma_ps": 242.37053795195098,
+     "background_fraction": 0.19228063317670357,
+     "pairs": 1997,
+     "log_likelihood": -549379.2743387742
+    },
+    {
+     "sigma_ps": 242.41185811774176,
+     "background_fraction": 0.19223985313784756,
+     "pairs": 1997,
+     "log_likelihood": -549379.2506084418
+    }
+   ],
+   "hypothesis": "+1 train"
+  },
+  "-1 train": {
+   "sigma_ps": 297.98375365387267,
+   "background_fraction": 0.16188013003772483,
+   "history": [
+    {
+     "sigma_ps": 297.30764143112555,
+     "background_fraction": 0.16315091686907357,
+     "pairs": 1999,
+     "log_likelihood": -598084.4155261545
+    },
+    {
+     "sigma_ps": 297.96843057195355,
+     "background_fraction": 0.16189278891070197,
+     "pairs": 1999,
+     "log_likelihood": -597971.3874617713
+    },
+    {
+     "sigma_ps": 297.98375365387267,
+     "background_fraction": 0.16188013003772483,
+     "pairs": 1999,
+     "log_likelihood": -597971.3812991807
+    }
+   ],
+   "hypothesis": "-1 train"
+  },
+  "estimation_seconds_+1": 2.556314699933864
+ },
+ "train_pair_fits": {
+  "+1": {
+   "seconds": 8.322533900034614,
+   "pairs": 136422,
+   "status": {
+    "usable": 86000,
+    "one branch": 50271,
+    "alias unresolved": 151,
+    "merged branches": 0,
+    "scan edge": 0,
+    "fit failed": 0
+   },
+   "usable_events": 1860095,
+   "events": 2156073,
+   "shift_sigma_ps_quantiles_10_50_90": [
+    52.04491804936746,
+    62.10352134473484,
+    77.94673324063147
+   ],
+   "branch_fraction_quantiles_10_50_90": [
+    0.3446351303285029,
+    0.4987684516855974,
+    0.6451862142616946
+   ]
+  },
+  "-1": {
+   "seconds": 10.24375050002709,
+   "pairs": 138170,
+   "status": {
+    "usable": 89250,
+    "one branch": 48721,
+    "alias unresolved": 199,
+    "merged branches": 0,
+    "scan edge": 0,
+    "fit failed": 0
+   },
+   "usable_events": 2061918,
+   "events": 2344664,
+   "shift_sigma_ps_quantiles_10_50_90": [
+    59.60011303373578,
+    73.23768956362355,
+    93.15981171765007
+   ],
+   "branch_fraction_quantiles_10_50_90": [
+    0.34829631180602355,
+    0.49929795656154863,
+    0.6430211578056467
+   ]
+  }
+ },
+ "train_+1_availability_by_pair_events": [
+  {
+   "events_min": 1,
+   "events_below": 8,
+   "pairs": 36013,
+   "usable": 0
+  },
+  {
+   "events_min": 8,
+   "events_below": 14,
+   "pairs": 14305,
+   "usable": 5400
+  },
+  {
+   "events_min": 14,
+   "events_below": 20,
+   "pairs": 30808,
+   "usable": 26388
+  },
+  {
+   "events_min": 20,
+   "events_below": 30,
+   "pairs": 47995,
+   "usable": 46926
+  },
+  {
+   "events_min": 30,
+   "events_below": null,
+   "pairs": 7301,
+   "usable": 7286
+  }
+ ],
+ "handedness": {
+  "common_events_tof_identical": {
+   "train": {
+    "events": 1788858,
+    "max_abs_tof_diff_ps": 2.0463630789890885e-12,
+    "common_kernel": {
+     "sigma_ps": 244.01954531486138,
+     "background_fraction": 0.19024486607403757
+    }
+   },
+   "validation": {
+    "events": 335567,
+    "max_abs_tof_diff_ps": 1.8189894035458565e-12,
+    "common_kernel": {
+     "sigma_ps": 245.19180621430087,
+     "background_fraction": 0.08523563581007854
+    }
+   }
+  },
+  "common_events_free_separation": {
+   "train": {
+    "+1": {
+     "seconds": 9.231851699994877,
+     "pairs": 72798,
+     "chi2": 80410.14104007452,
+     "weighted_mean_ps": -5.383163325894126,
+     "weighted_mean_sigma_ps": 0.496866565422493,
+     "chi2_about_mean": 80292.76064530721,
+     "median_ps": -5.057543103008484,
+     "pull_rms": 1.0509829920582885,
+     "fixed_geometry_log_likelihood_usable": -13446947.889989747,
+     "usable_pairs": 72798
+    },
+    "-1": {
+     "seconds": 9.23885809991043,
+     "pairs": 72798,
+     "chi2": 80410.14109701845,
+     "weighted_mean_ps": -5.383163375599887,
+     "weighted_mean_sigma_ps": 0.4968665654154398,
+     "chi2_about_mean": 80292.76070008012,
+     "median_ps": -5.057543103008484,
+     "pull_rms": 1.050982992430425,
+     "fixed_geometry_log_likelihood_usable": -13446947.889989747,
+     "usable_pairs": 72798
+    }
+   },
+   "validation": {
+    "+1": {
+     "seconds": 1.613009300082922,
+     "pairs": 754,
+     "chi2": 786.0290570579963,
+     "weighted_mean_ps": 2.554052351056566,
+     "weighted_mean_sigma_ps": 6.856431198696593,
+     "chi2_about_mean": 785.8902973603344,
+     "median_ps": 5.011408946901824,
+     "pull_rms": 1.0210185382815455,
+     "fixed_geometry_log_likelihood_usable": -58939.144232108956,
+     "usable_pairs": 754
+    },
+    "-1": {
+     "seconds": 1.606647500069812,
+     "pairs": 754,
+     "chi2": 786.0290570527854,
+     "weighted_mean_ps": 2.554052350655684,
+     "weighted_mean_sigma_ps": 6.856431198706041,
+     "chi2_about_mean": 785.8902973551676,
+     "median_ps": 5.011408946901824,
+     "pull_rms": 1.0210185382781611,
+     "fixed_geometry_log_likelihood_usable": -58939.144232108956,
+     "usable_pairs": 754
+    }
+   }
+  },
+  "exclusive_events": {
+   "train": {
+    "+1": {
+     "events": 367215,
+     "own_model": {
+      "sigma_ps": 233.93068662234603,
+      "background_fraction": 0.20056206596187293,
+      "pairs": 1864
+     },
+     "pairs": 31495,
+     "usable": 13613,
+     "usable_events": 290028,
+     "separation_weighted_mean_ps": -1.7078370222965027,
+     "separation_mean_sigma_ps": 1.0600105101979362,
+     "separation_pull_rms": 1.1079620874836476,
+     "log_likelihood_per_event_usable": -8.529008327168542,
+     "sm_pair_count": 68
+    },
+    "-1": {
+     "events": 555806,
+     "own_model": {
+      "sigma_ps": 321.90688726812374,
+      "background_fraction": 0.14444536376110964,
+      "pairs": 1951
+     },
+     "pairs": 33243,
+     "usable": 16060,
+     "usable_events": 479326,
+     "separation_weighted_mean_ps": -394.45413885033935,
+     "separation_mean_sigma_ps": 0.8023342667071438,
+     "separation_pull_rms": 4.037931214896072,
+     "log_likelihood_per_event_usable": -8.595613556796758,
+     "sm_pair_count": 68
+    }
+   },
+   "validation": {
+    "+1": {
+     "events": 68849,
+     "own_model": {
+      "sigma_ps": 254.1250196180732,
+      "background_fraction": 0.14912986441928605,
+      "pairs": 16
+     },
+     "pairs": 22196,
+     "usable": 127,
+     "usable_events": 1243,
+     "separation_weighted_mean_ps": -4.676646959600894,
+     "separation_mean_sigma_ps": 14.986041121816239,
+     "separation_pull_rms": 1.0669915636112313,
+     "log_likelihood_per_event_usable": -8.147527196388399,
+     "sm_pair_count": 68
+    },
+    "-1": {
+     "events": 105134,
+     "own_model": {
+      "sigma_ps": 318.06522725889255,
+      "background_fraction": 0.11863724982646809,
+      "pairs": 353
+     },
+     "pairs": 24790,
+     "usable": 1247,
+     "usable_events": 13229,
+     "separation_weighted_mean_ps": -378.03138771386125,
+     "separation_mean_sigma_ps": 4.553314081030753,
+     "separation_pull_rms": 2.589334379918373,
+     "log_likelihood_per_event_usable": -8.348646442391818,
+     "sm_pair_count": 68
+    }
+   }
+  },
+  "selected": "+1",
+  "reason": "Events accepted by both hypotheses have identical shell TOFs (mirror symmetry of the centred shell), so they carry no handedness information. On hypothesis-exclusive events, +1 gives kernel ~234 ps and free separation -1.7 +- 1.1 ps (pull RMS 1.11) on train, -4.7 +- 15 ps on validation; -1 gives kernel ~322 ps and separation -394 +- 0.8 ps (pull RMS 4.0) on train, -378 +- 4.6 ps on validation."
+ },
+ "limitations": [
+  "Run7 is a small part of the Cornell data; availability rates are run7-specific (dominated by pairs with < 14 events).",
+  "Kernel is one global Gaussian; background fraction ~0.19 absorbs tails (randoms, scatter, time walk).",
+  "Flat background spans the legacy |dt| < 15 ns script cut; the native grouping window (|t1-t2| <= 5 ns on grouped timestamps) makes the real background non-flat and can clip tails of peaks near +-5 ns; T7 residuals must check shift bias versus d.",
+  "Exclusive-event comparison replaces the common-event comparison chosen before the symmetry was known; test files untouched.",
+  "No channel offsets yet (T7); no CTR claim."
+ ]
+}
