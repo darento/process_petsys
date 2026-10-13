@@ -1,4 +1,4 @@
-"""Legacy-parity reference ingest for Cornell timing (spec 008 T4a).
+"""Cornell timing ingest: legacy parity (T4a/T4b), production holdout and geometry (T4c).
 
 Fixtures use the tracked full-system map/config and a synthetic `.encal`
 (mu = 511 a.u., so keV equals a.u. exactly). Every expected outcome is pinned by
@@ -13,7 +13,7 @@ import struct
 import numpy as np
 import pytest
 
-from src.cornell.timing_ingest import (ACCEPTED, REJECTIONS, LegacySetup, legacy_cylinder,
+from src.cornell.timing_ingest import (ACCEPTED, FEATURE_INT, REJECTIONS, LegacySetup, legacy_cylinder,
                                        legacy_local_to_global, reference_counts, reference_outcomes,
                                        slab_bit)
 from src.mapping_generator import ChannelType
@@ -335,3 +335,172 @@ def test_seed_independent_of_chunks_and_workers(tmp_path, setup):
         results = list(pool.map(_worker_outcomes, [str(p) for p in paths], [str(CONFIG)] * 2,
                                 [str(setup.provenance["encal"])] * 2))
     assert results[0] == results[1] == [(r, label) for r, label, _ in base]
+
+
+# --- T4c: holdout roles, separate geometry stage, operational coverage -------
+SUMMARY = ROOT / "specs/008-cornell-skew-calibration/run7-dataset-summary.json"
+# Owner drawing Ph Norm D275L300 r01: fluid annulus, centered at YAML z=0.
+DRAWING_SOURCE = {"inner_radius_mm": 137.5, "outer_radius_mm": 142.5, "axial_min_mm": -150.0,
+                  "axial_max_mm": 150.0, "center_mm": (0.0, 0.0, 0.0), "axis": (0.0, 0.0, 1.0)}
+
+
+def production(path, lookup, partition, **kwargs):
+    from src.cornell.timing_ingest import FeatureBatch, production_batches
+    batches = list(production_batches(path, lookup, partition, **kwargs))
+    return FeatureBatch(0, np.concatenate([b.codes for b in batches]),
+                        np.concatenate([b.ints for b in batches]), np.concatenate([b.floats for b in batches]))
+
+
+def shifted(hits, delta):
+    return [(t + delta, e, c) for t, e, c in hits]
+
+
+@pytest.mark.fr("008-FR-16")
+def test_holdout_excludes_energy_calibration_prefix(tmp_path, setup):
+    from src.cornell.timing_ingest import (PASSED_PRE_GEOMETRY, RUN7_ENERGY_CALIBRATION_PREFIX,
+                                           CompiledLookup, Partition, code_label)
+    lookup = CompiledLookup.from_setup(setup)
+    det1, det2 = accepted_pair(setup)
+    start, end = T0 + 10_000, T0 + 20_000
+    # Anchor = first hit of detector 1 (detector 2 when detector 1 is empty).
+    at = lambda anchor, d1=det1, d2=det2: (shifted(d1, anchor - det1[0][0]), shifted(d2, anchor - det1[0][0]))
+    cases = [
+        ("energy calibration prefix", at(start + 1)),
+        ("energy calibration prefix", at(end + 5)),        # prefix wins over the edge guard
+        ("energy calibration prefix", at(start)),
+        ("file edge guard", at(start - 1)),                # guards are inclusive bounds
+        (PASSED_PRE_GEOMETRY, at(start)),
+        (PASSED_PRE_GEOMETRY, at(end)),
+        ("file edge guard", at(end + 1)),
+        ("side min channels", ([], shifted(det2, start + 7 - det2[0][0]))),
+        ("file edge guard", ([], shifted(det2, end + 7 - det2[0][0]))),
+        ("file edge guard", ([], [])),                     # no hit, no anchor
+        ("energy window", at(start + 9, d1=side(setup, 1, energy=[300.0, 30.0, 20.0, 7.0]))),
+    ]
+    path = write(tmp_path / "holdout.ldat", [record for _, record in cases])
+    test = Partition(3, "test", start, end, 3)
+    features = production(path, lookup, test)
+    assert [code_label(code) for code in features.codes] == [label for label, _ in cases]
+    assert features.column("record").tolist() == [4, 5]
+    for options in ({"batch_records": 2}, {"block_bytes": 41}):
+        again = production(path, lookup, test, **options)
+        assert np.array_equal(again.codes, features.codes) and np.array_equal(again.ints, features.ints)
+    # A train role keeps its prefix; the 1 us edge guards still apply.
+    train = production(path, lookup, Partition(0, "train", start, end, 0))
+    assert [code_label(code) for code in train.codes[:4]] == [
+        PASSED_PRE_GEOMETRY, "file edge guard", PASSED_PRE_GEOMETRY, "file edge guard"]
+    # Frozen run7 roles: exactly the validation/test files carry the calibrate-run prefix bound.
+    holdout = json.loads(SUMMARY.read_text(encoding="utf-8"))["holdout"]
+    partitions = [Partition.from_holdout(holdout, index, RUN7_ENERGY_CALIBRATION_PREFIX) for index in range(16)]
+    assert {p.file_index for p in partitions if p.role != "train"} == set(RUN7_ENERGY_CALIBRATION_PREFIX)
+    assert {p.file_index: p.excluded_prefix_records for p in partitions if p.excluded_prefix_records} == \
+        RUN7_ENERGY_CALIBRATION_PREFIX
+    assert partitions[5].role == "validation" and partitions[3].role == "test"
+    assert partitions[0].anchor_start_ps == holdout["partitions"][0]["anchor_start_ps"]
+    with pytest.raises(ValueError, match="prefix bound required"):
+        Partition.from_holdout(holdout, 11, {5: 1})
+    with pytest.raises(ValueError, match="qualified"):
+        Partition.from_holdout(holdout | {"qualified": False}, 0, RUN7_ENERGY_CALIBRATION_PREFIX)
+
+
+def _scalar_geometry(frames, source, row_i, row_f):
+    """Expected label/endpoints from the tracked scalar geometry functions."""
+    from src.cornell.timing_geometry import legacy_opposition_accepts, shell_intervals
+    p = frames[row_i[FEATURE_INT.index("sm_1")]].to_global(row_f[2], row_f[3])
+    q = frames[row_i[FEATURE_INT.index("sm_2")]].to_global(row_f[4], row_f[5])
+    segments = shell_intervals(p, q, source)
+    label = ("no shell crossing" if not segments else "opposition angle" if not legacy_opposition_accepts(p, q)
+             else "one shell segment" if len(segments) != 2 else ACCEPTED)
+    return label, np.concatenate([p, q]), segments
+
+
+@pytest.mark.fr("008-FR-2", "008-FR-5")
+def test_geometry_stage_hypotheses_without_reread(tmp_path, setup):
+    from src.cornell.timing_geometry import AnnularSource, GeometryError, build_detector_frames
+    from src.cornell.timing_ingest import (GEOMETRY_REJECTIONS, CompiledLookup, FeatureBatch,
+                                           GeometryHypothesis, Partition, apply_geometry)
+    lookup = CompiledLookup.from_setup(setup)
+    det1, det2 = accepted_pair(setup)
+    path = write(tmp_path / "geometry.ldat", random_records(setup, 3000, seed=23) + [(det1, det2)])
+    features = production(path, lookup, Partition(0, "train", -2 ** 62, 2 ** 62, 0), batch_records=500)
+    path.unlink()                       # hypotheses below cannot re-read LDAT
+    source = AnnularSource(**DRAWING_SOURCE)
+    hypotheses = {sign: GeometryHypothesis.faceted(f"faceted {sign:+d}", CONFIG, setup, axial_sign=-1,
+                                                   transverse_sign=sign, source=source) for sign in (1, -1)}
+    results = {sign: apply_geometry(features, hypothesis) for sign, hypothesis in hypotheses.items()}
+    labels_of = lambda result: [((ACCEPTED,) + GEOMETRY_REJECTIONS)[code] for code in result.codes]
+    for sign, result in results.items():
+        expected = [_scalar_geometry(hypotheses[sign].frames, source, row_i, row_f)
+                    for row_i, row_f in zip(features.ints.tolist(), features.floats.tolist())]
+        assert labels_of(result) == [label for label, _, _ in expected]
+        assert np.allclose(result.endpoints_mm, [xyz for _, xyz, _ in expected], rtol=0, atol=1e-9)
+        for k, (_, _, segments) in enumerate(expected):
+            assert result.shell_segments[k] == len(segments)
+            fractions = [x for s in segments for x in (s.fraction_start, s.fraction_end)]
+            tof = [x for s in segments for x in (s.tof_start_ps, s.tof_end_ps)]
+            assert np.allclose(result.shell_fractions[k, :len(fractions)], fractions, rtol=0, atol=1e-12)
+            assert np.allclose(result.shell_tof_ps[k, :len(tof)], tof, rtol=0, atol=1e-6)
+            assert np.isnan(result.shell_tof_ps[k, len(tof):]).all()
+        counts = result.counts()
+        assert sum(counts.values()) == len(features.ints)
+        assert counts[ACCEPTED] >= 50 and counts["no shell crossing"] and counts["opposition angle"]
+    # Handedness candidates mirror each SM: different endpoints from the same stored rows.
+    assert not np.allclose(results[1].endpoints_mm, results[-1].endpoints_mm)
+    # Pinned diametric pair (last row): two shell segments, one per side of the phantom.
+    last = results[1]
+    assert last.codes[-1] == 0 and last.shell_segments[-1] == 2
+    assert last.shell_tof_ps[-1, 0] < 0 < last.shell_tof_ps[-1, 3]
+    # A transversely displaced shell crosses this LOR once; bad endpoints are labelled.
+    pinned = FeatureBatch(0, np.zeros(3, np.int8), features.ints[[-1, -1, -1]].copy(),
+                          features.floats[[-1, -1, -1]].copy())
+    pinned.ints[1, FEATURE_INT.index("sm_2")] = 99
+    pinned.floats[2, 2] = 1e6
+    shifted_source = AnnularSource(**DRAWING_SOURCE | {"center_mm": (100.0, 0.0, 0.0)})
+    moved = GeometryHypothesis("displaced shell", hypotheses[1].frames, shifted_source)
+    assert labels_of(apply_geometry(pinned, moved)) == ["one shell segment", "invalid endpoint", "invalid endpoint"]
+    assert _scalar_geometry(moved.frames, shifted_source, pinned.ints[0].tolist(),
+                            pinned.floats[0].tolist())[0] == "one shell segment"
+    config = __import__("yaml").safe_load(CONFIG.read_text(encoding="utf-8"))
+    planar = build_detector_frames(config, setup.sm_mM_map, local_origin_mm=(48, 48), local_axes="time-axial",
+                                   axial_sign=-1, crystal_thickness_mm=20)
+    with pytest.raises(GeometryError, match="faceted"):
+        apply_geometry(features, GeometryHypothesis("planar", planar, source))
+
+
+@pytest.mark.fr("008-FR-6", "008-FR-16")
+def test_operational_time_coverage_and_down_regions(tmp_path, setup):
+    from src.cornell.timing_geometry import AnnularSource
+    from src.cornell.timing_ingest import (CompiledLookup, GeometryHypothesis, Partition, apply_geometry,
+                                           time_channel_coverage)
+    down = json.loads(SUMMARY.read_text(encoding="utf-8"))["known_unavailable_regions"]
+    assert down == [[14, 0], [14, 1], [14, 4], [14, 5]]
+    time_ok, time_down, time_unpopulated = channels(setup, 1, 5)[0][3], channels(setup, 14, 0)[0][3], \
+        channels(setup, 2, 2)[0][0]
+    coverage = time_channel_coverage({time_ok: 3, time_down: 2, time_unpopulated: 1}, setup, down)
+    # 30 SMs x 16 minimodules x 8 TIME; 10 half-populated SMs; 4 down minimodules in SM14.
+    assert (coverage["operational_time_channels"], coverage["unpopulated_time_channels"],
+            coverage["down_time_channels"]) == (3840 - 640 - 32, 640, 32)
+    per_channel = coverage["endpoints_per_operational_channel"]
+    assert per_channel[time_ok] == 3 and time_down not in per_channel and time_unpopulated not in per_channel
+    assert (coverage["down_region_endpoints"], coverage["unpopulated_endpoints"]) == (2, 1)
+    assert len(coverage["operational_without_endpoints"]) == 3168 - 1
+    with pytest.raises(ValueError, match="non-TIME"):
+        time_channel_coverage({channels(setup, 1, 5)[1][0]: 1}, setup, down)
+    with pytest.raises(ValueError, match="not in the selected map"):
+        time_channel_coverage({}, setup, [(99, 0)])
+    # End to end: accepted endpoints per selected TIME channel; a down-region hit is reported apart.
+    lookup = CompiledLookup.from_setup(setup)
+    det1, det2 = accepted_pair(setup)
+    # Down SM14 MM5 (cassette 4, outer z) against SM27 MM5 (cassette 9, opposite z): oblique, accepted.
+    down_pair = (side(setup, 14, mm=5), side(setup, 27, stamp=T0 - 80))
+    path = write(tmp_path / "coverage.ldat", [(det1, det2)] * 3 + [down_pair])
+    features = production(path, lookup, Partition(0, "train", -2 ** 62, 2 ** 62, 0))
+    hypothesis = GeometryHypothesis.faceted("faceted +1", CONFIG, setup, axial_sign=-1, transverse_sign=1,
+                                            source=AnnularSource(**DRAWING_SOURCE))
+    accepted = apply_geometry(features, hypothesis).codes == 0
+    assert accepted.tolist() == [True] * 4
+    endpoints = Counter(features.column("time_channel_1")[accepted].tolist()
+                        + features.column("time_channel_2")[accepted].tolist())
+    coverage = time_channel_coverage(endpoints, setup, down)
+    assert coverage["down_region_endpoints"] == 1 and coverage["unpopulated_endpoints"] == 0
+    assert sum(coverage["endpoints_per_operational_channel"].values()) == 2 * 4 - 1

@@ -15,6 +15,12 @@ Declared differences from the legacy script, all owner-approved (2026-10-13):
 - the one-TIME-channel slab coin flip is a per-record bit, so results do not
   depend on chunking, workers or global random state;
 - ``en_min_ch`` is recorded as read but not applied, as in the legacy script.
+
+T4c production mode keeps the compiled pre-geometry selection, labels
+holdout-excluded records first (energy-calibration prefix, 1 µs file-edge
+guards) and stores geometry-free features. A separate geometry stage applies a
+declared faceted hypothesis, the finite phantom shell and the 3D opposition
+angle to those features, so hypotheses never re-read LDAT.
 """
 from __future__ import annotations
 
@@ -33,6 +39,8 @@ from src import utils
 from src.detector_features import calculate_centroid
 from src.filters import filter_coincidence, filter_min_ch, filter_total_energy
 from src.ldat_inspector.fastread import _pow
+from src.cornell.timing_geometry import (C_MM_PER_PS, OWNER_INTERACTION_DEPTH_MM, AnnularSource,
+                                         FacetedDetectorFrame, GeometryError, build_faceted_detector_frames)
 from src.ldat_stream import LdatStream
 from src.mapping_generator import ChannelType, map_factory
 
@@ -109,6 +117,7 @@ class LegacySetup:
     pipe_radius: float
     sm_center_map: dict
     provenance: dict = field(default_factory=dict)
+    unpopulated: frozenset = frozenset()     # configured (sm, mm) without SiPMs
 
     @classmethod
     def from_files(cls, config_path, encal_path, *, root="."):
@@ -125,7 +134,9 @@ class LegacySetup:
                    (float(config["energy_range"][0]), float(config["energy_range"][1])),
                    int(config["min_ch"]), float(config["en_min_ch"]), float(config["pipe_radius"]), centers,
                    {"config": str(config_path), "encal": str(encal_path), "map": config["map_file"],
-                    "en_min_ch_applied": False})
+                    "en_min_ch_applied": False},
+                   frozenset((int(sm), int(mm)) for sm, mms in (config.get("unpopulated_minimodules") or {}).items()
+                             for mm in mms))
 
 
 def legacy_local_to_global(x, y, sm):
@@ -612,3 +623,338 @@ def compiled_legacy_outcomes(path, setup, lookup, *, file_index, max_records=Non
                 (ints[1], ints[2]), ((ints[3], ints[4]), (ints[5], ints[6])), (ints[7], ints[8]),
                 (floats[0], floats[1]), ((floats[2], floats[3]), (floats[4], floats[5])),
                 (tuple(map(float, start)), tuple(map(float, end))), ints[9], (tof1, tof2))
+
+
+# --- T4c: production holdout, geometry stage and coverage -------------------
+# Owner decision 2026-10-13: validation/test files skip their leading records up
+# to ``records_validated`` of Manager calibrate run
+# norm_10082026_r7_cal-P1-target_2026-10-11_1152, whose ``.encal`` photopeak
+# factors used those prefixes. Train files keep every record.
+RUN7_ENERGY_CALIBRATION_PREFIX = {3: 3_186_061, 5: 3_185_078, 8: 3_184_900, 11: 3_185_980, 14: 3_192_263}
+HOLDOUT_EXCLUSIONS = ("energy calibration prefix", "file edge guard")
+GEOMETRY_REJECTIONS = ("invalid endpoint", "no shell crossing", "opposition angle", "one shell segment")
+PRODUCTION_LABELS = (ACCEPTED,) + HOLDOUT_EXCLUSIONS + _PRE_GEOMETRY + GEOMETRY_REJECTIONS
+_HOLDOUT_CODE = {label: -1 - index for index, label in enumerate(HOLDOUT_EXCLUSIONS)}
+PASSED_PRE_GEOMETRY = "passed pre-geometry"
+
+
+def code_label(code):
+    """Production ``FeatureBatch`` code: < 0 holdout exclusion, 0 passed, > 0 ``REJECTIONS``."""
+    code = int(code)
+    if code < 0:
+        return HOLDOUT_EXCLUSIONS[-1 - code]
+    return PASSED_PRE_GEOMETRY if code == 0 else REJECTIONS[code - 1]
+
+
+@dataclass(frozen=True)
+class Partition:
+    """One file's frozen role; anchors (ps) are inclusive guarded bounds."""
+    file_index: int
+    role: str
+    anchor_start_ps: int
+    anchor_end_ps: int
+    excluded_prefix_records: int
+
+    @classmethod
+    def from_holdout(cls, holdout, file_index, energy_calibration_prefix):
+        """From ``timing_dataset.freeze_holdout`` output; held-out files need a prefix bound."""
+        if not holdout.get("qualified") or not holdout.get("roles_frozen_before_fitting"):
+            raise ValueError("holdout is not qualified and frozen")
+        matches = [p for p in holdout["partitions"] if p["index"] == file_index]
+        if len(matches) != 1:
+            raise ValueError(f"file {file_index}: no unique holdout partition")
+        partition = matches[0]
+        if partition["role"] not in ("train", "validation", "test") or None in (
+                partition["anchor_start_ps"], partition["anchor_end_ps"]):
+            raise ValueError(f"file {file_index}: invalid role or guarded interval")
+        if partition["role"] == "train":
+            prefix = 0
+        elif int(energy_calibration_prefix.get(file_index, -1)) >= 0:
+            prefix = int(energy_calibration_prefix[file_index])
+        else:
+            raise ValueError(f"held-out file {file_index}: energy-calibration prefix bound required")
+        return cls(file_index, partition["role"], int(partition["anchor_start_ps"]),
+                   int(partition["anchor_end_ps"]), prefix)
+
+
+def holdout_codes(batch, partition):
+    """Per-record holdout code: prefix first, then anchor outside the guarded interval.
+
+    The anchor is the record's first hit (detector 1, else detector 2), as in
+    ``timing_dataset``; a record without hits has no anchor and is guarded out.
+    """
+    records = batch.first_record + np.arange(batch.count, dtype=np.int64)
+    has_hits = (batch.n1.astype(np.int64) + batch.n2) > 0
+    anchor = np.zeros(batch.count, np.int64)
+    anchor[has_hits] = batch.timestamp[batch.first_hit[has_hits]]
+    codes = np.zeros(batch.count, np.int8)
+    codes[~has_hits | (anchor < partition.anchor_start_ps) | (anchor > partition.anchor_end_ps)] = \
+        _HOLDOUT_CODE["file edge guard"]
+    codes[records < partition.excluded_prefix_records] = _HOLDOUT_CODE["energy calibration prefix"]
+    return codes
+
+
+def production_batches(path, lookup, partition, *, max_records=None, seed=0, block_bytes=None,
+                       batch_records=None):
+    """Geometry-free features of one file's role partition; every record gets one code."""
+    options = {}
+    if block_bytes is not None:
+        options["block_bytes"] = block_bytes
+    if batch_records is not None:
+        options["batch_records"] = batch_records
+    for batch in LdatStream(path, max_records=max_records, **options):
+        features = select_batch(batch, lookup, file_index=partition.file_index, seed=seed)
+        excluded = holdout_codes(batch, partition)
+        if excluded.any():
+            keep = excluded[features.column("record") - batch.first_record] == 0
+            features = FeatureBatch(features.first_record, np.where(excluded != 0, excluded, features.codes),
+                                    features.ints[keep], features.floats[keep])
+        yield features
+
+
+@dataclass(frozen=True)
+class GeometryHypothesis:
+    """Declared production geometry: faceted frames, finite shell and 3D opposition angle."""
+    name: str
+    frames: dict
+    source: AnnularSource
+    opposition_tolerance_deg: float = float(LEGACY_ANGLE_ACCEPTANCE_DEG)
+
+    @classmethod
+    def faceted(cls, name, config_path, setup, *, axial_sign, transverse_sign, source,
+                interaction_depth_mm=OWNER_INTERACTION_DEPTH_MM):
+        config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+        frames = build_faceted_detector_frames(config, setup.local_map, setup.sm_mM_map, setup.chtype_map,
+                                               axial_sign=axial_sign, transverse_sign=transverse_sign,
+                                               interaction_depth_mm=interaction_depth_mm)
+        return cls(name, frames, source)
+
+    def tables(self):
+        frames = list(self.frames.values())
+        if not frames or not all(isinstance(frame, FacetedDetectorFrame) for frame in frames):
+            raise GeometryError("geometry stage requires faceted detector frames")
+        sketch, centers = frames[0].sketch, frames[0].map_centers_mm
+        if any(frame.sketch != sketch or frame.map_centers_mm != centers for frame in frames):
+            raise GeometryError("faceted frames must share one sketch and map minimodule centers")
+        if not isinstance(self.source, AnnularSource) or not 0 <= self.opposition_tolerance_deg <= 180:
+            raise GeometryError("explicit finite annular source and opposition tolerance required")
+        size = max(self.frames) + 1
+        valid = np.zeros(size, np.bool_)
+        azimuth, axial_center, apothem = (np.full(size, np.nan) for _ in range(3))
+        axial_sign, transverse_sign = np.zeros(size, np.int64), np.zeros(size, np.int64)
+        for sm, frame in self.frames.items():
+            valid[sm] = True
+            azimuth[sm], axial_center[sm] = frame.cassette_azimuth_rad, frame.axial_center_mm
+            apothem[sm] = frame.interaction_apothem_mm
+            axial_sign[sm], transverse_sign[sm] = frame.axial_sign, frame.transverse_sign
+        tile_rad = np.array([math.radians((q - 0.5) * sketch.tile_pitch_deg) for q in (0, 1)])
+        source = self.source
+        return (valid, azimuth, axial_center, axial_sign, transverse_sign, apothem,
+                np.array(centers[0]), np.array(centers[1]), sketch.minimodule_width_mm / 2 + 1e-6,
+                sketch.minimodule_offset_mm, sketch.row_pitch_mm, tile_rad,
+                np.array(source.center_mm), np.array(source.axis), source.inner_radius_mm,
+                source.outer_radius_mm, source.axial_min_mm, source.axial_max_mm,
+                math.cos(math.radians(180 - self.opposition_tolerance_deg)) + 8 * np.finfo(np.float64).eps)
+
+
+@numba.njit(cache=True)
+def _nearest(value, centers, limit):
+    """FacetedDetectorFrame._minimodule: first nearest center, inclusive edge."""
+    k, best = 0, abs(value - centers[0])
+    for q in range(1, centers.size):
+        distance = abs(value - centers[q])
+        if distance < best:
+            k, best = q, distance
+    return k, value - centers[k], best <= limit
+
+
+@numba.njit(cache=True)
+def _endpoint(sm, x, y, valid, azimuth, axial_center, axial_sign, transverse_sign, apothem,
+              centers_x, centers_y, limit, offset, row_pitch, tile_rad, out):
+    """FacetedDetectorFrame.to_global into ``out``; False when undefined."""
+    if sm < 0 or sm >= valid.size or not valid[sm]:
+        return False
+    kx, dx, ok_x = _nearest(x, centers_x, limit)
+    ky, dy, ok_y = _nearest(y, centers_y, limit)
+    if not (ok_x and ok_y):
+        return False
+    row = (kx // 2 - 0.5) * row_pitch
+    axial = row + (kx % 2 - 0.5) * 2 * offset + dx
+    sign = transverse_sign[sm]
+    phi = azimuth[sm] + sign * tile_rad[ky // 2]
+    along = sign * ((ky % 2 - 0.5) * 2 * offset + dy)
+    c, s = math.cos(phi), math.sin(phi)
+    r = apothem[sm]
+    out[0] = r * c - along * s
+    out[1] = r * s + along * c
+    out[2] = axial_center[sm] + axial_sign[sm] * axial
+    return True
+
+
+@numba.njit(cache=True)
+def _add_bound(bounds, n, t):
+    if 0 < t < 1:
+        bounds[n] = t
+        return n + 1
+    return n
+
+
+@numba.njit(cache=True)
+def _shell(p, q, center, axis, r_in, r_out, z_min, z_max, fractions, tof):
+    """timing_geometry.shell_intervals port: segment count, -1 for a degenerate LOR."""
+    d0, d1, d2 = q[0] - p[0], q[1] - p[1], q[2] - p[2]
+    length = math.sqrt(d0 * d0 + d1 * d1 + d2 * d2)
+    if not (np.isfinite(length) and length > 0):
+        return -1
+    v0, v1, v2 = p[0] - center[0], p[1] - center[1], p[2] - center[2]
+    z0 = v0 * axis[0] + v1 * axis[1] + v2 * axis[2]
+    dz = d0 * axis[0] + d1 * axis[1] + d2 * axis[2]
+    s0, s1, s2 = v0 - z0 * axis[0], v1 - z0 * axis[1], v2 - z0 * axis[2]
+    e0, e1, e2 = d0 - dz * axis[0], d1 - dz * axis[1], d2 - dz * axis[2]
+    a = e0 * e0 + e1 * e1 + e2 * e2
+    b = 2.0 * (s0 * e0 + s1 * e1 + s2 * e2)
+    radial2 = s0 * s0 + s1 * s1 + s2 * s2
+    if not (np.isfinite(a) and np.isfinite(b) and np.isfinite(radial2) and np.isfinite(z0) and np.isfinite(dz)):
+        return -1
+    bounds = np.empty(8)
+    bounds[0], bounds[1] = 0.0, 1.0
+    n = 2
+    if a > 0:
+        for radius in (r_in, r_out):
+            constant = radial2 - radius * radius
+            discriminant = b * b - 4 * a * constant
+            if discriminant >= 0:
+                root = math.sqrt(discriminant)
+                half = -0.5 * (b + math.copysign(root, b))
+                if half == 0:
+                    n = _add_bound(bounds, n, -b / (2 * a))
+                else:
+                    n = _add_bound(bounds, n, half / a)
+                    n = _add_bound(bounds, n, constant / half)
+    if dz != 0:
+        n = _add_bound(bounds, n, (z_min - z0) / dz)
+        n = _add_bound(bounds, n, (z_max - z0) / dz)
+    bounds[:n].sort()
+    inner2, outer2 = _pow(r_in, 2.0), _pow(r_out, 2.0)
+    segments = 0
+    for i in range(n - 1):
+        lo, hi = bounds[i], bounds[i + 1]
+        if lo == hi:
+            continue
+        middle = (lo + hi) / 2
+        w0, w1, w2 = s0 + middle * e0, s1 + middle * e1, s2 + middle * e2
+        r2 = w0 * w0 + w1 * w1 + w2 * w2
+        z = z0 + middle * dz
+        if inner2 < r2 < outer2 and z_min <= z <= z_max:
+            if segments and fractions[2 * segments - 1] == lo:
+                fractions[2 * segments - 1] = hi
+            elif segments == 2:
+                return 3
+            else:
+                fractions[2 * segments] = lo
+                fractions[2 * segments + 1] = hi
+                segments += 1
+    for i in range(2 * segments):
+        tof[i] = length * (2 * fractions[i] - 1) / C_MM_PER_PS
+    return segments
+
+
+@numba.njit(cache=True)
+def _geometry(sm1, x1, y1, sm2, x2, y2, valid, azimuth, axial_center, axial_sign, transverse_sign,
+              apothem, centers_x, centers_y, limit, offset, row_pitch, tile_rad, center, axis, r_in,
+              r_out, z_min, z_max, cos_limit, codes, endpoints, segments, fractions, tof):
+    for k in range(sm1.size):
+        p, q = endpoints[k, :3], endpoints[k, 3:]
+        if not (_endpoint(sm1[k], x1[k], y1[k], valid, azimuth, axial_center, axial_sign, transverse_sign,
+                          apothem, centers_x, centers_y, limit, offset, row_pitch, tile_rad, p)
+                and _endpoint(sm2[k], x2[k], y2[k], valid, azimuth, axial_center, axial_sign,
+                              transverse_sign, apothem, centers_x, centers_y, limit, offset, row_pitch,
+                              tile_rad, q)):
+            codes[k] = 1
+            continue
+        n = _shell(p, q, center, axis, r_in, r_out, z_min, z_max, fractions[k], tof[k])
+        segments[k] = n
+        norm_p = math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2])
+        norm_q = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2])
+        if n < 0 or not (norm_p > 0 and norm_q > 0 and np.isfinite(norm_p) and np.isfinite(norm_q)):
+            codes[k] = 1
+            continue
+        cosine = ((p[0] / norm_p) * (q[0] / norm_q) + (p[1] / norm_p) * (q[1] / norm_q)
+                  + (p[2] / norm_p) * (q[2] / norm_q))
+        if n == 0:
+            codes[k] = 2
+        elif min(1.0, max(-1.0, cosine)) > cos_limit:
+            codes[k] = 3
+        elif n != 2:
+            codes[k] = 4
+        else:
+            codes[k] = 0
+
+
+@dataclass(frozen=True)
+class GeometryResult:
+    """Geometry stage over feature rows: code 0 accepted, k > 0 ``GEOMETRY_REJECTIONS[k - 1]``.
+
+    Endpoints are detector 1 then detector 2 (mm); shell fractions/TOF (ps)
+    hold up to two segments along detector 1 -> 2, NaN where absent.
+    """
+    hypothesis: str
+    codes: np.ndarray
+    endpoints_mm: np.ndarray
+    shell_segments: np.ndarray
+    shell_fractions: np.ndarray
+    shell_tof_ps: np.ndarray
+
+    def counts(self):
+        found = np.bincount(self.codes, minlength=len(GEOMETRY_REJECTIONS) + 1)
+        return {label: int(found[index]) for index, label in enumerate((ACCEPTED,) + GEOMETRY_REJECTIONS)}
+
+
+def apply_geometry(features, hypothesis):
+    """Run one declared hypothesis on stored feature rows; reads no LDAT."""
+    count = len(features.ints)
+    codes = np.zeros(count, np.int64)
+    endpoints = np.full((count, 6), np.nan)
+    segments = np.zeros(count, np.int64)
+    fractions, tof = np.full((count, 4), np.nan), np.full((count, 4), np.nan)
+    column = features.column
+    _geometry(column("sm_1"), column("x_1"), column("y_1"), column("sm_2"), column("x_2"), column("y_2"),
+              *hypothesis.tables(), codes, endpoints, segments, fractions, tof)
+    if (segments > 2).any():
+        raise GeometryError("annular shell produced more than two segments")
+    return GeometryResult(hypothesis.name, codes, endpoints, segments, fractions, tof)
+
+
+def time_channel_coverage(endpoint_counts, setup, down_regions):
+    """Accepted endpoints per operational TIME channel (each accepted record adds two).
+
+    Operational excludes configured unpopulated minimodules and the declared
+    acquisition-specific down regions; endpoints in either are reported apart.
+    """
+    down = {(int(sm), int(mm)) for sm, mm in down_regions}
+    mapped = {tuple(key) for key in setup.sm_mM_map.values()}
+    if not down <= mapped:
+        raise ValueError(f"down regions not in the selected map: {sorted(down - mapped)}")
+    time_channels = {ch: tuple(setup.sm_mM_map[ch]) for ch in setup.chtype_map
+                     if ChannelType.TIME in setup.chtype_map[ch] and ch in setup.sm_mM_map}
+    unknown = sorted(ch for ch, n in endpoint_counts.items() if n and ch not in time_channels)
+    if unknown:
+        raise ValueError(f"endpoint counts on non-TIME or unmapped channels: {unknown[:5]}")
+    operational = sorted(ch for ch, key in time_channels.items()
+                         if key not in setup.unpopulated and key not in down)
+    per_channel = {ch: int(endpoint_counts.get(ch, 0)) for ch in operational}
+
+    def in_regions(regions):
+        return sum(int(n) for ch, n in endpoint_counts.items() if n and time_channels[ch] in regions)
+
+    return {
+        "definition": "accepted coincidences add one endpoint to each selected TIME channel",
+        "operational_time_channels": len(operational),
+        "unpopulated_time_channels": sum(key in setup.unpopulated for key in time_channels.values()),
+        "down_regions": sorted(down),
+        "down_time_channels": sum(key in down for key in time_channels.values()),
+        "endpoints_per_operational_channel": per_channel,
+        "operational_without_endpoints": [ch for ch, n in per_channel.items() if n == 0],
+        "down_region_endpoints": in_regions(down),
+        "unpopulated_endpoints": in_regions(setup.unpopulated),
+    }

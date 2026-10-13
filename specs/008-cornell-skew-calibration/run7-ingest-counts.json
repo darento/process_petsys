@@ -1,0 +1,1776 @@
+{
+ "schema_version": 1,
+ "task": "008 T4c (008-FR-5, 008-FR-6, 008-FR-16)",
+ "description": "run7 production first-failure counts: holdout exclusions, compiled legacy pre-geometry cuts, then faceted geometry stage per handedness candidate",
+ "harness": "local scratch script over src.cornell.timing_ingest.production_batches/apply_geometry/time_channel_coverage; 16 files, one process per file",
+ "limitations": [
+  "Not a calibration sufficiency classification (T1b2/T9)",
+  "Both transverse handedness candidates reported; neither selected",
+  "Source pose is the drawing nominal (centered, axis z); measured pose pending",
+  "Per-file wall time includes OS-cache-uncontrolled reads on the analysis PC (8 workers)",
+  "module_tie_rows counts equal-energy minimodule ties resolved first-seen",
+  "Coverage endpoints: each accepted record adds one to each selected TIME channel"
+ ],
+ "created_utc": "2026-10-13T10:54:33.601777+00:00",
+ "scope": "full run7",
+ "inputs": {
+  "config": "configs/cornell_full_system.yaml",
+  "encal": "norm_10082026_r7_coincCompact_resolved.encal",
+  "encal_sha256": "3a1b86b2a50cd490c2637c7af4359637628894bfddc0546c3a87ff53ed2b16a5",
+  "holdout": "run7-dataset-summary.json holdout (1 us guards)",
+  "energy_calibration_prefix": {
+   "3": 3186061,
+   "5": 3185078,
+   "8": 3184900,
+   "11": 3185980,
+   "14": 3192263
+  },
+  "source": {
+   "inner_radius_mm": 137.5,
+   "outer_radius_mm": 142.5,
+   "axial_min_mm": -150.0,
+   "axial_max_mm": 150.0,
+   "center_mm": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "axis": [
+    0.0,
+    0.0,
+    1.0
+   ]
+  },
+  "interaction_depth_mm": 7.0,
+  "axial_sign": -1,
+  "source_sha256": "3b9d7a897c207c041c010a27a97ab3d40d2f46463817c9d4804f6ec96bb2ba42"
+ },
+ "workers": 8,
+ "wall_seconds": 261.8241209000116,
+ "files": [
+  {
+   "index": 0,
+   "name": "norm_10082026_r7_coincCompact_00000000.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 35959131,
+   "first_failure": {
+    "file edge guard": 6,
+    "passed pre-geometry": 7307592,
+    "side min channels": 12275754,
+    "minimodule min channels": 188589,
+    "coincidence window": 121846,
+    "unresolved slab": 1322580,
+    "energy window": 14742764
+   },
+   "passed_pre_geometry": 7307592,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 135499,
+     "invalid endpoint": 0,
+     "no shell crossing": 324729,
+     "opposition angle": 6847364,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 147295,
+     "invalid endpoint": 0,
+     "no shell crossing": 458227,
+     "opposition angle": 6702070,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 86.37165280000772,
+   "geometry_seconds_both_hypotheses": 11.835572499432601
+  },
+  {
+   "index": 1,
+   "name": "norm_10082026_r7_coincCompact_00000001.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 59725149,
+   "first_failure": {
+    "file edge guard": 2,
+    "passed pre-geometry": 12112534,
+    "side min channels": 20415091,
+    "minimodule min channels": 312947,
+    "coincidence window": 203043,
+    "unresolved slab": 2196865,
+    "energy window": 24484667
+   },
+   "passed_pre_geometry": 12112534,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 225412,
+     "invalid endpoint": 0,
+     "no shell crossing": 537167,
+     "opposition angle": 11349955,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 244950,
+     "invalid endpoint": 0,
+     "no shell crossing": 757497,
+     "opposition angle": 11110087,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 141.959520699922,
+   "geometry_seconds_both_hypotheses": 19.411088999011554
+  },
+  {
+   "index": 2,
+   "name": "norm_10082026_r7_coincCompact_00000002.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 59424095,
+   "first_failure": {
+    "file edge guard": 9,
+    "passed pre-geometry": 12056905,
+    "side min channels": 20326905,
+    "minimodule min channels": 311620,
+    "coincidence window": 201835,
+    "unresolved slab": 2183816,
+    "energy window": 24343005
+   },
+   "passed_pre_geometry": 12056905,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 223665,
+     "invalid endpoint": 0,
+     "no shell crossing": 535532,
+     "opposition angle": 11297708,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 243107,
+     "invalid endpoint": 0,
+     "no shell crossing": 755585,
+     "opposition angle": 11058213,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 142.0790664999513,
+   "geometry_seconds_both_hypotheses": 19.140396700473502
+  },
+  {
+   "index": 3,
+   "name": "norm_10082026_r7_coincCompact_00000003.ldat",
+   "role": "test",
+   "excluded_prefix_records": 3186061,
+   "records": 59081468,
+   "first_failure": {
+    "energy calibration prefix": 3186061,
+    "passed pre-geometry": 11309833,
+    "side min channels": 19141950,
+    "minimodule min channels": 293601,
+    "coincidence window": 189153,
+    "unresolved slab": 2056982,
+    "energy window": 22903886,
+    "file edge guard": 2
+   },
+   "passed_pre_geometry": 11309833,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 210031,
+     "invalid endpoint": 0,
+     "no shell crossing": 502864,
+     "opposition angle": 10596938,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 228056,
+     "invalid endpoint": 0,
+     "no shell crossing": 707161,
+     "opposition angle": 10374616,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 139.77512030000798,
+   "geometry_seconds_both_hypotheses": 18.317102100816555
+  },
+  {
+   "index": 4,
+   "name": "norm_10082026_r7_coincCompact_00000004.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 58750511,
+   "first_failure": {
+    "file edge guard": 3,
+    "passed pre-geometry": 11891360,
+    "side min channels": 20120918,
+    "minimodule min channels": 306505,
+    "coincidence window": 197177,
+    "unresolved slab": 2159501,
+    "energy window": 24075047
+   },
+   "passed_pre_geometry": 11891360,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 219818,
+     "invalid endpoint": 0,
+     "no shell crossing": 528047,
+     "opposition angle": 11143495,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 239404,
+     "invalid endpoint": 0,
+     "no shell crossing": 744833,
+     "opposition angle": 10907123,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 139.18519540003035,
+   "geometry_seconds_both_hypotheses": 19.272071099141613
+  },
+  {
+   "index": 5,
+   "name": "norm_10082026_r7_coincCompact_00000005.ldat",
+   "role": "validation",
+   "excluded_prefix_records": 3185078,
+   "records": 58473108,
+   "first_failure": {
+    "energy calibration prefix": 3185078,
+    "passed pre-geometry": 11201566,
+    "side min channels": 18941891,
+    "minimodule min channels": 287878,
+    "coincidence window": 184683,
+    "unresolved slab": 2032220,
+    "energy window": 22639787,
+    "file edge guard": 5
+   },
+   "passed_pre_geometry": 11201566,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 206283,
+     "invalid endpoint": 0,
+     "no shell crossing": 495974,
+     "opposition angle": 10499309,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 224619,
+     "invalid endpoint": 0,
+     "no shell crossing": 701974,
+     "opposition angle": 10274973,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 137.4500802999828,
+   "geometry_seconds_both_hypotheses": 18.25581619993318
+  },
+  {
+   "index": 6,
+   "name": "norm_10082026_r7_coincCompact_00000006.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 58125498,
+   "first_failure": {
+    "file edge guard": 6,
+    "passed pre-geometry": 11758248,
+    "side min channels": 19938657,
+    "minimodule min channels": 303576,
+    "coincidence window": 192431,
+    "unresolved slab": 2135855,
+    "energy window": 23796725
+   },
+   "passed_pre_geometry": 11758248,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 218044,
+     "invalid endpoint": 0,
+     "no shell crossing": 521135,
+     "opposition angle": 11019069,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 236598,
+     "invalid endpoint": 0,
+     "no shell crossing": 735389,
+     "opposition angle": 10786261,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 136.83629720006138,
+   "geometry_seconds_both_hypotheses": 18.686432400136255
+  },
+  {
+   "index": 7,
+   "name": "norm_10082026_r7_coincCompact_00000007.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 57796843,
+   "first_failure": {
+    "file edge guard": 5,
+    "passed pre-geometry": 11674889,
+    "side min channels": 19865867,
+    "minimodule min channels": 302223,
+    "coincidence window": 191491,
+    "unresolved slab": 2119539,
+    "energy window": 23642829
+   },
+   "passed_pre_geometry": 11674889,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 215878,
+     "invalid endpoint": 0,
+     "no shell crossing": 519254,
+     "opposition angle": 10939757,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 234883,
+     "invalid endpoint": 0,
+     "no shell crossing": 731904,
+     "opposition angle": 10708102,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 136.8663416999625,
+   "geometry_seconds_both_hypotheses": 18.671580199734308
+  },
+  {
+   "index": 8,
+   "name": "norm_10082026_r7_coincCompact_00000008.ldat",
+   "role": "test",
+   "excluded_prefix_records": 3184900,
+   "records": 57456298,
+   "first_failure": {
+    "energy calibration prefix": 3184900,
+    "passed pre-geometry": 10952892,
+    "side min channels": 18654069,
+    "minimodule min channels": 282609,
+    "coincidence window": 178685,
+    "unresolved slab": 1987720,
+    "energy window": 22215421,
+    "file edge guard": 2
+   },
+   "passed_pre_geometry": 10952892,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 202828,
+     "invalid endpoint": 0,
+     "no shell crossing": 486132,
+     "opposition angle": 10263932,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 220328,
+     "invalid endpoint": 0,
+     "no shell crossing": 685736,
+     "opposition angle": 10046828,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 132.75075960007962,
+   "geometry_seconds_both_hypotheses": 17.923663601162843
+  },
+  {
+   "index": 9,
+   "name": "norm_10082026_r7_coincCompact_00000009.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 57135969,
+   "first_failure": {
+    "file edge guard": 4,
+    "passed pre-geometry": 11536967,
+    "side min channels": 19654950,
+    "minimodule min channels": 296174,
+    "coincidence window": 187200,
+    "unresolved slab": 2095248,
+    "energy window": 23365426
+   },
+   "passed_pre_geometry": 11536967,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 214017,
+     "invalid endpoint": 0,
+     "no shell crossing": 511564,
+     "opposition angle": 10811386,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 232479,
+     "invalid endpoint": 0,
+     "no shell crossing": 722248,
+     "opposition angle": 10582240,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 123.1464554000413,
+   "geometry_seconds_both_hypotheses": 17.422113900189288
+  },
+  {
+   "index": 10,
+   "name": "norm_10082026_r7_coincCompact_00000010.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 56799798,
+   "first_failure": {
+    "file edge guard": 3,
+    "passed pre-geometry": 11451247,
+    "side min channels": 19527387,
+    "minimodule min channels": 294391,
+    "coincidence window": 186176,
+    "unresolved slab": 2078406,
+    "energy window": 23262188
+   },
+   "passed_pre_geometry": 11451247,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 211691,
+     "invalid endpoint": 0,
+     "no shell crossing": 508580,
+     "opposition angle": 10730976,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 230752,
+     "invalid endpoint": 0,
+     "no shell crossing": 717868,
+     "opposition angle": 10502627,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 122.57188030006364,
+   "geometry_seconds_both_hypotheses": 17.59116950049065
+  },
+  {
+   "index": 11,
+   "name": "norm_10082026_r7_coincCompact_00000011.ldat",
+   "role": "validation",
+   "excluded_prefix_records": 3185980,
+   "records": 56445919,
+   "first_failure": {
+    "energy calibration prefix": 3185980,
+    "passed pre-geometry": 10719927,
+    "side min channels": 18324545,
+    "minimodule min channels": 274927,
+    "coincidence window": 172787,
+    "unresolved slab": 1946422,
+    "energy window": 21821328,
+    "file edge guard": 3
+   },
+   "passed_pre_geometry": 10719927,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 198133,
+     "invalid endpoint": 0,
+     "no shell crossing": 475425,
+     "opposition angle": 10046369,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 216082,
+     "invalid endpoint": 0,
+     "no shell crossing": 670907,
+     "opposition angle": 9832938,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 121.44365919998381,
+   "geometry_seconds_both_hypotheses": 16.334030802128837
+  },
+  {
+   "index": 12,
+   "name": "norm_10082026_r7_coincCompact_00000012.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 56032928,
+   "first_failure": {
+    "file edge guard": 6,
+    "passed pre-geometry": 11283156,
+    "side min channels": 19271013,
+    "minimodule min channels": 287689,
+    "coincidence window": 180523,
+    "unresolved slab": 2051182,
+    "energy window": 22959359
+   },
+   "passed_pre_geometry": 11283156,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 208522,
+     "invalid endpoint": 0,
+     "no shell crossing": 499502,
+     "opposition angle": 10575132,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 227049,
+     "invalid endpoint": 0,
+     "no shell crossing": 706047,
+     "opposition angle": 10350060,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 120.57934059994295,
+   "geometry_seconds_both_hypotheses": 17.16842960054055
+  },
+  {
+   "index": 13,
+   "name": "norm_10082026_r7_coincCompact_00000013.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 55628326,
+   "first_failure": {
+    "file edge guard": 6,
+    "passed pre-geometry": 11193923,
+    "side min channels": 19135838,
+    "minimodule min channels": 286471,
+    "coincidence window": 178515,
+    "unresolved slab": 2034777,
+    "energy window": 22798796
+   },
+   "passed_pre_geometry": 11193923,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 206574,
+     "invalid endpoint": 0,
+     "no shell crossing": 495767,
+     "opposition angle": 10491582,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 224759,
+     "invalid endpoint": 0,
+     "no shell crossing": 702585,
+     "opposition angle": 10266579,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 118.9978179000318,
+   "geometry_seconds_both_hypotheses": 17.202253600698896
+  },
+  {
+   "index": 14,
+   "name": "norm_10082026_r7_coincCompact_00000014.ldat",
+   "role": "test",
+   "excluded_prefix_records": 3192263,
+   "records": 55536097,
+   "first_failure": {
+    "energy calibration prefix": 3192263,
+    "passed pre-geometry": 10506306,
+    "side min channels": 18029642,
+    "minimodule min channels": 268866,
+    "coincidence window": 166825,
+    "unresolved slab": 1911555,
+    "energy window": 21460638,
+    "file edge guard": 2
+   },
+   "passed_pre_geometry": 10506306,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 193855,
+     "invalid endpoint": 0,
+     "no shell crossing": 465299,
+     "opposition angle": 9847152,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 210574,
+     "invalid endpoint": 0,
+     "no shell crossing": 656985,
+     "opposition angle": 9638747,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 117.19457930000499,
+   "geometry_seconds_both_hypotheses": 15.769031298579648
+  },
+  {
+   "index": 15,
+   "name": "norm_10082026_r7_coincCompact_00000015.ldat",
+   "role": "train",
+   "excluded_prefix_records": 0,
+   "records": 20720909,
+   "first_failure": {
+    "file edge guard": 3,
+    "passed pre-geometry": 4157292,
+    "side min channels": 7135731,
+    "minimodule min channels": 106030,
+    "coincidence window": 66650,
+    "unresolved slab": 756442,
+    "energy window": 8498761
+   },
+   "passed_pre_geometry": 4157292,
+   "module_tie_rows": 0,
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 76953,
+     "invalid endpoint": 0,
+     "no shell crossing": 184442,
+     "opposition angle": 3895897,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 83388,
+     "invalid endpoint": 0,
+     "no shell crossing": 260884,
+     "opposition angle": 3813020,
+     "one shell segment": 0
+    }
+   },
+   "wall_seconds": 50.13239639997482,
+   "geometry_seconds_both_hypotheses": 6.83365380030591
+  }
+ ],
+ "roles": {
+  "train": {
+   "files": [
+    0,
+    1,
+    2,
+    4,
+    6,
+    7,
+    9,
+    10,
+    12,
+    13,
+    15
+   ],
+   "records": 576099157,
+   "first_failure": {
+    "file edge guard": 53,
+    "passed pre-geometry": 116424113,
+    "side min channels": 197668111,
+    "minimodule min channels": 2996215,
+    "coincidence window": 1906887,
+    "unresolved slab": 21134211,
+    "energy window": 235969567
+   },
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 2156073,
+     "invalid endpoint": 0,
+     "no shell crossing": 5165719,
+     "opposition angle": 109102321,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 2344664,
+     "invalid endpoint": 0,
+     "no shell crossing": 7293067,
+     "opposition angle": 106786382,
+     "one shell segment": 0
+    }
+   },
+   "coverage": {
+    "faceted transverse_sign +1": {
+     "operational_time_channels": 3168,
+     "unpopulated_time_channels": 640,
+     "down_regions": [
+      [
+       14,
+       0
+      ],
+      [
+       14,
+       1
+      ],
+      [
+       14,
+       4
+      ],
+      [
+       14,
+       5
+      ]
+     ],
+     "down_time_channels": 32,
+     "operational_without_endpoints": [
+      [
+       4368,
+       3,
+       4
+      ],
+      [
+       4419,
+       3,
+       6
+      ],
+      [
+       131466,
+       6,
+       13
+      ],
+      [
+       131931,
+       7,
+       3
+      ],
+      [
+       262457,
+       12,
+       1
+      ],
+      [
+       262624,
+       12,
+       15
+      ],
+      [
+       262648,
+       12,
+       14
+      ],
+      [
+       528715,
+       18,
+       2
+      ],
+      [
+       529813,
+       20,
+       13
+      ],
+      [
+       655690,
+       21,
+       2
+      ],
+      [
+       660864,
+       26,
+       9
+      ],
+      [
+       660887,
+       26,
+       13
+      ],
+      [
+       790869,
+       9,
+       2
+      ]
+     ],
+     "down_region_endpoints": 0,
+     "unpopulated_endpoints": 0,
+     "channels_below_100_by_sm_mm": {
+      "3:4": 1,
+      "3:6": 1,
+      "6:13": 1,
+      "7:3": 2,
+      "7:7": 1,
+      "12:1": 1,
+      "12:15": 1,
+      "12:14": 1,
+      "18:2": 1,
+      "19:6": 1,
+      "20:13": 1,
+      "21:4": 2,
+      "21:0": 1,
+      "21:2": 2,
+      "21:13": 1,
+      "21:12": 2,
+      "21:8": 2,
+      "21:10": 1,
+      "26:5": 1,
+      "26:9": 1,
+      "26:13": 2,
+      "25:13": 1,
+      "25:10": 1,
+      "27:4": 5,
+      "27:0": 4,
+      "9:2": 1
+     },
+     "endpoints_min_median_max": [
+      0,
+      1571,
+      2485
+     ],
+     "channels_below_100_endpoints": 39
+    },
+    "faceted transverse_sign -1": {
+     "operational_time_channels": 3168,
+     "unpopulated_time_channels": 640,
+     "down_regions": [
+      [
+       14,
+       0
+      ],
+      [
+       14,
+       1
+      ],
+      [
+       14,
+       4
+      ],
+      [
+       14,
+       5
+      ]
+     ],
+     "down_time_channels": 32,
+     "operational_without_endpoints": [
+      [
+       4368,
+       3,
+       4
+      ],
+      [
+       4419,
+       3,
+       6
+      ],
+      [
+       131466,
+       6,
+       13
+      ],
+      [
+       262457,
+       12,
+       1
+      ],
+      [
+       262624,
+       12,
+       15
+      ],
+      [
+       262648,
+       12,
+       14
+      ],
+      [
+       528715,
+       18,
+       2
+      ],
+      [
+       529813,
+       20,
+       13
+      ],
+      [
+       655690,
+       21,
+       2
+      ],
+      [
+       660864,
+       26,
+       9
+      ],
+      [
+       660887,
+       26,
+       13
+      ],
+      [
+       790869,
+       9,
+       2
+      ]
+     ],
+     "down_region_endpoints": 0,
+     "unpopulated_endpoints": 0,
+     "channels_below_100_by_sm_mm": {
+      "3:4": 1,
+      "3:6": 1,
+      "6:13": 1,
+      "7:3": 2,
+      "7:7": 1,
+      "12:1": 1,
+      "12:15": 1,
+      "12:14": 1,
+      "18:2": 1,
+      "19:6": 1,
+      "20:13": 1,
+      "21:4": 2,
+      "21:2": 2,
+      "21:13": 1,
+      "21:8": 2,
+      "21:10": 1,
+      "26:5": 1,
+      "26:9": 1,
+      "26:13": 2,
+      "25:13": 1,
+      "25:10": 1,
+      "27:4": 5,
+      "27:0": 3,
+      "9:2": 1
+     },
+     "endpoints_min_median_max": [
+      0,
+      1673,
+      2723
+     ],
+     "channels_below_100_endpoints": 35
+    }
+   }
+  },
+  "test": {
+   "files": [
+    3,
+    8,
+    14
+   ],
+   "records": 172073863,
+   "first_failure": {
+    "energy calibration prefix": 9563224,
+    "passed pre-geometry": 32769031,
+    "side min channels": 55825661,
+    "minimodule min channels": 845076,
+    "coincidence window": 534663,
+    "unresolved slab": 5956257,
+    "energy window": 66579945,
+    "file edge guard": 6
+   },
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 606714,
+     "invalid endpoint": 0,
+     "no shell crossing": 1454295,
+     "opposition angle": 30708022,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 658958,
+     "invalid endpoint": 0,
+     "no shell crossing": 2049882,
+     "opposition angle": 30060191,
+     "one shell segment": 0
+    }
+   },
+   "coverage": {
+    "faceted transverse_sign +1": {
+     "operational_time_channels": 3168,
+     "unpopulated_time_channels": 640,
+     "down_regions": [
+      [
+       14,
+       0
+      ],
+      [
+       14,
+       1
+      ],
+      [
+       14,
+       4
+      ],
+      [
+       14,
+       5
+      ]
+     ],
+     "down_time_channels": 32,
+     "operational_without_endpoints": [
+      [
+       4368,
+       3,
+       4
+      ],
+      [
+       4419,
+       3,
+       6
+      ],
+      [
+       131466,
+       6,
+       13
+      ],
+      [
+       131931,
+       7,
+       3
+      ],
+      [
+       131945,
+       7,
+       7
+      ],
+      [
+       262457,
+       12,
+       1
+      ],
+      [
+       262624,
+       12,
+       15
+      ],
+      [
+       262648,
+       12,
+       14
+      ],
+      [
+       528715,
+       18,
+       2
+      ],
+      [
+       529813,
+       20,
+       13
+      ],
+      [
+       655690,
+       21,
+       2
+      ],
+      [
+       660864,
+       26,
+       9
+      ],
+      [
+       660887,
+       26,
+       13
+      ],
+      [
+       790869,
+       9,
+       2
+      ]
+     ],
+     "down_region_endpoints": 0,
+     "unpopulated_endpoints": 0,
+     "channels_below_100_by_sm_mm": {
+      "0:4": 6,
+      "0:0": 6,
+      "0:12": 8,
+      "0:13": 1,
+      "0:8": 6,
+      "0:10": 1,
+      "1:5": 1,
+      "1:2": 1,
+      "3:4": 6,
+      "3:0": 5,
+      "3:6": 1,
+      "3:12": 6,
+      "3:8": 7,
+      "6:4": 5,
+      "6:0": 7,
+      "6:13": 1,
+      "6:12": 5,
+      "6:8": 5,
+      "7:3": 2,
+      "7:7": 1,
+      "12:4": 6,
+      "12:0": 6,
+      "12:1": 1,
+      "12:12": 6,
+      "12:8": 5,
+      "12:15": 1,
+      "12:14": 1,
+      "15:4": 5,
+      "15:0": 5,
+      "15:2": 1,
+      "15:12": 5,
+      "15:8": 6,
+      "16:0": 1,
+      "18:4": 5,
+      "18:0": 6,
+      "18:1": 1,
+      "18:2": 1,
+      "18:12": 6,
+      "18:8": 6,
+      "19:6": 1,
+      "20:13": 1,
+      "21:4": 8,
+      "21:5": 1,
+      "21:0": 8,
+      "21:1": 2,
+      "21:2": 2,
+      "21:13": 5,
+      "21:12": 8,
+      "21:8": 8,
+      "21:9": 2,
+      "21:10": 1,
+      "22:2": 1,
+      "22:13": 1,
+      "22:12": 1,
+      "23:5": 1,
+      "24:4": 6,
+      "24:0": 5,
+      "24:12": 6,
+      "24:8": 8,
+      "26:5": 1,
+      "26:9": 1,
+      "26:13": 2,
+      "25:13": 1,
+      "25:10": 1,
+      "27:4": 8,
+      "27:5": 7,
+      "27:0": 8,
+      "27:1": 8,
+      "27:6": 1,
+      "27:12": 5,
+      "27:8": 7,
+      "9:4": 6,
+      "9:0": 6,
+      "9:2": 1,
+      "9:12": 7,
+      "9:8": 7
+     },
+     "endpoints_min_median_max": [
+      0,
+      440,
+      749
+     ],
+     "channels_below_100_endpoints": 308
+    },
+    "faceted transverse_sign -1": {
+     "operational_time_channels": 3168,
+     "unpopulated_time_channels": 640,
+     "down_regions": [
+      [
+       14,
+       0
+      ],
+      [
+       14,
+       1
+      ],
+      [
+       14,
+       4
+      ],
+      [
+       14,
+       5
+      ]
+     ],
+     "down_time_channels": 32,
+     "operational_without_endpoints": [
+      [
+       4368,
+       3,
+       4
+      ],
+      [
+       4419,
+       3,
+       6
+      ],
+      [
+       131466,
+       6,
+       13
+      ],
+      [
+       131931,
+       7,
+       3
+      ],
+      [
+       131945,
+       7,
+       7
+      ],
+      [
+       262457,
+       12,
+       1
+      ],
+      [
+       262624,
+       12,
+       15
+      ],
+      [
+       262648,
+       12,
+       14
+      ],
+      [
+       528715,
+       18,
+       2
+      ],
+      [
+       529813,
+       20,
+       13
+      ],
+      [
+       655690,
+       21,
+       2
+      ],
+      [
+       660864,
+       26,
+       9
+      ],
+      [
+       660887,
+       26,
+       13
+      ],
+      [
+       790869,
+       9,
+       2
+      ]
+     ],
+     "down_region_endpoints": 0,
+     "unpopulated_endpoints": 0,
+     "channels_below_100_by_sm_mm": {
+      "0:4": 6,
+      "0:0": 5,
+      "0:12": 5,
+      "0:8": 5,
+      "0:10": 1,
+      "1:5": 1,
+      "1:2": 1,
+      "3:4": 6,
+      "3:0": 4,
+      "3:6": 1,
+      "3:12": 6,
+      "3:8": 6,
+      "6:4": 5,
+      "6:0": 5,
+      "6:13": 1,
+      "6:12": 4,
+      "6:8": 5,
+      "7:3": 2,
+      "7:7": 1,
+      "12:4": 6,
+      "12:0": 6,
+      "12:1": 1,
+      "12:12": 4,
+      "12:8": 5,
+      "12:15": 1,
+      "12:14": 1,
+      "15:4": 5,
+      "15:0": 5,
+      "15:2": 1,
+      "15:12": 5,
+      "15:8": 6,
+      "16:0": 1,
+      "18:4": 5,
+      "18:0": 4,
+      "18:1": 1,
+      "18:2": 1,
+      "18:12": 5,
+      "18:8": 6,
+      "19:6": 1,
+      "20:13": 1,
+      "21:4": 8,
+      "21:5": 1,
+      "21:0": 8,
+      "21:2": 2,
+      "21:13": 2,
+      "21:12": 8,
+      "21:8": 8,
+      "21:9": 2,
+      "21:10": 1,
+      "22:2": 1,
+      "22:13": 1,
+      "22:12": 1,
+      "23:5": 1,
+      "24:4": 6,
+      "24:0": 5,
+      "24:12": 8,
+      "24:13": 3,
+      "24:8": 8,
+      "26:5": 1,
+      "26:9": 1,
+      "26:13": 2,
+      "25:13": 1,
+      "25:10": 1,
+      "27:4": 8,
+      "27:5": 7,
+      "27:0": 8,
+      "27:1": 5,
+      "27:12": 4,
+      "27:8": 7,
+      "9:4": 6,
+      "9:0": 5,
+      "9:2": 1,
+      "9:12": 6,
+      "9:8": 7
+     },
+     "endpoints_min_median_max": [
+      0,
+      469,
+      779
+     ],
+     "channels_below_100_endpoints": 285
+    }
+   }
+  },
+  "validation": {
+   "files": [
+    5,
+    11
+   ],
+   "records": 114919027,
+   "first_failure": {
+    "energy calibration prefix": 6371058,
+    "passed pre-geometry": 21921493,
+    "side min channels": 37266436,
+    "minimodule min channels": 562805,
+    "coincidence window": 357470,
+    "unresolved slab": 3978642,
+    "energy window": 44461115,
+    "file edge guard": 8
+   },
+   "geometry": {
+    "faceted transverse_sign +1": {
+     "accepted": 404416,
+     "invalid endpoint": 0,
+     "no shell crossing": 971399,
+     "opposition angle": 20545678,
+     "one shell segment": 0
+    },
+    "faceted transverse_sign -1": {
+     "accepted": 440701,
+     "invalid endpoint": 0,
+     "no shell crossing": 1372881,
+     "opposition angle": 20107911,
+     "one shell segment": 0
+    }
+   },
+   "coverage": {
+    "faceted transverse_sign +1": {
+     "operational_time_channels": 3168,
+     "unpopulated_time_channels": 640,
+     "down_regions": [
+      [
+       14,
+       0
+      ],
+      [
+       14,
+       1
+      ],
+      [
+       14,
+       4
+      ],
+      [
+       14,
+       5
+      ]
+     ],
+     "down_time_channels": 32,
+     "operational_without_endpoints": [
+      [
+       4368,
+       3,
+       4
+      ],
+      [
+       4419,
+       3,
+       6
+      ],
+      [
+       131466,
+       6,
+       13
+      ],
+      [
+       131931,
+       7,
+       3
+      ],
+      [
+       131945,
+       7,
+       7
+      ],
+      [
+       262457,
+       12,
+       1
+      ],
+      [
+       262624,
+       12,
+       15
+      ],
+      [
+       262648,
+       12,
+       14
+      ],
+      [
+       528715,
+       18,
+       2
+      ],
+      [
+       529813,
+       20,
+       13
+      ],
+      [
+       655690,
+       21,
+       2
+      ],
+      [
+       660864,
+       26,
+       9
+      ],
+      [
+       660887,
+       26,
+       13
+      ],
+      [
+       790869,
+       9,
+       2
+      ]
+     ],
+     "down_region_endpoints": 0,
+     "unpopulated_endpoints": 0,
+     "channels_below_100_by_sm_mm": {
+      "0:4": 8,
+      "0:5": 1,
+      "0:0": 8,
+      "0:1": 2,
+      "0:13": 8,
+      "0:12": 8,
+      "0:8": 8,
+      "0:9": 1,
+      "0:10": 1,
+      "1:5": 1,
+      "1:2": 1,
+      "3:5": 1,
+      "3:4": 7,
+      "3:0": 8,
+      "3:1": 1,
+      "3:6": 1,
+      "3:12": 8,
+      "3:13": 1,
+      "3:8": 8,
+      "3:9": 1,
+      "4:5": 1,
+      "6:4": 8,
+      "6:5": 2,
+      "6:0": 8,
+      "6:1": 1,
+      "6:13": 1,
+      "6:12": 8,
+      "6:8": 8,
+      "6:9": 1,
+      "7:3": 2,
+      "7:7": 1,
+      "7:10": 1,
+      "12:4": 8,
+      "12:5": 2,
+      "12:0": 8,
+      "12:1": 1,
+      "12:12": 8,
+      "12:13": 1,
+      "12:8": 8,
+      "12:9": 3,
+      "12:15": 1,
+      "12:14": 1,
+      "15:4": 8,
+      "15:0": 8,
+      "15:1": 1,
+      "15:2": 1,
+      "15:12": 8,
+      "15:13": 2,
+      "15:8": 8,
+      "15:9": 2,
+      "16:0": 1,
+      "16:2": 1,
+      "18:4": 8,
+      "18:5": 3,
+      "18:0": 8,
+      "18:1": 2,
+      "18:2": 1,
+      "18:12": 7,
+      "18:13": 1,
+      "18:8": 8,
+      "18:9": 1,
+      "19:6": 1,
+      "20:13": 1,
+      "21:4": 8,
+      "21:5": 6,
+      "21:0": 8,
+      "21:1": 5,
+      "21:2": 2,
+      "21:9": 7,
+      "21:13": 8,
+      "21:12": 8,
+      "21:8": 8,
+      "21:10": 1,
+      "22:2": 1,
+      "22:13": 1,
+      "22:12": 1,
+      "23:5": 1,
+      "24:4": 8,
+      "24:5": 2,
+      "24:0": 8,
+      "24:12": 8,
+      "24:13": 2,
+      "24:8": 8,
+      "24:9": 2,
+      "26:5": 1,
+      "26:9": 1,
+      "26:13": 2,
+      "25:13": 1,
+      "25:10": 1,
+      "27:4": 8,
+      "27:5": 8,
+      "27:0": 8,
+      "27:1": 8,
+      "27:6": 3,
+      "27:2": 4,
+      "27:12": 8,
+      "27:13": 1,
+      "27:8": 8,
+      "27:9": 3,
+      "9:4": 8,
+      "9:5": 2,
+      "9:0": 8,
+      "9:1": 1,
+      "9:2": 1,
+      "9:9": 4,
+      "9:13": 2,
+      "9:12": 8,
+      "9:8": 8
+     },
+     "endpoints_min_median_max": [
+      0,
+      292,
+      490
+     ],
+     "channels_below_100_endpoints": 457
+    },
+    "faceted transverse_sign -1": {
+     "operational_time_channels": 3168,
+     "unpopulated_time_channels": 640,
+     "down_regions": [
+      [
+       14,
+       0
+      ],
+      [
+       14,
+       1
+      ],
+      [
+       14,
+       4
+      ],
+      [
+       14,
+       5
+      ]
+     ],
+     "down_time_channels": 32,
+     "operational_without_endpoints": [
+      [
+       4368,
+       3,
+       4
+      ],
+      [
+       4419,
+       3,
+       6
+      ],
+      [
+       131466,
+       6,
+       13
+      ],
+      [
+       131945,
+       7,
+       7
+      ],
+      [
+       262457,
+       12,
+       1
+      ],
+      [
+       262624,
+       12,
+       15
+      ],
+      [
+       262648,
+       12,
+       14
+      ],
+      [
+       528715,
+       18,
+       2
+      ],
+      [
+       529813,
+       20,
+       13
+      ],
+      [
+       655690,
+       21,
+       2
+      ],
+      [
+       655755,
+       21,
+       13
+      ],
+      [
+       660864,
+       26,
+       9
+      ],
+      [
+       660887,
+       26,
+       13
+      ],
+      [
+       790869,
+       9,
+       2
+      ]
+     ],
+     "down_region_endpoints": 0,
+     "unpopulated_endpoints": 0,
+     "channels_below_100_by_sm_mm": {
+      "0:4": 8,
+      "0:5": 1,
+      "0:0": 8,
+      "0:1": 1,
+      "0:12": 8,
+      "0:13": 1,
+      "0:8": 8,
+      "0:9": 1,
+      "0:10": 1,
+      "1:5": 1,
+      "1:2": 1,
+      "3:5": 1,
+      "3:4": 7,
+      "3:0": 8,
+      "3:1": 1,
+      "3:6": 1,
+      "3:12": 8,
+      "3:13": 1,
+      "3:8": 8,
+      "3:9": 1,
+      "4:5": 1,
+      "6:4": 8,
+      "6:5": 1,
+      "6:0": 8,
+      "6:13": 1,
+      "6:12": 8,
+      "6:8": 8,
+      "6:9": 1,
+      "7:3": 2,
+      "7:7": 1,
+      "7:10": 1,
+      "12:4": 8,
+      "12:5": 2,
+      "12:0": 8,
+      "12:1": 1,
+      "12:12": 8,
+      "12:8": 8,
+      "12:9": 2,
+      "12:15": 1,
+      "12:14": 1,
+      "15:4": 8,
+      "15:5": 1,
+      "15:0": 8,
+      "15:2": 1,
+      "15:12": 8,
+      "15:8": 8,
+      "15:9": 2,
+      "16:0": 1,
+      "18:4": 8,
+      "18:5": 3,
+      "18:0": 7,
+      "18:1": 1,
+      "18:2": 1,
+      "18:13": 2,
+      "18:12": 7,
+      "18:8": 8,
+      "18:9": 1,
+      "19:6": 1,
+      "20:13": 1,
+      "21:4": 8,
+      "21:5": 6,
+      "21:0": 8,
+      "21:1": 4,
+      "21:2": 2,
+      "21:9": 6,
+      "21:13": 4,
+      "21:12": 8,
+      "21:8": 8,
+      "21:10": 1,
+      "22:2": 1,
+      "22:13": 1,
+      "22:12": 1,
+      "23:5": 1,
+      "24:4": 8,
+      "24:5": 1,
+      "24:0": 7,
+      "24:1": 1,
+      "24:13": 7,
+      "24:12": 8,
+      "24:8": 8,
+      "24:9": 3,
+      "26:5": 1,
+      "26:9": 1,
+      "26:13": 2,
+      "25:13": 1,
+      "25:10": 1,
+      "27:4": 8,
+      "27:5": 8,
+      "27:0": 8,
+      "27:1": 7,
+      "27:6": 3,
+      "27:12": 7,
+      "27:13": 1,
+      "27:8": 8,
+      "27:9": 3,
+      "9:4": 8,
+      "9:5": 2,
+      "9:0": 8,
+      "9:1": 1,
+      "9:2": 1,
+      "9:9": 4,
+      "9:12": 8,
+      "9:13": 1,
+      "9:8": 8
+     },
+     "endpoints_min_median_max": [
+      0,
+      313,
+      517
+     ],
+     "channels_below_100_endpoints": 433
+    }
+   }
+  }
+ }
+}
