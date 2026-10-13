@@ -1,8 +1,8 @@
 """Golden files and their provenance (spec 007 FR-3, T8).
 
-Each file under tests/data/golden/ is a reference oracle's output on the manager_helpers fixtures,
-frozen once by the local scripts/capture_golden_007.py; tests compare the Manager with it and never
-load a reference. A golden file changes only in a commit citing the requirement or bug id.
+Manager goldens use the manager_helpers fixtures and local scripts/capture_golden_007.py.
+Timing goldens (spec008) freeze reviewed legacy geometry/sign probes with their own capture
+provenance. Tests never load a reference. Changes cite the requirement or bug id in the commit.
 """
 
 import ast
@@ -19,13 +19,14 @@ from helpers import DATA, REPO
 GOLDEN = DATA / "golden"
 ORACLES = {"calibration": "scripts_cornell/cornell_slab_en_cal.py",
            "listmode": "scripts_cornell/cornell_listmode_cog_fixed_position.py",
-           "qc": "scripts_cornell/cornell_system_validation.py"}
+           "qc": "scripts_cornell/cornell_system_validation.py",
+           "timing": "scripts_cornell/cornell_skew_cal_bigdata.py"}
 FILES = sorted(p for p in GOLDEN.rglob("*") if p.is_file() and not p.name.endswith(".provenance.json"))
 RECORDS = sorted(GOLDEN.rglob("*.provenance.json"))
 SHA256 = re.compile(r"[0-9a-f]{64}")
 FORBIDDEN = {"scripts", "scripts_cornell", "scripts_imas", "gui_cornell"}
 
-pytestmark = pytest.mark.fr("007-FR-3")
+pytestmark = pytest.mark.fr("007-FR-3", "008-FR-2", "008-FR-3")
 
 
 def name(path):
@@ -42,6 +43,19 @@ def test_golden_file_has_matching_provenance(path):
     content = path.read_bytes()
     assert record["golden"] == name(path)
     assert (record["sha256"], record["bytes"]) == (hashlib.sha256(content).hexdigest(), len(content))
+    if path.relative_to(GOLDEN).parts[0] == "timing":
+        assert record["spec"] == "008-FR-2"
+        assert date.fromisoformat(record["generated_utc_date"])
+        assert re.fullmatch(r"[0-9a-f]{40}", record["repo_commit"])
+        assert record["method"] and record["truth"]
+        sources = {entry["path"]: entry["sha256"] for entry in record["sources"]}
+        assert len(sources) == len(record["sources"]) == 4
+        assert set(sources) == {ORACLES["timing"], "scripts_cornell/cornell_skew_cal_bigdata_optimized.py",
+                                "scripts_cornell/cornell_ctr_pointSource.py", "src/utils.py"}
+        assert all(SHA256.fullmatch(value) for value in sources.values())
+        assert {"008-FR-2", "008-FR-3", "bug-cornell-skew-geometry", "bug-cornell-skew-sign",
+                "bug-cornell-ctr-sign"} <= set(record["requirements"])
+        return
     assert record["spec"] == "007-FR-3"
     assert record["oracle"]["path"] == ORACLES[path.relative_to(GOLDEN).parts[0]]
     assert SHA256.fullmatch(record["oracle"]["sha256"])

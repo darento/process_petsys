@@ -1,0 +1,36 @@
+{
+  "requirements": [
+    "008-FR-2",
+    "008-FR-3",
+    "bug-cornell-skew-geometry",
+    "bug-cornell-skew-sign",
+    "bug-cornell-ctr-sign"
+  ],
+  "generated_utc_date": "2026-10-13",
+  "sources": [
+    {
+      "path": "scripts_cornell/cornell_skew_cal_bigdata.py",
+      "sha256": "52557b1f6d418acdbec7edd4233851dbbe42a66f8db9c0dd76d44b1f13a3267e"
+    },
+    {
+      "path": "scripts_cornell/cornell_skew_cal_bigdata_optimized.py",
+      "sha256": "6b95fe634527f4597c97283fb62927045dee78c1893fe71745c7c4ccfe55f6ad"
+    },
+    {
+      "path": "scripts_cornell/cornell_ctr_pointSource.py",
+      "sha256": "ad7c2be3f57ea06ac3e53cc0b32d984eb9358770323d3e3f2fdb79efad702856"
+    },
+    {
+      "path": "src/utils.py",
+      "sha256": "d45011f8e8abd5448c83d8035c2714421f0bb4fb0d9a9eed5c5b8dceb23bef81"
+    }
+  ],
+  "method": "AST-extracted reviewed geometry functions and exact CTR dt expression, plus actual src.utils.apply_skew. Main routines never executed; tests consume frozen outputs only.",
+  "fixture_sha256": "03c23841d0a28c772a18a38ef292b0639fc34f6d0002d8497041681052879daa",
+  "truth": "Analytic geometry and positive subtractive delay contract; no physical orientation/origin qualification. Frozen old outputs are regression evidence, never replacement expected values.",
+  "golden": "timing/cornell_legacy_probes.json",
+  "sha256": "03c23841d0a28c772a18a38ef292b0639fc34f6d0002d8497041681052879daa",
+  "bytes": 1088,
+  "spec": "008-FR-2",
+  "repo_commit": "726c72482499f74be145bb3be122b773045dea14"
+}

@@ -1,0 +1,735 @@
+{
+  "schema_version": 1,
+  "scope": "full raw-record inventory; no analysis cuts",
+  "created_utc": "2026-10-13T08:43:54.694549+00:00",
+  "known_unavailable_regions": [
+    [
+      14,
+      0
+    ],
+    [
+      14,
+      1
+    ],
+    [
+      14,
+      4
+    ],
+    [
+      14,
+      5
+    ]
+  ],
+  "provenance_sha256": {
+    "C:\\Users\\dsanchez\\Desktop\\data\\Cornell\\full_system\\skew\\run.json": "2d0300ab78edb5c178ff72afb4193ce85da155ab1139bc7c26ce83f666b7bf10",
+    "configs\\cornell_full_system.yaml": "b1dad0f7f53881c3ce21fc4b1a43d0896e67b4104555000524265fb7624bde04",
+    "maps\\cornell_map_full_system.yaml": "6f688c2ee697d5c4c284ba113567def4e49a47777fe61ec4e9cc393b78a7f29c",
+    "C:\\Users\\dsanchez\\Desktop\\Git\\process_petsys\\src\\cornell\\timing_dataset.py": "00a007367a1f4e8e363342674a2e35bf0fb66ae088b81d951bf62b7511f1f837",
+    "C:\\Users\\dsanchez\\Desktop\\Git\\process_petsys\\src\\ldat_inspector\\fastread.py": "2dea63b6a93b3ec4a40c1e6c1513b318f3f0e4d0cf64e115ec9119d1a1e03d58"
+  },
+  "limitations": [
+    "Local full hashes are optional; source byte identity is unverified",
+    "Read timing has uncontrolled OS cache state",
+    "Raw presence is not calibrated acceptance or skew sufficiency",
+    "TIMESTAMP ps convention follows compact writer contract",
+    "Raw TIME hit presence does not establish selected timing-estimator coverage; 11 operational TIME channels have no raw hits"
+  ],
+  "holdout": {
+    "qualified": true,
+    "reasons": [],
+    "guard_ps_per_file_edge": 1000000,
+    "partitions": [
+      {
+        "index": 0,
+        "name": "norm_10082026_r7_coincCompact_00000000.ldat",
+        "identity": {
+          "size_bytes": 9317749158,
+          "mtime_ns": 1791730877000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 24019477665100,
+        "anchor_end_ps": 60100079262462
+      },
+      {
+        "index": 1,
+        "name": "norm_10082026_r7_coincCompact_00000001.ldat",
+        "identity": {
+          "size_bytes": 15460528650,
+          "mtime_ns": 1791730953000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 60100081638407,
+        "anchor_end_ps": 120200045068874
+      },
+      {
+        "index": 2,
+        "name": "norm_10082026_r7_coincCompact_00000002.ldat",
+        "identity": {
+          "size_bytes": 15379322430,
+          "mtime_ns": 1791731032000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 120200050172307,
+        "anchor_end_ps": 180300015423521
+      },
+      {
+        "index": 3,
+        "name": "norm_10082026_r7_coincCompact_00000003.ldat",
+        "identity": {
+          "size_bytes": 15283050696,
+          "mtime_ns": 1791731113000000000
+        },
+        "role": "test",
+        "anchor_start_ps": 180300018304289,
+        "anchor_end_ps": 240400063938203
+      },
+      {
+        "index": 4,
+        "name": "norm_10082026_r7_coincCompact_00000004.ldat",
+        "identity": {
+          "size_bytes": 15190808110,
+          "mtime_ns": 1791731191000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 240400068637648,
+        "anchor_end_ps": 300500038526637
+      },
+      {
+        "index": 5,
+        "name": "norm_10082026_r7_coincCompact_00000005.ldat",
+        "identity": {
+          "size_bytes": 15111046888,
+          "mtime_ns": 1791731270000000000
+        },
+        "role": "validation",
+        "anchor_start_ps": 300500041468336,
+        "anchor_end_ps": 360600056774624
+      },
+      {
+        "index": 6,
+        "name": "norm_10082026_r7_coincCompact_00000006.ldat",
+        "identity": {
+          "size_bytes": 15011156356,
+          "mtime_ns": 1791731348000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 360600060396281,
+        "anchor_end_ps": 420700000187166
+      },
+      {
+        "index": 7,
+        "name": "norm_10082026_r7_coincCompact_00000007.ldat",
+        "identity": {
+          "size_bytes": 14917196774,
+          "mtime_ns": 1791731424000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 420700002628206,
+        "anchor_end_ps": 480800039029495
+      },
+      {
+        "index": 8,
+        "name": "norm_10082026_r7_coincCompact_00000008.ldat",
+        "identity": {
+          "size_bytes": 14828062340,
+          "mtime_ns": 1791731499000000000
+        },
+        "role": "test",
+        "anchor_start_ps": 480800042401854,
+        "anchor_end_ps": 540899996118608
+      },
+      {
+        "index": 9,
+        "name": "norm_10082026_r7_coincCompact_00000009.ldat",
+        "identity": {
+          "size_bytes": 14739453970,
+          "mtime_ns": 1791731575000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 540900000340710,
+        "anchor_end_ps": 601000077744501
+      },
+      {
+        "index": 10,
+        "name": "norm_10082026_r7_coincCompact_00000010.ldat",
+        "identity": {
+          "size_bytes": 14646391420,
+          "mtime_ns": 1791731647000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 601000081140875,
+        "anchor_end_ps": 661100009305817
+      },
+      {
+        "index": 11,
+        "name": "norm_10082026_r7_coincCompact_00000011.ldat",
+        "identity": {
+          "size_bytes": 14549714750,
+          "mtime_ns": 1791731719000000000
+        },
+        "role": "validation",
+        "anchor_start_ps": 661100013504866,
+        "anchor_end_ps": 721200069581233
+      },
+      {
+        "index": 12,
+        "name": "norm_10082026_r7_coincCompact_00000012.ldat",
+        "identity": {
+          "size_bytes": 14440313312,
+          "mtime_ns": 1791731793000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 721200076666958,
+        "anchor_end_ps": 781532040295513
+      },
+      {
+        "index": 13,
+        "name": "norm_10082026_r7_coincCompact_00000013.ldat",
+        "identity": {
+          "size_bytes": 14329577804,
+          "mtime_ns": 1791731865000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 781532043320687,
+        "anchor_end_ps": 841400011277933
+      },
+      {
+        "index": 14,
+        "name": "norm_10082026_r7_coincCompact_00000014.ldat",
+        "identity": {
+          "size_bytes": 14298733474,
+          "mtime_ns": 1791731929000000000
+        },
+        "role": "test",
+        "anchor_start_ps": 841400016578527,
+        "anchor_end_ps": 901500045639089
+      },
+      {
+        "index": 15,
+        "name": "norm_10082026_r7_coincCompact_00000015.ldat",
+        "identity": {
+          "size_bytes": 5333761178,
+          "mtime_ns": 1791731952000000000
+        },
+        "role": "train",
+        "anchor_start_ps": 901500049565892,
+        "anchor_end_ps": 924019478122075
+      }
+    ],
+    "roles_frozen_before_fitting": true,
+    "interpretation": "record-anchor intervals; raw scan counts include the excluded edges"
+  },
+  "all_full_scans": true,
+  "total_physical_coincidences": 863092047,
+  "total_processed_bytes": 222836867310,
+  "full_report": {
+    "workspace_relative_path": "system_QC_results/cornell_timing_run7_raw_inventory.json",
+    "sha256": "d0c97bf226164ef3459609e006428d3c7afe49e0487602006c8b334bf0560876",
+    "raw_channel_counts_included": true
+  },
+  "splits": [
+    {
+      "name": "norm_10082026_r7_coincCompact_00000000.ldat",
+      "identity": {
+        "size_bytes": 9317749158,
+        "mtime_ns": 1791730877000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 9317749158,
+      "bytes_read": 9317749158,
+      "physical_coincidences": 35959131,
+      "raw_hits": 577864431,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 24019476662156,
+      "timestamp_max_ps": 60100080273206,
+      "anchor_min_ps": 24019476665100,
+      "anchor_max_ps": 60100080262462,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 4.70211449963972,
+      "decode_and_raw_statistics_seconds": 15.669060700456612,
+      "wall_seconds": 22.03161830001045,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 0
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000001.ldat",
+      "identity": {
+        "size_bytes": 15460528650,
+        "mtime_ns": 1791730953000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 15460528650,
+      "bytes_read": 15460528650,
+      "physical_coincidences": 59725149,
+      "raw_hits": 958817397,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 60100080633504,
+      "timestamp_max_ps": 120200046103001,
+      "anchor_min_ps": 60100080638407,
+      "anchor_max_ps": 120200046068874,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.7786601996049285,
+      "decode_and_raw_statistics_seconds": 25.725624299957417,
+      "wall_seconds": 36.277332499972545,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 1
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000002.ldat",
+      "identity": {
+        "size_bytes": 15379322430,
+        "mtime_ns": 1791731032000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 15379322430,
+      "bytes_read": 15379322430,
+      "physical_coincidences": 59424095,
+      "raw_hits": 953779640,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 120200049169697,
+      "timestamp_max_ps": 180300016448073,
+      "anchor_min_ps": 120200049172307,
+      "anchor_max_ps": 180300016423521,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.731408400693908,
+      "decode_and_raw_statistics_seconds": 25.73236439935863,
+      "wall_seconds": 36.220054600038566,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 2
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000003.ldat",
+      "identity": {
+        "size_bytes": 15283050696,
+        "mtime_ns": 1791731113000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 15283050696,
+      "bytes_read": 15283050696,
+      "physical_coincidences": 59081468,
+      "raw_hits": 947805485,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 180300017304244,
+      "timestamp_max_ps": 240400064957870,
+      "anchor_min_ps": 180300017304289,
+      "anchor_max_ps": 240400064938203,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 8.145412500714883,
+      "decode_and_raw_statistics_seconds": 27.27129650034476,
+      "wall_seconds": 38.49263919994701,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 3
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000004.ldat",
+      "identity": {
+        "size_bytes": 15190808110,
+        "mtime_ns": 1791731191000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 15190808110,
+      "bytes_read": 15190808110,
+      "physical_coincidences": 58750511,
+      "raw_hits": 942081693,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 240400067636510,
+      "timestamp_max_ps": 300500039558755,
+      "anchor_min_ps": 240400067637648,
+      "anchor_max_ps": 300500039526637,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.453488800558262,
+      "decode_and_raw_statistics_seconds": 24.626877299975604,
+      "wall_seconds": 34.7119291999843,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 4
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000005.ldat",
+      "identity": {
+        "size_bytes": 15111046888,
+        "mtime_ns": 1791731270000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 15111046888,
+      "bytes_read": 15111046888,
+      "physical_coincidences": 58473108,
+      "raw_hits": 937131292,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 300500040468336,
+      "timestamp_max_ps": 360600057774624,
+      "anchor_min_ps": 300500040468336,
+      "anchor_max_ps": 360600057774624,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.484104299917817,
+      "decode_and_raw_statistics_seconds": 24.546583099057898,
+      "wall_seconds": 34.71888660010882,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 5
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000006.ldat",
+      "identity": {
+        "size_bytes": 15011156356,
+        "mtime_ns": 1791731348000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 15011156356,
+      "bytes_read": 15011156356,
+      "physical_coincidences": 58125498,
+      "raw_hits": 930931585,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 360600059388604,
+      "timestamp_max_ps": 420700001191993,
+      "anchor_min_ps": 360600059396281,
+      "anchor_max_ps": 420700001187166,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.4122501994716,
+      "decode_and_raw_statistics_seconds": 24.184163399855606,
+      "wall_seconds": 34.17204900004435,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 6
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000007.ldat",
+      "identity": {
+        "size_bytes": 14917196774,
+        "mtime_ns": 1791731424000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14917196774,
+      "bytes_read": 14917196774,
+      "physical_coincidences": 57796843,
+      "raw_hits": 925100193,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 420700001627029,
+      "timestamp_max_ps": 480800040043285,
+      "anchor_min_ps": 420700001628206,
+      "anchor_max_ps": 480800040029495,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.454138599219732,
+      "decode_and_raw_statistics_seconds": 24.22879489895422,
+      "wall_seconds": 34.307141099940054,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 7
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000008.ldat",
+      "identity": {
+        "size_bytes": 14828062340,
+        "mtime_ns": 1791731499000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14828062340,
+      "bytes_read": 14828062340,
+      "physical_coincidences": 57456298,
+      "raw_hits": 919571859,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 480800041393125,
+      "timestamp_max_ps": 540899997136919,
+      "anchor_min_ps": 480800041401854,
+      "anchor_max_ps": 540899997118608,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.324668900342658,
+      "decode_and_raw_statistics_seconds": 23.9210260004038,
+      "wall_seconds": 33.827763200039044,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 8
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000009.ldat",
+      "identity": {
+        "size_bytes": 14739453970,
+        "mtime_ns": 1791731575000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14739453970,
+      "bytes_read": 14739453970,
+      "physical_coincidences": 57135969,
+      "raw_hits": 914073877,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 540899999336109,
+      "timestamp_max_ps": 601000078758224,
+      "anchor_min_ps": 540899999340710,
+      "anchor_max_ps": 601000078744501,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.363748300005682,
+      "decode_and_raw_statistics_seconds": 23.81480809918139,
+      "wall_seconds": 33.80077580001671,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 9
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000010.ldat",
+      "identity": {
+        "size_bytes": 14646391420,
+        "mtime_ns": 1791731647000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14646391420,
+      "bytes_read": 14646391420,
+      "physical_coincidences": 56799798,
+      "raw_hits": 908299489,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 0,
+      "timestamp_min_ps": 601000080140426,
+      "timestamp_max_ps": 661100010338939,
+      "anchor_min_ps": 601000080140875,
+      "anchor_max_ps": 661100010305817,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.288849299191497,
+      "decode_and_raw_statistics_seconds": 23.753767099580728,
+      "wall_seconds": 33.62593300000299,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 10
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000011.ldat",
+      "identity": {
+        "size_bytes": 14549714750,
+        "mtime_ns": 1791731719000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14549714750,
+      "bytes_read": 14549714750,
+      "physical_coincidences": 56445919,
+      "raw_hits": 902301432,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 4,
+      "timestamp_min_ps": 661100012504866,
+      "timestamp_max_ps": 721200070594762,
+      "anchor_min_ps": 661100012504866,
+      "anchor_max_ps": 721200070581233,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.329166800016537,
+      "decode_and_raw_statistics_seconds": 23.672050199005753,
+      "wall_seconds": 33.68741290003527,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 11
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000012.ldat",
+      "identity": {
+        "size_bytes": 14440313312,
+        "mtime_ns": 1791731793000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14440313312,
+      "bytes_read": 14440313312,
+      "physical_coincidences": 56032928,
+      "raw_hits": 895515466,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 22,
+      "timestamp_min_ps": 721200075658028,
+      "timestamp_max_ps": 781532041310991,
+      "anchor_min_ps": 721200075666958,
+      "anchor_max_ps": 781532041295513,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.199313000310212,
+      "decode_and_raw_statistics_seconds": 23.324543799855746,
+      "wall_seconds": 33.060257399920374,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 12
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000013.ldat",
+      "identity": {
+        "size_bytes": 14329577804,
+        "mtime_ns": 1791731865000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14329577804,
+      "bytes_read": 14329577804,
+      "physical_coincidences": 55628326,
+      "raw_hits": 888645072,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 50,
+      "timestamp_min_ps": 781532042318077,
+      "timestamp_max_ps": 841400012291024,
+      "anchor_min_ps": 781532042320687,
+      "anchor_max_ps": 841400012277933,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.202096499036998,
+      "decode_and_raw_statistics_seconds": 23.225845100241713,
+      "wall_seconds": 32.977288000052795,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 13
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000014.ldat",
+      "identity": {
+        "size_bytes": 14298733474,
+        "mtime_ns": 1791731929000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 14298733474,
+      "bytes_read": 14298733474,
+      "physical_coincidences": 55536097,
+      "raw_hits": 886728830,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 70,
+      "timestamp_min_ps": 841400015576578,
+      "timestamp_max_ps": 901500046651309,
+      "anchor_min_ps": 841400015578527,
+      "anchor_max_ps": 901500046639089,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 7.138685000594705,
+      "decode_and_raw_statistics_seconds": 23.076519700116478,
+      "wall_seconds": 32.7552462000167,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 14
+    },
+    {
+      "name": "norm_10082026_r7_coincCompact_00000015.ldat",
+      "identity": {
+        "size_bytes": 5333761178,
+        "mtime_ns": 1791731952000000000
+      },
+      "full_scan": true,
+      "requested_max_records": null,
+      "processed_bytes": 5333761178,
+      "bytes_read": 5333761178,
+      "physical_coincidences": 20720909,
+      "raw_hits": 330769960,
+      "zero_hit_sides": 0,
+      "unknown_channel_hits": 0,
+      "nonfinite_hit_energy": 0,
+      "known_unavailable_raw_hits": 19,
+      "timestamp_min_ps": 901500048562895,
+      "timestamp_max_ps": 924019479134817,
+      "anchor_min_ps": 901500048565892,
+      "anchor_max_ps": 924019479122075,
+      "timestamp_anchor": "first hit of detector 1; detector 2 if detector 1 is empty",
+      "local_full_sha256": null,
+      "read_seconds": 2.7748211005236953,
+      "decode_and_raw_statistics_seconds": 8.683933899970725,
+      "wall_seconds": 12.446680799941532,
+      "analysis_cuts": "none",
+      "accepted_calibration_coincidences": null,
+      "index": 15
+    }
+  ],
+  "raw_presence": {
+    "TIME": {
+      "operational_channels": 3168,
+      "observed_raw_channels": 3157,
+      "unobserved_operational_channel_ids": [
+        4368,
+        4419,
+        131466,
+        262457,
+        262624,
+        262648,
+        528715,
+        529813,
+        655690,
+        660864,
+        660887
+      ]
+    },
+    "ENERGY": {
+      "operational_channels": 3168,
+      "observed_raw_channels": 3163,
+      "unobserved_operational_channel_ids": [
+        262422,
+        262631,
+        524607,
+        655813,
+        787417
+      ]
+    }
+  },
+  "total_raw_hits": 13819417701,
+  "total_known_unavailable_raw_hits": 165,
+  "configured_unpopulated_raw_hits": 0,
+  "observed_anchor_span_ps": 900000002456975,
+  "stage_seconds": {
+    "read_seconds": 111.78292639984284,
+    "decode_and_raw_statistics_seconds": 365.4572584963171,
+    "wall_seconds": 517.1130078000715
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "geometry": {
+    "local_xy_mm": [
+      60.0,
+      40.0
+    ],
+    "sm_parameters": {
+      "sm_r": 160.0,
+      "sm_ang": 0.0,
+      "sm_z": 102.0
+    },
+    "original_xyz_mm": [
+      160.0,
+      -8.0,
+      90.0
+    ],
+    "optimized_xyz_mm": [
+      160.0,
+      12.0,
+      110.0
+    ]
+  },
+  "thin_cylinder": {
+    "endpoint_i_mm": [
+      160.0,
+      0.0,
+      0.0
+    ],
+    "endpoint_j_mm": [
+      -160.0,
+      0.0,
+      0.0
+    ],
+    "radius_mm": 140.0,
+    "original_result": [
+      true,
+      -933,
+      933
+    ]
+  },
+  "additive_table_to_subtractive_consumer": {
+    "raw_dt_ps": 300,
+    "additive_table_ps": {
+      "11": -150,
+      "12": 150
+    },
+    "consumer_dt_ps": 600,
+    "correct_dt_ps": 0
+  },
+  "point_source": {
+    "inputs": {
+      "tstp_det1": 1300,
+      "tstp_det2": 1000,
+      "sk_1": 200,
+      "sk_2": -100
+    },
+    "expression": "tstp_det1 - sk_1 - (tstp_det2 + sk_2)",
+    "legacy_corrected_dt_ps": 200,
+    "legacy_swapped_dt_ps": -400,
+    "correct_dt_ps": 0
+  }
+}
