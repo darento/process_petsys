@@ -911,13 +911,16 @@ class GeometryResult:
 
 
 def apply_geometry(features, hypothesis):
-    """Run one declared hypothesis on stored feature rows; reads no LDAT."""
-    count = len(features.ints)
+    """Run one declared hypothesis on stored feature rows; reads no LDAT.
+
+    ``features`` is any object with ``column(name)`` (``FeatureBatch`` or cached blocks).
+    """
+    column = features.column
+    count = len(column("sm_1"))
     codes = np.zeros(count, np.int64)
     endpoints = np.full((count, 6), np.nan)
     segments = np.zeros(count, np.int64)
     fractions, tof = np.full((count, 4), np.nan), np.full((count, 4), np.nan)
-    column = features.column
     _geometry(column("sm_1"), column("x_1"), column("y_1"), column("sm_2"), column("x_2"), column("y_2"),
               *hypothesis.tables(), codes, endpoints, segments, fractions, tof)
     if (segments > 2).any():
