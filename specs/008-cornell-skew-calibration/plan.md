@@ -180,6 +180,7 @@ Validate finite thickness, miscentering, axial edges, asymmetric peak amplitudes
 | FR-11 | Optional template/likelihood refinement, held-out decision |
 | FR-13 | Independent CTR pipeline and frozen evaluation manifest |
 | FR-18 | `src/cornell/timing_job.py`: job file, per-run inventory/roles/caches, pooled pair fits/solve/LUT, per-run energy-peak and held-out residual reports |
+| FR-19 | `src/cornell/timing_plots.py`: per-ASIC decoding, pattern residuals and outlier list, PNG plots and summary; called by `timing_job` after the LUT and as `python -m src.cornell.timing_plots LUT.csv` |
 | FR-15 | Thin launcher, regression/compatibility tests, retirement checklist |
 | FR-16 | Run 7 inventory, selection/coverage report, fixed holdout manifest and uncertainty/convergence assessment |
 | FR-17 | Canonical channel LUT; later installed-version native adapter and bounded conversion roundtrip |

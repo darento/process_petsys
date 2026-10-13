@@ -23,6 +23,8 @@ never silently trusted) and train/validation pair residuals against the
 pooled delays; with ``per_run_solves`` each run is also solved alone and its
 delays compared with the pooled and reference-run solutions, so a
 rate-dependent offset stays visible. Test files are never evaluated here. A failing run stops the job; the pool is never silently shrunk.
+After the LUT, per-ASIC plots and channels breaking the per-ASIC pattern
+(``timing_plots``, FR-19) are written next to it; listed, never changed.
 """
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ import numpy as np
 from src.cornell import timing_cache as tc
 from src.cornell import timing_dataset as td
 from src.cornell import timing_pairs as tp
+from src.cornell import timing_plots as tpl
 from src.cornell import timing_solver as ts
 from src.cornell.timing_ingest import GeometryHypothesis, LegacySetup, time_channel_classes
 from src.cornell.timing_petsys import write_lut
@@ -58,7 +61,7 @@ _REQUIRED = {"schema", "config", "encal", "reference_run", "down_regions", "runs
              "work_directory", "lut"}
 _OPTIONAL = {"workers": 1, "seed": 0, "guard_ps": 1_000_000, "partitions": 16, "energy_peak_tolerance": 0.02,
              "disk_margin": 1.25, "min_peak_entries": 200, "per_run_solves": False, "reproducibility_floor": False,
-             "outlier_threshold": 5.0}
+             "outlier_threshold": 5.0, "pattern_outlier_ps": tpl.DEFAULT_THRESHOLD_PS}
 _RUN_KEYS = {"name", "directory", "ledger", "prefix", "energy_calibration_prefix"}
 _RUN_OPTIONAL = {"encal"}
 
@@ -101,6 +104,7 @@ class Job:
     per_run_solves: bool
     reproducibility_floor: bool
     outlier_threshold: float
+    pattern_outlier_ps: float
 
 
 def load_job(path):
@@ -152,8 +156,8 @@ def load_job(path):
     if set(roles) != {"validation", "test"}:
         raise JobError("roles must list 'validation' and 'test' file indices")
     if not (int(options["workers"]) >= 1 and int(options["partitions"]) >= 1 and 0 < options["energy_peak_tolerance"] < 1
-            and options["disk_margin"] >= 1 and int(options["guard_ps"]) >= 0):
-        raise JobError("invalid workers/partitions/tolerance/disk margin/guard")
+            and options["disk_margin"] >= 1 and int(options["guard_ps"]) >= 0 and options["pattern_outlier_ps"] > 0):
+        raise JobError("invalid workers/partitions/tolerance/disk margin/guard/pattern outlier threshold")
     regions = tuple(tuple(int(v) for v in region) for region in spec["down_regions"])
     if any(len(region) != 2 for region in regions):
         raise JobError("down regions are [SM, MM] pairs")
@@ -164,7 +168,8 @@ def load_job(path):
                local(spec["work_directory"]), local(spec["lut"]), int(options["workers"]), int(options["seed"]),
                int(options["guard_ps"]), int(options["partitions"]), float(options["energy_peak_tolerance"]),
                float(options["disk_margin"]), int(options["min_peak_entries"]), bool(options["per_run_solves"]),
-               bool(options["reproducibility_floor"]), float(options["outlier_threshold"]))
+               bool(options["reproducibility_floor"]), float(options["outlier_threshold"]),
+               float(options["pattern_outlier_ps"]))
 
 
 def peak_memory():
@@ -428,6 +433,8 @@ def run_job(job, *, log=_print):
     try:
         if job.lut.exists() or job.lut.with_suffix(".json").exists():
             raise JobError(f"output LUT exists: {job.lut}; choose a new name")
+        if any(path.exists() for path in tpl.plot_paths(job.lut)):
+            raise JobError(f"per-ASIC plots of {job.lut} exist; choose a new name")
         for path in (job.config, job.encal):
             if not path.is_file():
                 raise JobError(f"missing input: {path}")
@@ -516,6 +523,10 @@ def run_job(job, *, log=_print):
             report["cross_run_outliers"] = ts.cross_run_outliers(solution, alone, floors,
                                                                  threshold=job.outlier_threshold)
             report["stages"]["per_run_solve_seconds"] = time.perf_counter() - clock
+        applied = solution.channels[solution.channels["apply"]]
+        # owner decision 2026-10-13: channels breaking the per-ASIC pattern are listed, still applied
+        pattern_outliers = tpl.pattern_outliers(tpl.asic_pattern(applied["time_channel"], applied["delay_ps"]),
+                                                job.pattern_outlier_ps)
         provenance = {"job": str(job.path), "job_sha256": job.sha256, "runs": [r.name for r in job.runs],
                       "reference_run": job.reference_run, "kernel": report["kernel"],
                       "geometry": hypothesis.name,
@@ -524,10 +535,13 @@ def run_job(job, *, log=_print):
                           name: hashlib.sha256(json.dumps(s.manifest["fingerprint"], sort_keys=True).encode()).hexdigest()
                           for name, s in sets.items()},
                       "cross_run_outliers": report.get("cross_run_outliers"),
+                      "asic_pattern_outliers": {"threshold_ps": job.pattern_outlier_ps, "channels": pattern_outliers},
                       "status": "pooled train solve; native qualification (T9a) pending"}
         job.lut.parent.mkdir(parents=True, exist_ok=True)
         manifest = write_lut(job.lut, solution, provenance)
         report["lut"] = {"path": str(job.lut), "sha256": manifest["table"]["sha256"], "rows": manifest["table"]["rows"]}
+        report["asic_pattern"] = tpl.write_asic_plots(job.lut, applied["time_channel"], applied["delay_ps"],
+                                                      threshold_ps=job.pattern_outlier_ps)
         report["status"] = "succeeded"
     except Exception as error:
         report["status"] = "failed"

@@ -15,6 +15,7 @@ from cornell_timing_helpers import ROOT, T0, make_setup, shifted, side, write
 from src.cornell import timing_cache as tc
 from src.cornell import timing_job as tj
 from src.cornell import timing_pairs as tp
+from src.cornell import timing_plots as tpl
 from src.cornell import timing_solver as ts
 from src.cornell.timing_petsys import CanonicalLut
 
@@ -85,7 +86,7 @@ def test_job_file_is_explicit_and_validated(tmp_path, runs):
         ({"roles": {"validation": [1]}}, "roles"), ({"energy_peak_tolerance": 0}, "tolerance"),
         ({"down_regions": [[14]]}, "down regions"), ({"runs": [{"name": "x", "directory": "d"}]}, "run entries"),
         ({"runs": [dict(items[0], energy_calibration_prefix={"1": -1})]}, "energy_calibration_prefix"),
-        ({"reproducibility_floor": True}, "per_run_solves"),
+        ({"reproducibility_floor": True}, "per_run_solves"), ({"pattern_outlier_ps": 0}, "pattern outlier"),
     ]
     for override, message in bad:
         with pytest.raises(tj.JobError, match=message):
@@ -123,6 +124,12 @@ def test_runs_roles_and_resume(runs, finished, monkeypatch):
     assert report["runs"]["rb"]["energy_calibration_prefix"] == {"1": 0, "2": 0}
     assert report["pooled"]["usable_pairs"] >= 1 and report["lut"]["rows"] > 3000
     assert job.lut.exists() and job.lut.with_suffix(".json").exists()
+    # FR-19: per-ASIC plots next to the LUT; pattern outliers listed in the report and manifest
+    plots = tpl.plot_paths(job.lut)
+    assert report["asic_pattern"]["files"] == [str(p) for p in plots] and all(p.stat().st_size > 0 for p in plots)
+    assert report["asic_pattern"]["threshold_ps"] == 1000.0 and report["asic_pattern"]["outliers"] == []
+    assert json.loads(job.lut.with_suffix(".json").read_text())["provenance"]["asic_pattern_outliers"] == \
+        {"threshold_ps": 1000.0, "channels": []}
     # an existing LUT is never overwritten
     with pytest.raises(tj.JobError, match="output LUT exists"):
         tj.run_job(job, log=lambda message: None)
@@ -134,7 +141,13 @@ def test_runs_roles_and_resume(runs, finished, monkeypatch):
     monkeypatch.setattr(tj.td, "scan_file", no_reads)
     monkeypatch.setattr(tc.timing_ingest, "LdatStream", no_reads)
     resumed = tj.run_job(again, log=lambda message: None)
-    assert resumed["status"] == "succeeded"
+    assert resumed["status"] == "succeeded" and all(p.exists() for p in tpl.plot_paths(again.lut))
+    # an existing plot blocks a new LUT of that name before any work
+    blocked = tj.load_job(job_file(job.path, base, items, lut="out/lut3.csv"))
+    tpl.plot_paths(blocked.lut)[2].write_bytes(b"keep")
+    with pytest.raises(tj.JobError, match="per-ASIC plots"):
+        tj.run_job(blocked, log=lambda message: None)
+    assert tpl.plot_paths(blocked.lut)[2].read_bytes() == b"keep" and not blocked.lut.exists()
     first, second = CanonicalLut.read(job.lut).rows, CanonicalLut.read(again.lut).rows
     for name in ("time_channel", "delay_ps", "sigma_ps", "status", "apply"):
         assert np.array_equal(first[name], second[name], equal_nan=name in ("delay_ps", "sigma_ps")), name
