@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "requirement": "008-FR-1",
+  "dataset": "Cornell 2026-10-08 normalization annulus run 7, first converted split",
+  "input": "Cornell/full_system/skew/norm_10082026_r7_coincCompact_00000000.ldat",
+  "max_records": 10000,
+  "processed_bytes": 2593744,
+  "raw_hits": 160859,
+  "prefix_sha256": "6fd2610bb3184668328b8b54236eb7d8be23138ec60284d0871705ed3874203b",
+  "analysis_cuts": "none",
+  "provenance": {
+    "captured_utc": "2026-10-13T07:30:36.863293+00:00",
+    "reference": "specs/008-cornell-skew-calibration/input-preflight.json, dataset.splits[0]",
+    "method": "Bounded independent Python <qfi/2B record scan; count complete physical coincidences and hits, hash exactly complete prefix bytes. Later raw Python/compiled decoder parity independently passed. No calibration or analysis cuts.",
+    "source_size_bytes": 9317749158,
+    "full_file_identity_checked": false,
+    "change_authorization": "New baseline for approved spec 008 T1a, FR-1; future baseline changes require a commit citing requirement/bug authorization, performed by owner."
+  }
+}

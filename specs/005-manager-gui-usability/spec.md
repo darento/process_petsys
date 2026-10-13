@@ -1,6 +1,8 @@
 # Spec 005 — PETsys Manager GUI usability
 
-Status: `in progress` (2026-10-09)
+Status: `paused` (2026-10-13; owner cannot perform Cornell operator verification for approximately six hours and authorizes isolated spec 008 work)
+
+Resume after owner verification is available: revalidate pending representative-acquisition GUI checks and the Manager regression suite. Manager implementation remains frozen while spec 008 is active; this pause changes lifecycle metadata only.
 
 Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). Builds on spec 003 ([`../003-petsys-manager-migration/spec.md`](../003-petsys-manager-migration/spec.md)), shipped 2026-10-06 as PETsys Manager 1.0.0. This spec ships as PETsys Manager 1.1.0.
 

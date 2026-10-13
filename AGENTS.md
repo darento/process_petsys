@@ -20,14 +20,16 @@ Use `conda run -n process_petsys --no-capture-output python ...` or the correspo
 
 Checks live in the tracked `tests/` suite: `conda run -n process_petsys --no-capture-output python -m pytest` from the repo root. The default run uses only tracked files and synthetic fixtures, runs in parallel workers (pytest-xdist) and excludes `real_data` and `slow` tests; `-m "not real_data"` is the full run and `-n 0` runs serially. Mark a test `slow` when its setup or call takes 5 s or more serially; `-n 0 --slow-limit 5` fails an unmarked test whose call does, and wall-clock bounds are asserted only in serial runs. `real_data` tests name acquisitions relative to `PETSYS_DATA_DIR` and calibrations relative to `PETSYS_CAL_DIR`, never by absolute path, and skip with a reason naming a missing variable or file. Expected values once computed by untracked reference scripts are golden files under `tests/data/golden/`, and real-data baselines are under `tests/data/baselines/`, each with a provenance record; tests never import the references, and such a file changes only in a commit citing the requirement or bug id that authorizes the output change. Each test cites its requirement with `@pytest.mark.fr("NNN-FR-n")` (bug fixes: `"bug-<short-name>"`), and `--fr <id>` reruns that requirement's tests. A defect found by a new test gets a strict `xfail` citing its bug id until the separate fix lands; never edit the expected value to pass.
 
-Which run:
+Which run (select by changed code and its callers; record selection and reason in `tasks.md`):
 
-- While coding: the default run; `-m "not real_data" --fr <id>` reruns one requirement with its `slow` tests.
-- Before committing a `src/` or `exe_programs/` change: the full run. The default run skips the `slow` tests, which hold the bounded-memory, end-to-end and report checks.
-- Cosmetic-only GUI changes (styling, labels, layout; no logic): the default run and the affected `gui` test file.
-- After adding or changing tests: `-m "not real_data" -n 0 --slow-limit 5`.
-- When real-data results change (calibration, LM, QC numbers, LDAT counts) and in a spec's Validation: the full run plus `-m real_data`.
-- When Linux-only parts change (process groups, DAQD, acquisition, PETsys Python) and before deploying a Manager release to Cornell: the full run on the Cornell PC. Run it from a terminal in its desktop session, because `gui` tests skip without a display. Use a clean checkout and an env matching `process_petsys.yml`.
+- While coding an isolated module: run its affected test files/node IDs or `-m "not real_data" --fr <id>`, including relevant `slow` tests. Existing workflows that neither import nor call the new module need no regression run per task.
+- Shared readers, calibration, numerical utilities, contracts or dependencies: add affected consumer regressions, including IMAS/Cornell and Manager tests where they use the changed behavior. Broaden to the full suite if the affected consumers cannot be identified confidently; record why.
+- GUI changes: run affected headless logic and `gui` tests; compile-check edited GUI modules. Cosmetic-only changes need the affected `gui` tests and compile check.
+- After adding or changing tests: run the affected files or requirement selection with `-m "not real_data" -n 0 --slow-limit 5`. This serial duration check is scoped, not a full-suite trigger.
+- When real-data results change (calibration, LM, QC numbers, LDAT counts): run affected synthetic and `real_data` checks with explicit inputs/cuts/provenance. Unrelated acquisition regressions wait for integration; missing inputs remain explicit skips.
+- At feature integration into an existing workflow, spec Validation or release readiness: run the full non-real suite (`-m "not real_data"`), including bounded-memory, end-to-end and report checks. Also run `-m real_data` when the feature touches real-data results. An isolated `src/` or `exe_programs/` edit or owner commit alone does not trigger full suites. Once the gate passes, repeat only for subsequent relevant changes or unresolved failures.
+- Linux-only changes (process groups, DAQD, acquisition, PETsys Python): run affected checks on the Cornell PC during development. At integration and before deploying a Manager release to Cornell, run the full suite there from a desktop-session terminal, using a clean checkout and an env matching `process_petsys.yml`, because `gui` tests skip without a display.
+- Documentation-only changes: verify the diff and referenced local paths; pytest is unnecessary unless executable examples or test configuration change.
 
 Before modifying files, check `git status --short`; never overwrite existing user changes. Do not run release/build commands as a side effect of implementation.
 
