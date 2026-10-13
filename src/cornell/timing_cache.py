@@ -113,10 +113,24 @@ def _prepare(directory, manifest):
     return manifest
 
 
+_LOOKUP = {}
+
+
+def _compiled_lookup(config_path, encal_path, root):
+    """Per-process selection lookup, rebuilt whenever config, map or ``.encal`` changes."""
+    config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    key = (str(root),) + tuple((str(path), path.stat().st_size, path.stat().st_mtime_ns)
+                               for path in (Path(config_path), Path(root) / config["map_file"], Path(encal_path)))
+    if key not in _LOOKUP:
+        _LOOKUP.clear()
+        setup = timing_ingest.LegacySetup.from_files(config_path, encal_path, root=root)
+        _LOOKUP[key] = timing_ingest.CompiledLookup.from_setup(setup)
+    return _LOOKUP[key]
+
+
 def _ingest_file(directory, item, config_path, encal_path, root, partition, seed, max_records, block_rows):
     """Worker: one file into ``features/fNNN``; returns the small ``done`` record."""
-    setup = timing_ingest.LegacySetup.from_files(config_path, encal_path, root=root)
-    lookup = timing_ingest.CompiledLookup.from_setup(setup)
+    lookup = _compiled_lookup(config_path, encal_path, root)
     partition = timing_ingest.Partition(**partition)
     index, path = item["index"], Path(item["path"])
     final = Path(directory) / "features" / f"f{index:03d}"

@@ -179,6 +179,7 @@ Validate finite thickness, miscentering, axial edges, asymmetric peak amplitudes
 | FR-10, FR-12 | Sparse solve, graph/gauge, uncertainties, channel-status output |
 | FR-11 | Optional template/likelihood refinement, held-out decision |
 | FR-13 | Independent CTR pipeline and frozen evaluation manifest |
+| FR-18 | `src/cornell/timing_job.py`: job file, per-run inventory/roles/caches, pooled pair fits/solve/LUT, per-run energy-peak and held-out residual reports |
 | FR-15 | Thin launcher, regression/compatibility tests, retirement checklist |
 | FR-16 | Run 7 inventory, selection/coverage report, fixed holdout manifest and uncertainty/convergence assessment |
 | FR-17 | Canonical channel LUT; later installed-version native adapter and bounded conversion roundtrip |
