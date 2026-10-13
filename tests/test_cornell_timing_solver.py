@@ -183,3 +183,55 @@ def test_no_sentinel_in_correction_arithmetic(tmp_path):
         (tmp_path / "tampered.json").write_text(json.dumps(manifest))
         with pytest.raises(LutError, match=message):
             CanonicalLut.read(tampered)
+
+
+def run_solution(channels, delays, sigma):
+    rows = np.zeros(len(channels), ts.CHANNEL_DTYPE)
+    rows["time_channel"], rows["delay_ps"], rows["sigma_ps"], rows["raw_sigma_ps"] = channels, delays, sigma, sigma
+    rows["status"], rows["apply"] = ts.CALIBRATED, True
+    return ts.Solution(rows, np.zeros(0, ts.PAIR_RESIDUAL_DTYPE), {"status_counts": {}})
+
+
+@pytest.mark.fr("008-FR-18")
+def test_reproducibility_floor_and_cross_run_outliers():
+    rng = np.random.default_rng(75)
+    channels = np.arange(1000, 4000)
+    truth = rng.uniform(-4000, 4000, len(channels))
+    stat = {"a": 6.0, "b": 6.0, "c": 4.0, "d": 3.0}
+    floor = {"a": 2.0, "b": 6.0, "c": 6.0, "d": 18.0}
+    per_run = {}
+    for k, name in enumerate(stat):
+        delays = truth + 50.0 * k + rng.normal(0, np.hypot(stat[name], floor[name]), len(channels))
+        per_run[name] = run_solution(channels, delays, stat[name])
+    per_run["d"].channels["delay_ps"][7] += 2000.0  # one channel jumps in one run
+    floors, pairs = ts.reproducibility_floor(per_run)
+    assert len(pairs) == 6
+    for name in stat:
+        assert abs(floors[name] - floor[name]) < 2.5, (name, floors[name])
+    # pooled: statistics-weighted mean with its own (small) statistical uncertainty
+    weights = {n: 1 / stat[n] ** 2 for n in stat}
+    pooled_delay = sum(weights[n] * (per_run[n].channels["delay_ps"] - 50.0 * k)
+                       for k, n in enumerate(stat)) / sum(weights.values())
+    pooled = run_solution(channels, pooled_delay, 1 / np.sqrt(sum(weights.values())))
+    pooled.channels["status"][-5:] = ts.UNOBSERVED
+    pooled.channels["apply"][-5:] = False
+    pooled.channels["delay_ps"][-5:] = pooled.channels["sigma_ps"][-5:] = np.nan
+    adjusted = ts.apply_reproducibility_floor(pooled, per_run, floors, precision_gate_ps=8.0)
+    expected = np.sqrt(sum((weights[n] * floors[n]) ** 2 for n in stat)) / sum(weights.values())
+    assert adjusted.channels["sigma_ps"][0] == pytest.approx(np.hypot(pooled.channels["sigma_ps"][0], expected))
+    assert expected > 8.0 > pooled.channels["sigma_ps"][0]  # the floor, not statistics, decides the gate here
+    assert (adjusted.channels["status"][:-5] == ts.LOW_STATISTICS).all()
+    assert (adjusted.channels["status"][-5:] == ts.UNOBSERVED).all() and np.isnan(adjusted.channels["sigma_ps"][-5:]).all()
+    assert pooled.channels["status"][0] == ts.CALIBRATED  # the input solution is not modified
+    assert adjusted.diagnostics["status_counts"]["low statistics"] == len(channels) - 5
+    # the jumping channel is listed, stays applied
+    flagged = ts.cross_run_outliers(adjusted, per_run, floors, threshold=5.0)
+    # the jump also pulls the pooled value, so every run disagrees with it on that channel
+    jump = next(f for f in flagged if f["time_channel"] == 1007)
+    assert set(jump["runs"]) == set(stat) and jump["runs"]["d"]["difference_ps"] > 900
+    assert len(flagged) - 1 < 10 and adjusted.channels["apply"][7]
+    # two runs share their excess equally; one run cannot define a floor
+    two, _ = ts.reproducibility_floor({n: per_run[n] for n in ("b", "c")})
+    assert two["b"] == two["c"] and abs(two["b"] - 6.0) < 2.5
+    with pytest.raises(ValueError, match="at least two runs"):
+        ts.reproducibility_floor({"a": per_run["a"]})

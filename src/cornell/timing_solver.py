@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.linalg
+from scipy.optimize import nnls
 import scipy.sparse as sp
 from scipy.sparse.csgraph import connected_components
 
@@ -192,3 +193,98 @@ def solve(pair_fits, operational_channels, unavailable_channels=(), options=Solv
         "usable_pairs": int(usable.sum()), "pairs": int(len(pair_fits)),
     }
     return Solution(channels, residuals, diagnostics)
+
+
+# --- Cross-run reproducibility (owner decisions 2026-10-13) --------------------
+# Separate runs of the same source are solved alone; their gauge-aligned delay
+# differences show how far channels move between runs beyond each run's own
+# uncertainty. Each run r gets a floor f_r (ps); the pooled delay of a channel
+# inherits sqrt(sum w_r^2 f_r^2) / sum w_r with w_r = 1/sigma_r^2, added in
+# quadrature to its uncertainty. Channels far outside their runs' spread are
+# listed but stay applied.
+
+
+def _applied(solution):
+    rows = solution.channels[solution.channels["apply"]]
+    return {int(c): (float(d), float(s)) for c, d, s in zip(rows["time_channel"], rows["delay_ps"], rows["sigma_ps"])}
+
+
+def _aligned(a, b, channels):
+    d = np.array([a[c][0] - b[c][0] for c in channels])
+    return d - np.median(d), np.array([a[c][1] ** 2 + b[c][1] ** 2 for c in channels])
+
+
+def reproducibility_floor(per_run, *, min_channels=50):
+    """Per-run excess spread (ps) from all run pairs: robust variance of median-aligned differences
+    minus the median predicted variance equals f_a^2 + f_b^2; non-negative least squares."""
+    names = sorted(per_run)
+    tables = {name: _applied(per_run[name]) for name in names}
+    rows, excess, pairs = [], [], []
+    for a_index, a in enumerate(names):
+        for b in names[a_index + 1:]:
+            common = sorted(set(tables[a]) & set(tables[b]))
+            if len(common) < min_channels:
+                continue
+            d, predicted = _aligned(tables[a], tables[b], common)
+            robust = (1.4826 * np.median(np.abs(d))) ** 2
+            value = max(0.0, robust - float(np.median(predicted)))
+            row = np.zeros(len(names))
+            row[[a_index, names.index(b)]] = 1
+            rows.append(row)
+            excess.append(value)
+            pairs.append({"runs": [a, b], "channels": len(common), "robust_sd_ps": float(np.sqrt(robust)),
+                          "predicted_sd_ps": float(np.sqrt(np.median(predicted))), "excess_ps": float(np.sqrt(value))})
+    if len(names) < 2 or not rows or (len(names) > 2 and len(rows) < len(names)):
+        raise ValueError("reproducibility floor needs at least two runs sharing enough applied channels")
+    if len(names) == 2:  # one pair: split its excess equally
+        floors = {name: float(np.sqrt(excess[0] / 2)) for name in names}
+    else:
+        squares, _ = nnls(np.array(rows), np.array(excess))
+        floors = {name: float(np.sqrt(value)) for name, value in zip(names, squares)}
+    return floors, pairs
+
+
+def apply_reproducibility_floor(solution, per_run, floors, *, precision_gate_ps):
+    """Copy of ``solution`` whose applied uncertainties include the pooled floor; re-gated statuses."""
+    channels = solution.channels.copy()
+    tables = {name: _applied(per_run[name]) for name in per_run}
+    floor = np.zeros(len(channels))
+    for k, row in enumerate(channels):
+        if not row["apply"]:
+            continue
+        weights = [(1 / t[int(row["time_channel"])][1] ** 2, floors[name])
+                   for name, t in tables.items() if int(row["time_channel"]) in t]
+        if weights:
+            total = sum(w for w, _ in weights)
+            floor[k] = np.sqrt(sum((w * f) ** 2 for w, f in weights)) / total
+    applied = channels["apply"]
+    channels["sigma_ps"][applied] = np.hypot(channels["sigma_ps"][applied], floor[applied])
+    channels["status"][applied] = np.where(channels["sigma_ps"][applied] <= precision_gate_ps, CALIBRATED,
+                                           LOW_STATISTICS)
+    diagnostics = dict(solution.diagnostics)
+    diagnostics["status_counts"] = {name: int((channels["status"] == k).sum()) for k, name in enumerate(CHANNEL_STATUSES)}
+    diagnostics["reproducibility_floor"] = {
+        "per_run_ps": floors, "definition": "sigma = sqrt(sigma_birge^2 + (sqrt(sum w_r^2 f_r^2) / sum w_r)^2), "
+                                            "w_r = 1/sigma_r^2 of the run-alone solution",
+        "pooled_floor_ps_quantiles_10_50_90": np.percentile(floor[applied], [10, 50, 90]).tolist() if applied.any() else None}
+    return Solution(channels, solution.pairs, diagnostics)
+
+
+def cross_run_outliers(solution, per_run, floors, *, threshold=5.0):
+    """Applied channels whose run-alone delay departs from the pooled one by more than ``threshold``
+    times sqrt(sigma_r^2 + f_r^2 + sigma_pooled^2) after median gauge alignment; they stay applied."""
+    pooled = _applied(solution)
+    flagged = {}
+    for name, run in per_run.items():
+        table = _applied(run)
+        common = sorted(set(table) & set(pooled))
+        if not common:
+            continue
+        d = np.array([table[c][0] - pooled[c][0] for c in common])
+        d -= np.median(d)
+        # run statistics, the run's floor and the pooled value's own (floor-including) uncertainty
+        sigma = np.array([np.sqrt(table[c][1] ** 2 + floors.get(name, 0.0) ** 2 + pooled[c][1] ** 2) for c in common])
+        for c, value, z in zip(common, d, d / sigma):
+            if abs(z) > threshold:
+                flagged.setdefault(c, {})[name] = {"difference_ps": float(value), "z": float(z)}
+    return [{"time_channel": c, "runs": runs} for c, runs in sorted(flagged.items())]

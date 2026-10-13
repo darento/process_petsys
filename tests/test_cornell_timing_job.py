@@ -85,6 +85,7 @@ def test_job_file_is_explicit_and_validated(tmp_path, runs):
         ({"roles": {"validation": [1]}}, "roles"), ({"energy_peak_tolerance": 0}, "tolerance"),
         ({"down_regions": [[14]]}, "down regions"), ({"runs": [{"name": "x", "directory": "d"}]}, "run entries"),
         ({"runs": [dict(items[0], energy_calibration_prefix={"1": -1})]}, "energy_calibration_prefix"),
+        ({"reproducibility_floor": True}, "per_run_solves"),
     ]
     for override, message in bad:
         with pytest.raises(tj.JobError, match=message):

@@ -57,7 +57,8 @@ ENERGY_WINDOW_KEV = (357.0, 665.0)
 _REQUIRED = {"schema", "config", "encal", "reference_run", "down_regions", "runs", "roles", "geometry",
              "work_directory", "lut"}
 _OPTIONAL = {"workers": 1, "seed": 0, "guard_ps": 1_000_000, "partitions": 16, "energy_peak_tolerance": 0.02,
-             "disk_margin": 1.25, "min_peak_entries": 200, "per_run_solves": False}
+             "disk_margin": 1.25, "min_peak_entries": 200, "per_run_solves": False, "reproducibility_floor": False,
+             "outlier_threshold": 5.0}
 _RUN_KEYS = {"name", "directory", "ledger", "prefix", "energy_calibration_prefix"}
 _RUN_OPTIONAL = {"encal"}
 
@@ -98,6 +99,8 @@ class Job:
     disk_margin: float
     min_peak_entries: int
     per_run_solves: bool
+    reproducibility_floor: bool
+    outlier_threshold: float
 
 
 def load_job(path):
@@ -143,6 +146,8 @@ def load_job(path):
     if spec["reference_run"] not in names:
         raise JobError("reference_run must be one of the runs")
     options = _OPTIONAL | {k: spec[k] for k in _OPTIONAL if k in spec}
+    if options["reproducibility_floor"] and (not options["per_run_solves"] or len(runs) < 2):
+        raise JobError("reproducibility_floor needs per_run_solves and at least two runs")
     roles = spec["roles"]
     if set(roles) != {"validation", "test"}:
         raise JobError("roles must list 'validation' and 'test' file indices")
@@ -158,7 +163,8 @@ def load_job(path):
                tuple(int(v) for v in roles["validation"]), tuple(int(v) for v in roles["test"]),
                local(spec["work_directory"]), local(spec["lut"]), int(options["workers"]), int(options["seed"]),
                int(options["guard_ps"]), int(options["partitions"]), float(options["energy_peak_tolerance"]),
-               float(options["disk_margin"]), int(options["min_peak_entries"]), bool(options["per_run_solves"]))
+               float(options["disk_margin"]), int(options["min_peak_entries"]), bool(options["per_run_solves"]),
+               bool(options["reproducibility_floor"]), float(options["outlier_threshold"]))
 
 
 def peak_memory():
@@ -492,6 +498,23 @@ def run_job(job, *, log=_print):
                        "vs_pooled": compare_delays(sol, solution),
                        "vs_reference_run": None if name == job.reference_run else compare_delays(sol, alone[job.reference_run])}
                 for name, sol in alone.items()}
+            floors = {}
+            if job.reproducibility_floor:
+                # owner decision 2026-10-13: run-to-run spread enters the LUT uncertainty in quadrature
+                try:
+                    floors, pairs = ts.reproducibility_floor(alone)
+                except ValueError as error:
+                    raise JobError(f"reproducibility floor: {error}") from error
+                solution = ts.apply_reproducibility_floor(solution, alone, floors,
+                                                          precision_gate_ps=ts.SolveOptions().precision_gate_ps)
+                report["reproducibility_floor"] = {"per_run_ps": floors, "pairs": pairs,
+                                                   "status_counts": solution.diagnostics["status_counts"],
+                                                   "pooled_floor_ps_quantiles_10_50_90":
+                                                       solution.diagnostics["reproducibility_floor"][
+                                                           "pooled_floor_ps_quantiles_10_50_90"]}
+            # owner decision 2026-10-13: listed for inspection, still applied
+            report["cross_run_outliers"] = ts.cross_run_outliers(solution, alone, floors,
+                                                                 threshold=job.outlier_threshold)
             report["stages"]["per_run_solve_seconds"] = time.perf_counter() - clock
         provenance = {"job": str(job.path), "job_sha256": job.sha256, "runs": [r.name for r in job.runs],
                       "reference_run": job.reference_run, "kernel": report["kernel"],
@@ -500,6 +523,7 @@ def run_job(job, *, log=_print):
                       "observation_fingerprints_sha256": {
                           name: hashlib.sha256(json.dumps(s.manifest["fingerprint"], sort_keys=True).encode()).hexdigest()
                           for name, s in sets.items()},
+                      "cross_run_outliers": report.get("cross_run_outliers"),
                       "status": "pooled train solve; native qualification (T9a) pending"}
         job.lut.parent.mkdir(parents=True, exist_ok=True)
         manifest = write_lut(job.lut, solution, provenance)
