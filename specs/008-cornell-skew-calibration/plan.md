@@ -183,6 +183,6 @@ Validate finite thickness, miscentering, axial edges, asymmetric peak amplitudes
 | FR-19 | `src/cornell/timing_plots.py`: per-ASIC decoding, pattern residuals and outlier list, PNG plots and summary; called by `timing_job` after the LUT and as `python -m src.cornell.timing_plots LUT.csv` |
 | FR-15 | Thin launcher, regression/compatibility tests, retirement checklist |
 | FR-16 | Run 7 inventory, selection/coverage report, fixed holdout manifest and uncertainty/convergence assessment; `src/cornell/timing_validation.py`: frozen-LUT test-file pair residuals (once), nested event-fraction training-size study and per-channel sufficiency |
-| FR-17 | Canonical channel LUT; later installed-version native adapter and bounded conversion roundtrip |
+| FR-17 | Canonical channel LUT; `timing_petsys.write_native_table`/`read_native_table`/`activated_ini` native adapter; `src/cornell/timing_roundtrip.py` matched-event conversion roundtrip |
 
 Implement in the [task order](tasks.md). First deliver baseline/sign/geometry agreement and a fast streaming reader; then change the estimator. Performance and physics changes need separately attributable comparisons. Input files, precise interaction/source geometry and installed converter qualification remain pending. Independent known-position CTR validation is additional to annulus LUT qualification.
