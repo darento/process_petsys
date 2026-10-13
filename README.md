@@ -53,11 +53,7 @@ python exe_programs/PETsysManager.py [--profile /path/to/petsys_manager.yaml]
 ```
 
 - **Machine settings:** one YAML profile (default `~/.config/process_petsys/petsys_manager.yaml`).
-- **Format routes:**
-  - Calibration takes fixed coincidence, fixed group or compact coincidence files.
-  - LM takes fixed coincidence files.
-  - QC takes compact coincidence files.
-  - The complete pipeline always converts to fixed coincidence.
+- **Format routes:** RAW conversion produces compact coincidence LDAT; calibration, LM, QC and the complete pipeline use compact coincidence files.
 - **Hardware actions:** they need the PETsys tools and DAQ cards and run only on the Cornell Linux machine. They were accepted there on 2026-10-06; PETsys Manager has replaced the sibling `gui_cornell`, which is retired.
 
 Prerequisites, the profile fields, the private input checklist, safety behaviour and the module map are in [`docs/petsys_manager.md`](docs/petsys_manager.md).
@@ -93,11 +89,6 @@ Feature work throughout this repo follows [spec-driven development](docs/prompts
 
 ## Documentation
 
-Anyone can access the documentation of the code by simply compiling the docstrings from `docs/` directory such:
-
-```bash
-cd docs/
-make html
-```
-
-Go to `docs/_builds/`, and open the index.html in a browser. You are good to go :).
+- [PETsys Manager deployment and workflows](docs/petsys_manager.md).
+- [Feature development workflow](docs/prompts.md), with project rules in [AGENTS.md](AGENTS.md).
+- API details are documented in the `src/` module docstrings.
