@@ -364,3 +364,40 @@ def test_faceted_nominal_depth_closes_tile_edges():
     neighbour = frames[4].to_global(centers_x[1], centers_y[0] - half)
     edge = frame.to_global(centers_x[1], centers_y[3] + half)
     assert np.linalg.norm(neighbour - edge) < 0.1
+
+
+# --- T2b: data-selected transverse handedness (T6 evidence, owner-accepted 2026-10-13) ---
+PAIR_FITS = ROOT / "specs/008-cornell-skew-calibration/run7-pair-fits.json"
+
+
+def test_transforms_match_measured_geometry():
+    from src.cornell.timing_geometry import (NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
+                                            SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN)
+    import json
+    assert (SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, OWNER_INTERACTION_DEPTH_MM) == (-1, 1, 7.0)
+    assert NORMALIZATION_PHANTOM == shell(axial_min_mm=-150.0, axial_max_mm=150.0)
+    # Recorded run7 evidence: on events only one hypothesis accepts, the selected one
+    # predicts the measured branch separation; the mirror is off by hundreds of ps.
+    evidence = json.loads(PAIR_FITS.read_text(encoding="utf-8"))["handedness"]
+    assert evidence["selected"] == f"{SELECTED_TRANSVERSE_SIGN:+d}"
+    for role in ("train", "validation"):
+        exclusive = evidence["exclusive_events"][role]
+        right, wrong = exclusive["+1"], exclusive["-1"]
+        assert abs(right["separation_weighted_mean_ps"]) < max(10.0, 3 * right["separation_mean_sigma_ps"])
+        assert right["separation_pull_rms"] < 1.3
+        assert abs(wrong["separation_weighted_mean_ps"]) > 100 + 10 * wrong["separation_mean_sigma_ps"]
+        # Events both accept are mirror images with identical shell TOFs: no information.
+        assert evidence["common_events_tof_identical"][role]["max_abs_tof_diff_ps"] < 1e-6
+    # Why: flipping handedness mirrors each SM across its cassette's radial plane, a
+    # symmetry of the centred shell for opposite cassettes only.
+    ccw, cw = faceted(OWNER_INTERACTION_DEPTH_MM), faceted(OWNER_INTERACTION_DEPTH_MM, transverse_sign=-1)
+    centers_x, centers_y = map_minimodule_centers()
+    a_local, b_local = (centers_x[1], centers_y[0] + 4.0), (centers_x[2], centers_y[3] - 7.0)
+
+    def tofs(frames, sm_a, sm_b):
+        return [t for s in shell_intervals(frames[sm_a].to_global(*a_local), frames[sm_b].to_global(*b_local),
+                                           NORMALIZATION_PHANTOM) for t in (s.tof_start_ps, s.tof_end_ps)]
+    opposite, neighbour = (1, 16), (1, 13)  # cassettes 0/5 and 0/4
+    assert tofs(ccw, *opposite) == pytest.approx(tofs(cw, *opposite), abs=1e-6)
+    assert len(tofs(ccw, *neighbour)) != len(tofs(cw, *neighbour)) or \
+        max(abs(x - y) for x, y in zip(tofs(ccw, *neighbour), tofs(cw, *neighbour))) > 50

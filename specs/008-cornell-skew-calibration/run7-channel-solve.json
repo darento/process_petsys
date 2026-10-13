@@ -1,0 +1,165 @@
+{
+ "schema_version": 1,
+ "task": "008 T7",
+ "description": "Run7 train global TIME-channel solve and provisional canonical LUT",
+ "lut": {
+  "path": "encal_files\\norm_10082026_r7_time_delays_T7_provisional.csv",
+  "sha256": "bdc33b8f6b7844e2f325d7850b804806c701aa64466a9805caa52cbee8ef6098",
+  "rows": 3200
+ },
+ "provenance": {
+  "observation_set": "observations_v1_ts+1",
+  "observation_fingerprint_sha256": "f91ffafc795de878126be0faa064f295531cbb0756f13c65067199b0f5cf6382",
+  "role": "train",
+  "pair_model": {
+   "sigma_ps": 242.41185811774176,
+   "background_fraction": 0.19223985313784756,
+   "window_ps": 30000.0,
+   "history": [
+    {
+     "sigma_ps": 241.44801041311774,
+     "background_fraction": 0.19310815824403166,
+     "pairs": 1997,
+     "log_likelihood": -549396.3664851525
+    },
+    {
+     "sigma_ps": 242.37053795195098,
+     "background_fraction": 0.19228063317670357,
+     "pairs": 1997,
+     "log_likelihood": -549379.2743387742
+    },
+    {
+     "sigma_ps": 242.41185811774176,
+     "background_fraction": 0.19223985313784756,
+     "pairs": 1997,
+     "log_likelihood": -549379.2506084418
+    }
+   ],
+   "hypothesis": "+1 train"
+  },
+  "geometry": "faceted transverse_sign +1 (selected)",
+  "pair_fit_report": "specs/008-cornell-skew-calibration/run7-pair-fits.json",
+  "encal_sha256": "3a1b86b2a50cd490c2637c7af4359637628894bfddc0546c3a87ff53ed2b16a5",
+  "commit": "bc5ac355bea2d7d63f252c31d9e1d9e090cdff87",
+  "sources_sha256": {
+   "timing_pairs.py": "d9887d943f9e1c695555f2e1e54d3b6c40ddf1e96af45f165220248c7d0ea31f",
+   "timing_solver.py": "34d1afaa984429c6b57ad9eccac8eba5b56137ecdce682c30719fa9438711a7e",
+   "timing_petsys.py": "71cbaabba8b02edc849ead910f725df43bf75bc847d304af6e5645c0a43da94f"
+  },
+  "status": "provisional: train-only first pass; held-out validation (T9) and native qualification (T9a) pending"
+ },
+ "seconds": {
+  "train_pair_fits": 8.365834499942139,
+  "solve": 12.578637100057676
+ },
+ "diagnostics": {
+  "options": {
+   "huber_k": 3.0,
+   "precision_gate_ps": 10.0,
+   "flag_normalized_residual": 5.0,
+   "tolerance_ps": 1e-07,
+   "max_iterations": 200
+  },
+  "components": [
+   {
+    "channels": 3131,
+    "pairs": 86000,
+    "chi2": 100214.08124440575,
+    "dof": 82870,
+    "birge_ratio": 1.0996784266423136,
+    "iterations": 43,
+    "component": 0,
+    "applied": true,
+    "gauge": "zero mean over the component's solved channels",
+    "flagged_pairs": 115,
+    "downweighted_pairs": 568
+   }
+  ],
+  "status_counts": {
+   "calibrated": 2096,
+   "low statistics": 1035,
+   "insufficient statistics": 24,
+   "disconnected": 0,
+   "ambiguous": 0,
+   "failed fit": 0,
+   "unobserved": 13,
+   "hardware unavailable": 32
+  },
+  "operational_channels": 3168,
+  "unavailable_channels": 32,
+  "usable_pairs": 86000,
+  "pairs": 136422
+ },
+ "sigma_ps_quantiles_10_50_90_99": [
+  7.832711797881058,
+  8.788399886906676,
+  18.898739253598805,
+  48.168045148228366
+ ],
+ "raw_sigma_ps_median": 7.991790758086074,
+ "delay_ps_range": [
+  -5583.87704228735,
+  3906.667442528189
+ ],
+ "residual_by_abs_shift": [
+  {
+   "abs_shift_ps": [
+    0,
+    1000
+   ],
+   "pairs": 38256,
+   "mean_r_times_sign_d": 0.04896989731772464,
+   "chi2_per_pair": 1.0961471384373727
+  },
+  {
+   "abs_shift_ps": [
+    1000,
+    2000
+   ],
+   "pairs": 22918,
+   "mean_r_times_sign_d": 0.039695020429671,
+   "chi2_per_pair": 1.17240351208873
+  },
+  {
+   "abs_shift_ps": [
+    2000,
+    3000
+   ],
+   "pairs": 16250,
+   "mean_r_times_sign_d": 0.1323299224244671,
+   "chi2_per_pair": 1.2449510695810224
+  },
+  {
+   "abs_shift_ps": [
+    3000,
+    4000
+   ],
+   "pairs": 7896,
+   "mean_r_times_sign_d": 0.07172836860116913,
+   "chi2_per_pair": 1.2628065555587917
+  },
+  {
+   "abs_shift_ps": [
+    4000,
+    15000
+   ],
+   "pairs": 680,
+   "mean_r_times_sign_d": 0.19414637065663795,
+   "chi2_per_pair": 1.7781723278121533
+  }
+ ],
+ "validation_holdout": {
+  "pairs_fitted": 112919,
+  "usable": 850,
+  "compared": 850,
+  "residual_ps_median": -3.7104190529180414,
+  "residual_ps_mean": -1.5491251610479548,
+  "z_rms": 1.2778045009576455,
+  "abs_z_gt_5": 2,
+  "z_quantiles_1_50_99": [
+   -2.5270454611204562,
+   -0.04182750494555067,
+   2.499727955758057
+  ]
+ }
+}

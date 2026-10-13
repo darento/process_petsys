@@ -39,7 +39,8 @@ from src import utils
 from src.detector_features import calculate_centroid
 from src.filters import filter_coincidence, filter_min_ch, filter_total_energy
 from src.ldat_inspector.fastread import _pow
-from src.cornell.timing_geometry import (C_MM_PER_PS, OWNER_INTERACTION_DEPTH_MM, AnnularSource,
+from src.cornell.timing_geometry import (C_MM_PER_PS, NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
+                                         SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, AnnularSource,
                                          FacetedDetectorFrame, GeometryError, build_faceted_detector_frames)
 from src.ldat_stream import LdatStream
 from src.mapping_generator import ChannelType, map_factory
@@ -729,6 +730,12 @@ class GeometryHypothesis:
                                                interaction_depth_mm=interaction_depth_mm)
         return cls(name, frames, source)
 
+    @classmethod
+    def selected(cls, config_path, setup, *, source=NORMALIZATION_PHANTOM):
+        """Production nominal: faceted, 7 mm depth, owner/data-selected axial and transverse signs."""
+        return cls.faceted(f"faceted transverse_sign {SELECTED_TRANSVERSE_SIGN:+d}", config_path, setup,
+                           axial_sign=SELECTED_AXIAL_SIGN, transverse_sign=SELECTED_TRANSVERSE_SIGN, source=source)
+
     def tables(self):
         frames = list(self.frames.values())
         if not frames or not all(isinstance(frame, FacetedDetectorFrame) for frame in frames):
@@ -928,11 +935,11 @@ def apply_geometry(features, hypothesis):
     return GeometryResult(hypothesis.name, codes, endpoints, segments, fractions, tof)
 
 
-def time_channel_coverage(endpoint_counts, setup, down_regions):
-    """Accepted endpoints per operational TIME channel (each accepted record adds two).
+def time_channel_classes(setup, down_regions):
+    """Mapped TIME channels {channel: (sm, mm)}, operational and down channel lists.
 
     Operational excludes configured unpopulated minimodules and the declared
-    acquisition-specific down regions; endpoints in either are reported apart.
+    acquisition-specific down regions.
     """
     down = {(int(sm), int(mm)) for sm, mm in down_regions}
     mapped = {tuple(key) for key in setup.sm_mM_map.values()}
@@ -940,11 +947,21 @@ def time_channel_coverage(endpoint_counts, setup, down_regions):
         raise ValueError(f"down regions not in the selected map: {sorted(down - mapped)}")
     time_channels = {ch: tuple(setup.sm_mM_map[ch]) for ch in setup.chtype_map
                      if ChannelType.TIME in setup.chtype_map[ch] and ch in setup.sm_mM_map}
+    operational = sorted(ch for ch, key in time_channels.items() if key not in setup.unpopulated and key not in down)
+    return time_channels, operational, sorted(ch for ch, key in time_channels.items() if key in down)
+
+
+def time_channel_coverage(endpoint_counts, setup, down_regions):
+    """Accepted endpoints per operational TIME channel (each accepted record adds two).
+
+    Operational excludes configured unpopulated minimodules and the declared
+    acquisition-specific down regions; endpoints in either are reported apart.
+    """
+    down = {(int(sm), int(mm)) for sm, mm in down_regions}
+    time_channels, operational, _ = time_channel_classes(setup, down_regions)
     unknown = sorted(ch for ch, n in endpoint_counts.items() if n and ch not in time_channels)
     if unknown:
         raise ValueError(f"endpoint counts on non-TIME or unmapped channels: {unknown[:5]}")
-    operational = sorted(ch for ch, key in time_channels.items()
-                         if key not in setup.unpopulated and key not in down)
     per_channel = {ch: int(endpoint_counts.get(ch, 0)) for ch in operational}
 
     def in_regions(regions):

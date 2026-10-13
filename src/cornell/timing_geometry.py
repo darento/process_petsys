@@ -253,6 +253,15 @@ class AnnularSource:
         object.__setattr__(self, "axis", tuple(axis / norm))
 
 
+# Normalization phantom (drawing Ph Norm D275L300 r01): fluid radii 137.5/142.5 mm,
+# 300 mm long, centred at YAML z=0 by its fixture (owner, ~1 mm transverse).
+NORMALIZATION_PHANTOM = AnnularSource(137.5, 142.5, -150.0, 150.0, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+# Slab index axial with sign -1 (T2b owner/drawing). Transverse handedness +1 is
+# selected by run7 data (T6 hypothesis-exclusive events) and owner-accepted 2026-10-13.
+SELECTED_AXIAL_SIGN = -1
+SELECTED_TRANSVERSE_SIGN = 1
+
+
 @dataclass(frozen=True)
 class ShellInterval:
     fraction_start: float
