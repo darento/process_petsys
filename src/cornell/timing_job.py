@@ -15,9 +15,13 @@ Per run: inventory (``timing_dataset``), frozen file roles, feature cache and
 selected-geometry observation set, each reused when complete and matching.
 Pooled (owner decision 2026-10-13): train events of all runs are fitted
 together per channel pair with one global kernel, then one global solve and
-canonical LUT. Per run, the report adds 511 keV peak positions per SM against
-the reference run (the reused ``.encal`` is checked, never silently trusted)
-and train/validation pair residuals against the pooled delays, so a
+canonical LUT. A run may name its own ``.encal`` (owner decision 2026-10-13
+for a run whose 511 keV peak moved); its held-out prefix can be read from the
+Manager calibrate run that produced it. Per run, the report adds 511 keV peak
+positions per SM against the reference run (a reused ``.encal`` is checked,
+never silently trusted) and train/validation pair residuals against the
+pooled delays; with ``per_run_solves`` each run is also solved alone and its
+delays compared with the pooled and reference-run solutions, so a
 rate-dependent offset stays visible. Test files are never evaluated here. A failing run stops the job; the pool is never silently shrunk.
 """
 from __future__ import annotations
@@ -53,8 +57,9 @@ ENERGY_WINDOW_KEV = (357.0, 665.0)
 _REQUIRED = {"schema", "config", "encal", "reference_run", "down_regions", "runs", "roles", "geometry",
              "work_directory", "lut"}
 _OPTIONAL = {"workers": 1, "seed": 0, "guard_ps": 1_000_000, "partitions": 16, "energy_peak_tolerance": 0.02,
-             "disk_margin": 1.25, "min_peak_entries": 200}
+             "disk_margin": 1.25, "min_peak_entries": 200, "per_run_solves": False}
 _RUN_KEYS = {"name", "directory", "ledger", "prefix", "energy_calibration_prefix"}
+_RUN_OPTIONAL = {"encal"}
 
 
 class JobError(ValueError):
@@ -68,6 +73,8 @@ class RunSpec:
     ledger: Path
     prefix: str
     energy_calibration_prefix: dict | None
+    calibration_run: Path | None = None
+    encal: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,7 @@ class Job:
     energy_peak_tolerance: float
     disk_margin: float
     min_peak_entries: int
+    per_run_solves: bool
 
 
 def load_job(path):
@@ -112,18 +120,23 @@ def load_job(path):
 
     runs = []
     for item in spec["runs"]:
-        if not isinstance(item, dict) or set(item) != _RUN_KEYS:
-            raise JobError(f"run entries need exactly {sorted(_RUN_KEYS)}: {item!r}")
-        # "none": no record of this run fed the .encal; otherwise {split index: excluded prefix records}
+        if not isinstance(item, dict) or not _RUN_KEYS <= set(item) <= _RUN_KEYS | _RUN_OPTIONAL:
+            raise JobError(f"run entries need {sorted(_RUN_KEYS)} (optional {sorted(_RUN_OPTIONAL)}): {item!r}")
+        # "none": no record of this run fed its .encal; {split: records} excluded prefixes; or
+        # {"calibration_run": run.json} of the Manager calibrate run that produced this run's .encal
         value = item["energy_calibration_prefix"]
+        prefix, calibration_run = None, None
         if value == "none":
-            prefix = None
-        elif isinstance(value, dict) and all(int(v) >= 0 for v in value.values()):
+            pass
+        elif isinstance(value, dict) and set(value) == {"calibration_run"}:
+            calibration_run = local(value["calibration_run"])
+        elif isinstance(value, dict) and all(str(k).isdigit() and int(v) >= 0 for k, v in value.items()):
             prefix = {int(k): int(v) for k, v in value.items()}
         else:
-            raise JobError(f"{item['name']}: energy_calibration_prefix must be 'none' or {{split: records}}")
+            raise JobError(f"{item['name']}: energy_calibration_prefix must be 'none', {{split: records}} "
+                           "or {\"calibration_run\": path}")
         runs.append(RunSpec(str(item["name"]), local(item["directory"]), local(item["ledger"]), str(item["prefix"]),
-                            prefix))
+                            prefix, calibration_run, local(item["encal"]) if "encal" in item else None))
     names = [run.name for run in runs]
     if not runs or len(set(names)) != len(names) or any(not n or os.sep in n or "/" in n for n in names):
         raise JobError("runs need unique simple names")
@@ -145,7 +158,7 @@ def load_job(path):
                tuple(int(v) for v in roles["validation"]), tuple(int(v) for v in roles["test"]),
                local(spec["work_directory"]), local(spec["lut"]), int(options["workers"]), int(options["seed"]),
                int(options["guard_ps"]), int(options["partitions"]), float(options["energy_peak_tolerance"]),
-               float(options["disk_margin"]), int(options["min_peak_entries"]))
+               float(options["disk_margin"]), int(options["min_peak_entries"]), bool(options["per_run_solves"]))
 
 
 def peak_memory():
@@ -300,6 +313,51 @@ def pair_residuals(fits, solution):
             "abs_z_gt_5": int((np.abs(z) > 5).sum())}
 
 
+def calibration_prefix(calibration_run, inputs, encal):
+    """{split index: records_validated} from the Manager calibrate run that produced ``encal``.
+
+    Every input split must appear once in the run's summary; the run's ``encal``
+    artifact must have the same name and size as the ``.encal`` in use.
+    """
+    ledger = json.loads(Path(calibration_run).read_text(encoding="utf-8"))
+    attempts = [a for a in ledger.get("attempts", []) if (a.get("details") or {}).get("cli_status") == "succeeded"]
+    if not attempts:
+        raise JobError(f"{calibration_run}: no succeeded calibrate attempt")
+    attempt = attempts[-1]
+    artifacts = [a for a in attempt.get("artifacts", []) if a.get("kind") == "encal"]
+    if (len(artifacts) != 1 or artifacts[0]["path"].replace("\\", "/").rsplit("/", 1)[-1] != Path(encal).name
+            or artifacts[0].get("size_bytes") != Path(encal).stat().st_size):
+        raise JobError(f"{calibration_run}: its .encal artifact does not match {encal}")
+    used = {}
+    for entry in attempt["details"]["summary"]["inputs"]:
+        name = entry["path"].replace("\\", "/").rsplit("/", 1)[-1]
+        if name in used:
+            raise JobError(f"{calibration_run}: {name} listed twice")
+        used[name] = int(entry["records_validated"])
+    missing = [item["path"].name for item in inputs if item["path"].name not in used]
+    if missing:
+        raise JobError(f"{calibration_run}: no records_validated for {missing[:3]}")
+    return {item["index"]: used[item["path"].name] for item in inputs}
+
+
+def compare_delays(a, b):
+    """Applied delays of two solutions after removing the free relative gauge (weighted mean difference)."""
+    da = {int(r["time_channel"]): (r["delay_ps"], r["sigma_ps"]) for r in a.channels if r["apply"]}
+    db = {int(r["time_channel"]): (r["delay_ps"], r["sigma_ps"]) for r in b.channels if r["apply"]}
+    common = sorted(set(da) & set(db))
+    if not common:
+        return {"channels": 0}
+    diff = np.array([da[c][0] - db[c][0] for c in common])
+    sigma = np.array([math.hypot(da[c][1], db[c][1]) for c in common])
+    weight = 1 / sigma ** 2
+    offset = float((weight * diff).sum() / weight.sum())
+    diff -= offset
+    z = diff / sigma
+    return {"channels": len(common), "gauge_offset_ps": offset, "diff_rms_ps": float(np.sqrt(np.mean(diff ** 2))),
+            "diff_ps_quantiles_1_50_99": np.percentile(diff, [1, 50, 99]).tolist(),
+            "z_rms": float(np.sqrt(np.mean(z ** 2))), "abs_z_gt_5": int((np.abs(z) > 5).sum())}
+
+
 def _disk_preflight(job, run, inputs, cache_dir):
     done = tc.FeatureCache(cache_dir).files if (Path(cache_dir) / "manifest.json").exists() else {}
     pending = sum(item["path"].stat().st_size for item in inputs if item["index"] not in done)
@@ -322,20 +380,29 @@ def _prepare_run(job, run, info, lookup, hypothesis, log):
     info["files"] = len(inputs)
     info["ldat_bytes"] = sum(item["path"].stat().st_size for item in inputs)
     info["physical_coincidences"] = sum(s["physical_coincidences"] for s in scans)
-    info["disk"] = _disk_preflight(job, run, inputs, run_dir / "features")
-    prefix = run.energy_calibration_prefix
-    if prefix is None:
+    encal = run.encal or job.encal
+    digest = hashlib.sha256(encal.read_bytes()).hexdigest()
+    # a run-specific .encal gets its own cache directories; the shared one keeps the plain names
+    tag = "" if run.encal is None else f"-{digest[:12]}"
+    info["encal"], info["encal_sha256"] = str(encal), digest
+    info["disk"] = _disk_preflight(job, run, inputs, run_dir / f"features{tag}")
+    if run.calibration_run is not None:
+        prefix = calibration_prefix(run.calibration_run, inputs, encal)
+        prefix = {index: prefix[index] for index in job.validation + job.test}
+    elif run.energy_calibration_prefix is not None:
+        prefix = run.energy_calibration_prefix
+    else:
         prefix = {index: 0 for index in job.validation + job.test}
     info["energy_calibration_prefix"] = {str(k): v for k, v in sorted(prefix.items())}
     clock = time.perf_counter()
-    features = tc.build_feature_cache(run_dir / "features", inputs, config_path=job.config,
-                                      encal_path=job.encal, root=ROOT, holdout=holdout,
+    features = tc.build_feature_cache(run_dir / f"features{tag}", inputs, config_path=job.config,
+                                      encal_path=encal, root=ROOT, holdout=holdout,
                                       energy_calibration_prefix=prefix,
                                       seed=job.seed, workers=job.workers)
     info["stages"]["feature_cache_seconds"] = time.perf_counter() - clock
     features.require_complete()
     clock = time.perf_counter()
-    observations = tc.build_observations(features, hypothesis, run_dir / "observations",
+    observations = tc.build_observations(features, hypothesis, run_dir / f"observations{tag}",
                                          partitions=job.partitions)
     info["stages"]["observations_seconds"] = time.perf_counter() - clock
     info["first_failure"] = observations.manifest["first_failure"]
@@ -367,6 +434,9 @@ def run_job(job, *, log=_print):
         for run in job.runs:
             if not run.ledger.is_file() or not run.directory.is_dir():
                 raise JobError(f"{run.name}: missing ledger or directory")
+            for path in (run.encal, run.calibration_run):
+                if path is not None and not path.is_file():
+                    raise JobError(f"{run.name}: missing input: {path}")
             report["runs"][run.name] = {"directory": str(run.directory), "stages": {}}
             try:
                 sets[run.name] = _prepare_run(job, run, report["runs"][run.name], lookup, hypothesis, log)
@@ -405,9 +475,28 @@ def run_job(job, *, log=_print):
                 role: pair_residuals(tp.fit_observation_set(sets[run.name], model, roles=(tc.ROLES.index(role),)),
                                      solution)
                 for role in ("train", "validation")}
+        if job.per_run_solves:
+            # rate-dependence diagnostic: each run solved alone with the pooled kernel, never applied
+            clock = time.perf_counter()
+            alone = {}
+            for run in job.runs:
+                alone[run.name] = ts.solve(tp.fit_observation_set(sets[run.name], model, roles=(0,)), operational, down)
+                target_lut = job.work / run.name / "per_run_delays.csv"
+                for old in (target_lut, target_lut.with_suffix(".json")):
+                    old.unlink(missing_ok=True)
+                write_lut(target_lut, alone[run.name], {"diagnostic": "per-run solve; not for correction",
+                                                        "run": run.name, "kernel": report["kernel"]})
+            report["per_run_solves"] = {
+                name: {"status_counts": sol.diagnostics["status_counts"],
+                       "birge_ratio": (sol.diagnostics["components"] or [{}])[0].get("birge_ratio"),
+                       "vs_pooled": compare_delays(sol, solution),
+                       "vs_reference_run": None if name == job.reference_run else compare_delays(sol, alone[job.reference_run])}
+                for name, sol in alone.items()}
+            report["stages"]["per_run_solve_seconds"] = time.perf_counter() - clock
         provenance = {"job": str(job.path), "job_sha256": job.sha256, "runs": [r.name for r in job.runs],
                       "reference_run": job.reference_run, "kernel": report["kernel"],
-                      "geometry": hypothesis.name, "encal_sha256": hashlib.sha256(job.encal.read_bytes()).hexdigest(),
+                      "geometry": hypothesis.name,
+                      "encal_sha256": {name: info["encal_sha256"] for name, info in report["runs"].items()},
                       "observation_fingerprints_sha256": {
                           name: hashlib.sha256(json.dumps(s.manifest["fingerprint"], sort_keys=True).encode()).hexdigest()
                           for name, s in sets.items()},

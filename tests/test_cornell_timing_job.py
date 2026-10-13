@@ -6,6 +6,7 @@ ledgers. Accepted coincidences come from diametric SM 1/SM 16 sides whose
 channel-pair shift, so every stage from inventory to LUT runs for real.
 """
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -33,7 +34,7 @@ def coincidence_records(setup, rng, count, shift):
     return out
 
 
-def make_run(base, setup, name, *, seed, accepted=70):
+def make_run(base, setup, name, *, seed, accepted=70, shift=600.0):
     """FILES chronological splits plus a succeeded conversion ledger."""
     directory = base / name
     directory.mkdir(parents=True)
@@ -41,7 +42,7 @@ def make_run(base, setup, name, *, seed, accepted=70):
     prefix = f"norm_test_{name}_coincCompact_"
     artifacts = []
     for index in range(FILES):
-        records = coincidence_records(setup, rng, accepted, 600.0)
+        records = coincidence_records(setup, rng, accepted, shift)
         offset = index * 10 ** 12  # one second per split, chronological
         records = [(shifted(a, offset), shifted(b, offset)) for a, b in records]
         records.sort(key=lambda r: min(h[0] for h in r[0] + r[1]))
@@ -225,3 +226,47 @@ def test_disk_preflight_and_failed_run_stop(runs, tmp_path, monkeypatch):
     assert report["status"] == "failed" and report["error"].startswith("JobError: rc:")
     assert "size-mismatched" in report["error"] and not job.lut.exists()
     assert not (tmp_path / "work2/ra").exists()  # the job stops at the failed run
+
+
+def calibrate_ledger(path, encal, run_item, validated):
+    """Manager calibrate run.json: its .encal artifact and records_validated per split."""
+    names = [p.name for p in sorted(Path(run_item["directory"]).glob(run_item["prefix"] + "*.ldat"))]
+    ledger = {"attempts": [{"details": {"cli_status": "succeeded", "summary": {"inputs": [
+        {"path": f"/mnt/nvme/data/x/{name}", "records_validated": validated + k} for k, name in enumerate(names)]}},
+        "artifacts": [{"kind": "encal", "path": f"/mnt/nvme/encal/{encal.name}", "size_bytes": encal.stat().st_size}]}]}
+    path.write_text(json.dumps(ledger))
+    return path
+
+
+def test_per_run_encal_prefix_and_solves(runs, tmp_path):
+    base, items = runs
+    (tmp_path / "setup").mkdir()
+    setup = make_setup(tmp_path / "setup")
+    shifted_run = make_run(tmp_path, setup, "rc", seed=3, shift=900.0)  # a different channel-pair offset
+    own = tmp_path / "rc_resolved.encal"
+    own.write_bytes((base / "r.encal").read_bytes())
+    ledger = calibrate_ledger(tmp_path / "rc_cal.json", own, shifted_run, 7)
+    shifted_run |= {"encal": str(own), "energy_calibration_prefix": {"calibration_run": str(ledger)}}
+    job = tj.load_job(job_file(tmp_path / "job.json", base, [items[0], items[1], shifted_run], per_run_solves=True))
+    report = tj.run_job(job, log=lambda message: None)
+    rc = report["runs"]["rc"]
+    assert rc["encal"] == str(own) and rc["encal_sha256"] == report["runs"]["ra"]["encal_sha256"]
+    # held-out splits drop the calibrate run's records_validated; the run-specific .encal gets its own caches
+    assert rc["energy_calibration_prefix"] == {"1": 8, "2": 9}
+    assert rc["first_failure"]["validation"]["energy calibration prefix"] == 8
+    tag = rc["encal_sha256"][:12]
+    assert (job.work / "rc" / f"features-{tag}" / "manifest.json").exists()
+    assert (job.work / "ra" / "features" / "manifest.json").exists()
+    # per-run solves: consistent runs agree; the run with another offset stands out against the reference
+    solves = report["per_run_solves"]
+    assert set(solves) == {"ra", "rb", "rc"} and solves["ra"]["vs_reference_run"] is None
+    assert solves["rb"]["vs_reference_run"]["channels"] == 2 and solves["rb"]["vs_reference_run"]["z_rms"] < 4
+    assert solves["rc"]["vs_reference_run"]["z_rms"] > max(4, 2 * solves["rb"]["vs_reference_run"]["z_rms"])
+    assert abs(abs(solves["rc"]["vs_reference_run"]["diff_ps_quantiles_1_50_99"][0]) - 150) < 60
+    assert (job.work / "rc" / "per_run_delays.csv").exists() and "per_run_solve_seconds" in report["stages"]
+    # the calibrate run must describe this .encal and every split
+    with pytest.raises(tj.JobError, match="does not match"):
+        tj.calibration_prefix(ledger, [{"index": 0, "path": Path(items[0]["directory"]) / "x.ldat"}],
+                              base / "r.encal")
+    with pytest.raises(tj.JobError, match="no records_validated"):
+        tj.calibration_prefix(ledger, [{"index": 0, "path": Path(items[0]["directory"]) / "x.ldat"}], own)
