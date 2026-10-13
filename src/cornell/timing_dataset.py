@@ -1,6 +1,6 @@
 """Bounded raw Cornell timing dataset inventory; no analysis cuts (spec 008 T1b1).
 
-Existing fastread kernels are reused without modifying Inspector or Manager.
+Records come from the shared bounded ``src.ldat_stream`` reader (T3).
 Raw hit presence is distinct from accepted calibration observations.
 """
 from __future__ import annotations
@@ -17,11 +17,10 @@ import numba
 import numpy as np
 import yaml
 
-from src.ldat_inspector.fastread import _hits, _scan_headers
+from src.ldat_stream import LdatStream
 from src.mapping_generator import map_factory
 
 MAX_CHUNK_BYTES = 64 * 1024 * 1024
-MAX_RECORD_BYTES = 2 + 16 * 510
 BATCH_RECORDS = 250_000
 
 
@@ -92,64 +91,39 @@ def scan_file(path, lookup, *, chunk_bytes=MAX_CHUNK_BYTES, max_records=None, fu
     identity = (before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev)
     channels, dense, down = lookup
     counts = np.zeros(len(channels), dtype=np.uint64)
-    records = hits = processed = bytes_read = zero_sides = unknown = nonfinite = unavailable = 0
+    zero_sides = unknown = nonfinite = unavailable = 0
     time_min = time_max = anchor_min = anchor_max = None
-    read_seconds = decode_seconds = 0.0
+    statistics_seconds = 0.0
     digest = hashlib.sha256() if full_hash and max_records is None else None
     started = time.perf_counter()
-    carry = b""
-    with path.open("rb") as stream:
-        while max_records is None or records < max_records:
-            read_started = time.perf_counter()
-            raw = stream.read(chunk_bytes)
-            read_seconds += time.perf_counter() - read_started
-            bytes_read += len(raw)
-            if digest is not None:
-                digest.update(raw)
-            if not raw:
-                if carry:
-                    raise ValueError(f"truncated LDAT record at byte {processed}")
-                break
-            data = carry + raw
-            buf = np.frombuffer(data, dtype=np.uint8)
-            position = 0
-            stage_started = time.perf_counter()
-            while position < len(buf) and (max_records is None or records < max_records):
-                want = BATCH_RECORDS if max_records is None else min(BATCH_RECORDS, max_records - records)
-                offsets, n1, n2, count, end, truncated = _scan_headers(buf, position, want)
-                if count:
-                    timestamp, energy, channel, first = _hits(buf, offsets, n1, n2, count)
-                    new_unknown, new_nonfinite, new_down = _count_hits(timestamp, energy, channel, dense, counts, down)
-                    unknown += new_unknown
-                    nonfinite += new_nonfinite
-                    unavailable += new_down
-                    records += int(count)
-                    hits += len(channel)
-                    zero_sides += int(np.count_nonzero(n1[:count] == 0) + np.count_nonzero(n2[:count] == 0))
-                    if len(timestamp):
-                        lo, hi = int(timestamp.min()), int(timestamp.max())
-                        time_min = lo if time_min is None else min(time_min, lo)
-                        time_max = hi if time_max is None else max(time_max, hi)
-                        anchors = timestamp[first[(n1[:count] + n2[:count]) > 0]]
-                        lo, hi = int(anchors.min()), int(anchors.max())
-                        anchor_min = lo if anchor_min is None else min(anchor_min, lo)
-                        anchor_max = hi if anchor_max is None else max(anchor_max, hi)
-                processed += int(end - position)
-                position = int(end)
-                if truncated:
-                    break
-            carry = data[position:]
-            decode_seconds += time.perf_counter() - stage_started
-            if max_records is not None and records >= max_records:
-                break
-            if len(carry) >= MAX_RECORD_BYTES:
-                raise ValueError("partial record exceeds LDAT header capacity")
-            if progress:
-                progress(processed, before.st_size, records)
+    stream = LdatStream(path, block_bytes=chunk_bytes, batch_records=BATCH_RECORDS, max_records=max_records,
+                        on_block=digest.update if digest is not None else None)
+    for batch in stream:
+        stage_started = time.perf_counter()
+        timestamp, n1, n2, first = batch.timestamp, batch.n1, batch.n2, batch.first_hit
+        new_unknown, new_nonfinite, new_down = _count_hits(timestamp, batch.energy, batch.channel,
+                                                           dense, counts, down)
+        unknown += new_unknown
+        nonfinite += new_nonfinite
+        unavailable += new_down
+        zero_sides += int(np.count_nonzero(n1 == 0) + np.count_nonzero(n2 == 0))
+        if len(timestamp):
+            lo, hi = int(timestamp.min()), int(timestamp.max())
+            time_min = lo if time_min is None else min(time_min, lo)
+            time_max = hi if time_max is None else max(time_max, hi)
+            anchors = timestamp[first[(n1 + n2) > 0]]
+            lo, hi = int(anchors.min()), int(anchors.max())
+            anchor_min = lo if anchor_min is None else min(anchor_min, lo)
+            anchor_max = hi if anchor_max is None else max(anchor_max, hi)
+        statistics_seconds += time.perf_counter() - stage_started
+        if progress:
+            progress(stream.processed_bytes, before.st_size, stream.records)
+    records, hits, processed, bytes_read = stream.records, stream.hits, stream.processed_bytes, stream.bytes_read
+    read_seconds, decode_seconds = stream.read_seconds, stream.decode_seconds + statistics_seconds
     after = path.stat()
     if identity != (after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev):
         raise ValueError("input changed during full/prefix scan")
-    complete = max_records is None and processed == before.st_size
+    complete = max_records is None and stream.complete and processed == before.st_size
     return {
         "name": path.name, "identity": {"size_bytes": before.st_size, "mtime_ns": before.st_mtime_ns},
         "full_scan": complete, "requested_max_records": max_records,

@@ -95,7 +95,7 @@ def decode_reference(data, limit):
 
 
 def decode_compiled(data, limit):
-    from src.ldat_inspector.fastread import _hits, _scan_headers
+    from src.ldat_stream import decode_hits as _hits, scan_headers as _scan_headers
 
     buf = np.frombuffer(data, dtype=np.uint8)
     offsets, n1, n2, count, end, truncated = _scan_headers(buf, 0, limit)
@@ -121,7 +121,7 @@ def benchmark_prefix(prefix, *, repeats=5):
         raise ValueError("invalid benchmark repetitions or record count")
     if len(prefix.data) > MAX_BYTES:
         raise ValueError("prefix exceeds benchmark byte cap")
-    # Include lazy fastread imports and JIT/cache load in the first compiled call.
+    # Include lazy kernel imports and JIT/cache load in the first compiled call.
     first_calls, results = {}, {}
     for name, decoder in (("python", decode_reference), ("compiled", decode_compiled)):
         started = time.perf_counter()
@@ -147,13 +147,13 @@ def benchmark_prefix(prefix, *, repeats=5):
                                   "measured_seconds": decode_seconds + audit_seconds})
     medians = {name: float(np.median([row["decode_and_pack_seconds"] for row in rows]))
                for name, rows in samples.items()}
-    from src.ldat_inspector import fastread
-    source_files = (Path(__file__), Path(fastread.__file__))
+    from src import ldat_stream
+    source_files = (Path(__file__), Path(ldat_stream.__file__))
     return {
         "schema_version": 1,
         "scope": "bounded raw decoding plus aligned-array packing; no analysis cuts",
         "platform": platform.platform(), "python": platform.python_version(),
-        "numpy": np.__version__, "numba": fastread.numba.__version__,
+        "numpy": np.__version__, "numba": ldat_stream.numba.__version__,
         "source_sha256": {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
                           for path in source_files},
         "input": {"path": prefix.path, "source_size_bytes": prefix.source_size,

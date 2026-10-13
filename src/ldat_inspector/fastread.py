@@ -36,6 +36,8 @@ import numba
 import numpy as np
 
 from .engine import FileResult, Settings, SideTable, load_setup
+from src.ldat_stream import (TRUNCATED_HEADER, TRUNCATED_HIT, decode_hits as _hits,
+                              scan_headers as _scan_headers)
 from src.mapping_generator import ChannelType
 
 CHUNK_PAIRS = 250_000
@@ -63,13 +65,12 @@ def cancelled() -> bool:
 def _report_progress(index, fraction):
     if _worker_progress is not None and 0 <= index < len(_worker_progress):
         _worker_progress[index] = fraction
-_HIT = np.dtype([("timestamp", "<i8"), ("energy", "<f4"), ("channel", "<i4")])
 
 # Per-pair outcome codes, in the reference's rejection labels.
 OK, MIN_CHANNELS, KEY_ERROR, VALUE_ERROR, ZERO_DIVISION, UNRESOLVED_SLAB = range(6)
 _LABELS = {MIN_CHANNELS: "min channels", KEY_ERROR: "KeyError", VALUE_ERROR: "ValueError",
            ZERO_DIVISION: "ZeroDivisionError", UNRESOLVED_SLAB: "unresolved Cornell slab"}
-_TRUNCATED_HEADER, _TRUNCATED_HIT = 1, 2
+_TRUNCATED_HEADER, _TRUNCATED_HIT = TRUNCATED_HEADER, TRUNCATED_HIT
 
 
 def _c_pow():
@@ -120,31 +121,6 @@ class _Lookup:
     def arrays(self):
         return (self.in_types, self.is_time, self.is_energy, self.first_energy, self.in_modules,
                 self.sm, self.mm, self.in_coords, self.x, self.y, self.pos)
-
-
-@numba.njit(cache=True)
-def _scan_headers(buf, start, limit):
-    """Record offsets and side sizes from byte ``start``; stops at ``limit`` pairs.
-
-    Returns (offsets, n1, n2, count, end, truncation code).
-    """
-    offsets = np.empty(limit, np.int64)
-    n1 = np.empty(limit, np.int64)
-    n2 = np.empty(limit, np.int64)
-    pos, count, size = start, 0, buf.size
-    while count < limit:
-        if pos >= size:
-            return offsets, n1, n2, count, pos, 0
-        if pos + 2 > size:
-            return offsets, n1, n2, count, pos, 1
-        a, b = np.int64(buf[pos]), np.int64(buf[pos + 1])
-        end = pos + 2 + 16 * (a + b)
-        if end > size:
-            return offsets, n1, n2, count, pos, 2
-        offsets[count], n1[count], n2[count] = pos, a, b
-        count += 1
-        pos = end
-    return offsets, n1, n2, count, pos, 0
 
 
 @numba.njit(cache=True)
@@ -407,20 +383,6 @@ def _pairs(first, n1, n2, timestamp, energy, channel, lut, cut, min_ch, cornell,
 @numba.njit(cache=True)
 def _seed(value):
     np.random.seed(value)
-
-
-def _hits(buf, offsets, n1, n2, count):
-    """Aligned hit arrays for ``count`` records, and each record's first hit index."""
-    start, stop = offsets[0], offsets[count - 1] + 2 + 16 * (n1[count - 1] + n2[count - 1])
-    keep = np.ones(stop - start, np.bool_)
-    header = offsets[:count] - start
-    keep[header] = False
-    keep[header + 1] = False
-    raw = np.ascontiguousarray(buf[start:stop][keep])
-    hits = raw.view(_HIT)
-    first = np.zeros(count, np.int64)
-    np.cumsum(n1[:count - 1] + n2[:count - 1], out=first[1:])
-    return hits["timestamp"].copy(), hits["energy"].copy(), hits["channel"].copy(), first
 
 
 def process_file_fast(path: str, settings: Settings, index: int = 0, *, seed: int | None = None) -> FileResult:

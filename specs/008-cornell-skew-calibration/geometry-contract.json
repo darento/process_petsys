@@ -6,7 +6,7 @@
   "008-FR-5"
  ],
  "scope": "T2a nominal geometry and offline convention; no calibrated acquisition, fit, LUT or native export",
- "geometry_qualification": "pending transverse handedness, effective interaction depth, spatial calibration, source pose and installed-hardware match; axes per owner statement",
+ "geometry_qualification": "owner nominal faceted geometry; pending transverse handedness, spatial calibration and measured source pose",
  "owner_crystal_thickness_mm": 20,
  "nominal_sm_centers_mm": {
   "0": [
@@ -222,7 +222,7 @@
    ]
   }
  ],
- "production_axis_origin_selected": false,
+ "production_axis_origin_selected": "faceted time-axial (owner); planar origins legacy-only",
  "diametric_finite_shell_intervals": [
   {
    "fraction_start": 0.0546875,
@@ -277,7 +277,7 @@
  "provenance_sha256": {
   "configs/cornell_full_system.yaml": "b1dad0f7f53881c3ce21fc4b1a43d0896e67b4104555000524265fb7624bde04",
   "maps/cornell_map_full_system.yaml": "6f688c2ee697d5c4c284ba113567def4e49a47777fe61ec4e9cc393b78a7f29c",
-  "src/cornell/timing_geometry.py": "3eeab4105e177c3e8f695c3016d5031faec6e6e40796275b1874f02fe16792a0",
+  "src/cornell/timing_geometry.py": "616717ef42768e7677456fddd65ad491cee0671e23ca6aef5d967cd34538775a",
   "src/cornell/timing_convention.py": "6c258036aace5fa34eac387dd3b22718bb25fb38ba78407a2d9932ca1abd113e",
   "tests/data/golden/timing/cornell_legacy_probes.json": "03c23841d0a28c772a18a38ef292b0639fc34f6d0002d8497041681052879daa"
  },
@@ -307,10 +307,10 @@
   "placement": "owner: centered at YAML z=0; transverse/axial pose and tilt unmeasured"
  },
  "faceted_candidate": {
-  "status": "T2c sketch candidate, not production; time-axial only",
+  "status": "owner production nominal (2026-10-13; sketch r01 as built); planar YAML for legacy comparison only",
   "entrance_apothem_mm": 155.0,
   "sipm_face_apothem_mm": 175.0,
-  "interaction_depth_mm": "required declared constant in [0,20]; no default",
+  "interaction_depth_mm": 7.0,
   "tile_pitch_deg": 18.0,
   "tiles_per_sm_transverse": 2,
   "minimodule_width_mm": 25.4,
@@ -325,33 +325,62 @@
   ],
   "axial_sign": -1,
   "transverse_handedness": "counter-clockwise +ENERGY, unqualified",
-  "SM1_depth5_minimodule_centers_xyz_mm": [
-   [
-    156.0038,
-    -37.823,
-    13.2975
-   ],
-   [
-    160.0564,
-    -12.2365,
-    13.2975
-   ],
-   [
-    160.0564,
-    12.2365,
-    13.2975
-   ],
-   [
-    156.0039,
-    37.8225,
-    13.2975
-   ]
-  ],
   "unresolved_sketch_points": [
-   "51.3 mm flat tile exceeds 18-degree chord at 155 mm apothem (49.1 mm); sketch tiles are trapezoidal",
    "sketch frame has a tile centered at 90 degrees; YAML cassettes at 0 degrees imply tiles at +/-9 degrees (global rotation only)",
-   "r01 2023 sketch versus installed hardware not verified"
-  ]
+   "tile width consistent only near 7 mm depth (tiles meet within 0.1 mm at 162 mm apothem)"
+  ],
+  "interaction_depth_basis": "owner-declared fixed LYSO 511 keV mean depth; apothem 162 mm, where the 18-degree chord equals the 51.3 mm tile",
+  "transverse_sign_candidates": {
+   "+1": "+ENERGY counter-clockwise",
+   "-1": "mirror of each SM across its cassette radial plane"
+  },
+  "transverse_sign_selected": null,
+  "SM1_nominal_minimodule_centers_xyz_mm": {
+   "1": [
+    [
+     157.9797,
+     -38.1329,
+     13.3
+    ],
+    [
+     162.0313,
+     -12.5518,
+     13.3
+    ],
+    [
+     162.0313,
+     12.5518,
+     13.3
+    ],
+    [
+     157.9797,
+     38.1329,
+     13.3
+    ]
+   ],
+   "-1": [
+    [
+     157.9797,
+     38.1329,
+     13.3
+    ],
+    [
+     162.0313,
+     12.5518,
+     13.3
+    ],
+    [
+     162.0313,
+     -12.5518,
+     13.3
+    ],
+    [
+     157.9797,
+     -38.1329,
+     13.3
+    ]
+   ]
+  }
  },
  "installed_cornell_petsys": {
   "checked": "2026-10-13 by owner on Cornell PC, /home/sie/sw/sw_daq_tofpet2_20260731a (not a git checkout)",

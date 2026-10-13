@@ -135,6 +135,8 @@ class TiledSketch:
 
 
 CORNELL_SKETCH_R01 = TiledSketch()
+# Owner-declared 2026-10-13: fixed depth below the entrance face (LYSO 511 keV mean).
+OWNER_INTERACTION_DEPTH_MM = 7.0
 
 
 @dataclass(frozen=True)
@@ -144,18 +146,20 @@ class FacetedDetectorFrame:
     cassette_azimuth_rad: float
     axial_center_mm: float
     axial_sign: int
+    transverse_sign: int
     interaction_apothem_mm: float
     map_centers_mm: tuple[tuple[float, ...], tuple[float, ...]]
     sketch: TiledSketch
     crystal_thickness_mm: float
-    qualification: str = ("sketch candidate; interaction depth, handedness, "
-                          "source pose and installed hardware pending")
+    qualification: str = ("owner nominal; transverse handedness, spatial calibration "
+                          "and source pose pending")
 
     def _minimodule(self, value, axis):
         centers = self.map_centers_mm[axis]
         distances = [abs(value - center) for center in centers]
         k = int(np.argmin(distances))
-        if not distances[k] <= self.sketch.minimodule_width_mm / 2:
+        # Edges are inclusive; 1 nm absorbs binary rounding of map coordinates.
+        if not distances[k] <= self.sketch.minimodule_width_mm / 2 + 1e-6:
             raise GeometryError("local position outside every declared minimodule")
         return k, value - centers[k]
 
@@ -166,10 +170,11 @@ class FacetedDetectorFrame:
         offset = self.sketch.minimodule_offset_mm
         row = (kx // 2 - 0.5) * self.sketch.row_pitch_mm
         axial = row + (kx % 2 - 0.5) * 2 * offset + dx
-        # +ENERGY is counter-clockwise, as in the planar candidates (unqualified).
-        phi = self.cassette_azimuth_rad + math.radians(
+        # transverse_sign +1: +ENERGY counter-clockwise; -1 mirrors each SM
+        # across its cassette's radial plane (handedness unqualified).
+        phi = self.cassette_azimuth_rad + self.transverse_sign * math.radians(
             (ky // 2 - 0.5) * self.sketch.tile_pitch_deg)
-        along = (ky % 2 - 0.5) * 2 * offset + dy
+        along = self.transverse_sign * ((ky % 2 - 0.5) * 2 * offset + dy)
         c, s = math.cos(phi), math.sin(phi)
         r = self.interaction_apothem_mm
         return np.array((r * c - along * s, r * s + along * c,
@@ -192,16 +197,20 @@ def _minimodule_centers(local_map, channel_modules, channel_types):
 
 
 def build_faceted_detector_frames(config, local_map, channel_modules, channel_types, *,
-                                  interaction_depth_mm, axial_sign, sketch=CORNELL_SKETCH_R01):
-    """Owner-requested faceted alternative to the planar YAML frames (T2c).
+                                  axial_sign, transverse_sign,
+                                  interaction_depth_mm=OWNER_INTERACTION_DEPTH_MM,
+                                  sketch=CORNELL_SKETCH_R01):
+    """Owner-selected nominal Cornell geometry (T2c/T2d); planar is legacy only.
 
     Time-axial only (slab index axial). ring_yx gives cassette azimuths and
     ring_z only ascending SM order; the sketch sets 105 mm SM pitch with the
     middle SM at z=0. Interaction depth is a declared constant below the
-    entrance face, never a per-event DOI conversion.
+    entrance face, never a per-event DOI conversion. Both handedness
+    candidates stay explicit until data or a known-position source decides.
     """
-    if axial_sign not in (-1, 1) or isinstance(axial_sign, bool):
-        raise GeometryError("explicit axial sign (-1/+1) required")
+    for sign, label in ((axial_sign, "axial"), (transverse_sign, "transverse")):
+        if sign not in (-1, 1) or isinstance(sign, bool):
+            raise GeometryError(f"explicit {label} sign (-1/+1) required")
     depth = _scalar(interaction_depth_mm, "interaction depth")
     if not 0 <= depth <= sketch.crystal_thickness_mm:
         raise GeometryError("interaction depth must lie within the crystal")
@@ -216,7 +225,7 @@ def build_faceted_detector_frames(config, local_map, channel_modules, channel_ty
         for index in range(3):
             sm = cassette * 3 + index
             frames[sm] = FacetedDetectorFrame(
-                sm, math.atan2(y, x), (index - 1) * sm_pitch, axial_sign,
+                sm, math.atan2(y, x), (index - 1) * sm_pitch, axial_sign, transverse_sign,
                 sketch.entrance_apothem_mm + depth, centers, sketch, sketch.crystal_thickness_mm)
     return frames
 

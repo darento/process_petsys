@@ -201,7 +201,7 @@ def map_minimodule_centers():
 
 def faceted(depth=5.0, **kwargs):
     config, local, modules, types = config_and_map()
-    options = dict(interaction_depth_mm=depth, axial_sign=-1) | kwargs
+    options = dict(interaction_depth_mm=depth, axial_sign=-1, transverse_sign=1) | kwargs
     return build_faceted_detector_frames(config, local, modules, types, **options)
 
 
@@ -295,25 +295,72 @@ def test_faceted_rejects_undeclared_or_invalid_geometry():
     for depth in (None, -0.1, 20.1, float("nan"), True):
         with pytest.raises(GeometryError):
             faceted(depth)
+    # Handedness has no default; depth defaults only to the owner-declared 7 mm.
     with pytest.raises(TypeError):
         build_faceted_detector_frames(config, local, modules, types, axial_sign=-1)
+    for sign in (0, 2, True, None):
+        with pytest.raises(GeometryError):
+            faceted(transverse_sign=sign)
     with pytest.raises(GeometryError):
         faceted(axial_sign=0)
     for changed in ({"ring_z": [-102.0, 102.0]}, {"ring_z": [102.0, 0.0, -102.0]},
                     {"ring_z": [-100.0, 5.0, 100.0]}, {"ring_r": 150}, {"ring_yx": {}}):
         with pytest.raises(GeometryError):
             build_faceted_detector_frames(config | changed, local, modules, types,
-                                          interaction_depth_mm=5, axial_sign=-1)
+                                          interaction_depth_mm=5, axial_sign=-1, transverse_sign=1)
     # A map without four minimodule centers per axis is not this sketch layout.
     moved = dict(local)
     ch = next(ch for ch in local if modules[ch] == (1, 0) and ChannelType.TIME in types[ch])
     moved[ch] = (local[ch][0] + 7.0, local[ch][1])
     with pytest.raises(GeometryError, match="minimodule"):
         build_faceted_detector_frames(config, moved, modules, types,
-                                      interaction_depth_mm=5, axial_sign=-1)
+                                      interaction_depth_mm=5, axial_sign=-1, transverse_sign=1)
     frame = faceted()[1]
     centers_x, centers_y = map_minimodule_centers()
     for x, y in ((centers_x[0] - 13.0, centers_y[0]), (centers_x[1], centers_y[3] + 13.0),
                  ((centers_x[0] + centers_x[1]) / 2, centers_y[0]), (float("nan"), centers_y[0])):
         with pytest.raises(GeometryError):
             frame.to_global(x, y)
+
+
+# --- T2d: owner-declared 7 mm depth; both transverse handedness candidates ---
+def test_faceted_handedness_mirrors_each_sm():
+    config, local, modules, types = config_and_map()
+    centers_x, centers_y = map_minimodule_centers()
+    ccw = faceted(transverse_sign=1)
+    cw = faceted(transverse_sign=-1)
+    for sm in range(30):
+        y_c, x_c = config["ring_yx"][sm // 3]
+        u = np.array([x_c, y_c]) / math.hypot(x_c, y_c)
+        for local_x in centers_x:
+            for local_y in (centers_y[0] - 5.0, centers_y[1], centers_y[2] + 3.2, centers_y[3]):
+                a = ccw[sm].to_global(local_x, local_y)
+                b = cw[sm].to_global(local_x, local_y)
+                # Clockwise is the mirror image across the cassette's radial plane.
+                assert b[:2] == pytest.approx(2 * (a[:2] @ u) * u - a[:2], abs=1e-9)
+                assert b[2] == a[2]
+    # A minimodule off the cassette centre moves to the other side of it.
+    a = ccw[0].to_global(centers_x[0], centers_y[3])
+    b = cw[0].to_global(centers_x[0], centers_y[3])
+    assert a[1] > 30 and b[1] < -30
+
+
+def test_faceted_nominal_depth_closes_tile_edges():
+    config, local, modules, types = config_and_map()
+    frames = build_faceted_detector_frames(config, local, modules, types,
+                                           axial_sign=-1, transverse_sign=1)
+    centers_x, centers_y = map_minimodule_centers()
+    half = 25.4 / 2
+    frame = frames[1]
+    # Owner-declared depth: 7 mm below the Ø310 entrance face.
+    centre = frame.to_global(centers_x[1], centers_y[2])
+    phi = math.radians(9)
+    assert centre[0] * math.cos(phi) + centre[1] * math.sin(phi) == pytest.approx(162.0)
+    # At 162 mm the 18° chord equals the 51.3 mm tile: the two tiles of one SM
+    # (and of neighbouring cassettes) meet within 0.1 mm at the interaction plane.
+    lower = frame.to_global(centers_x[1], centers_y[1] + half)
+    upper = frame.to_global(centers_x[1], centers_y[2] - half)
+    assert np.linalg.norm(lower - upper) < 0.1
+    neighbour = frames[4].to_global(centers_x[1], centers_y[0] - half)
+    edge = frame.to_global(centers_x[1], centers_y[3] + half)
+    assert np.linalg.norm(neighbour - edge) < 0.1
