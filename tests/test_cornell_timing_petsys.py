@@ -13,8 +13,9 @@ from cornell_timing_helpers import make_setup
 from src.cornell import timing_pairs as tp
 from src.cornell import timing_solver as ts
 from src.cornell.timing_ingest import time_channel_classes
-from src.cornell.timing_petsys import (CONVENTION, CanonicalLut, LutError, activated_ini, read_native_table,
-                                       write_lut, write_native_table)
+from src.cornell.timing_petsys import (CONVENTION, UNCORRECTED, CanonicalLut, LutError, activated_ini, compose_lut,
+                                       conversion_inputs, read_native_table, write_conversion_manifest, write_lut,
+                                       write_native_table)
 from src.cornell.timing_petsys import main as native_main
 from src.utils import get_absolute_id
 from src.mapping_generator import ChannelType
@@ -183,3 +184,123 @@ def test_activated_ini(tmp_path):
     assert native_main([str(lut_path), str(tmp_path / "cli.tsv"), "--ini", str(source),
                         "--out-ini", str(tmp_path / "cli.ini")]) == 0
     assert (tmp_path / "cli.json").exists() and "time_offset_calibration_table" in (tmp_path / "cli.ini").read_text()
+
+
+def native_setup(tmp_path):
+    """v3-like source LUT, its native table and an INI copy activating it."""
+    setup = make_setup(tmp_path)
+    lut_path, rows = small_lut(tmp_path, setup)
+    table = tmp_path / "time_offset_v3.tsv"
+    write_native_table(lut_path, table)
+    source_ini = tmp_path / "config.ini"
+    source_ini.write_text("[main]\r\n#time_offset_calibration_table = %CDIR%/x.tsv\r\n")
+    ini = tmp_path / "config_v3.ini"
+    activated_ini(source_ini, table, ini)
+    return lut_path, rows, table, source_ini, ini
+
+
+@pytest.mark.fr("008-FR-20")
+def test_conversion_manifest_identity(tmp_path):
+    lut_path, _, table, source_ini, ini = native_setup(tmp_path)
+    conv = tmp_path / "r7_v3corr"
+    conv.mkdir()
+    prefix = "norm_r7c_coincCompact_"
+    for index in range(3):
+        (conv / f"{prefix}{index:08d}.ldat").write_bytes(b"x" * (10 + index))
+    (conv / "norm_other_coincCompact_00000005.ldat").write_bytes(b"y")  # another run's split is not listed
+    out = tmp_path / "r7c_conversion.json"
+    assert native_main(["conversion", str(conv), "--prefix", prefix, "--table", str(table), "--ini", str(ini),
+                        "--raw-source", "/media/raw/norm_r7", "--command", "convert_raw_to_coincidence ...",
+                        "--output", str(out)]) == 0
+    manifest = json.loads(out.read_text())
+    assert [f["name"] for f in manifest["files"]] == [f"{prefix}{k:08d}.ldat" for k in range(3)]
+    assert [f["size_bytes"] for f in manifest["files"]] == [10, 11, 12]
+    lut_sha = json.loads(lut_path.with_suffix(".json").read_text())["table"]["sha256"]
+    assert manifest["native_table"]["source_lut_sha256"] == lut_sha
+    assert manifest["declared"] == {"raw_source": "/media/raw/norm_r7", "converter_command": "convert_raw_to_coincidence ..."}
+    inputs, correction = conversion_inputs(out, conv, prefix)
+    assert [i["index"] for i in inputs] == [0, 1, 2] and inputs[2]["path"] == conv / f"{prefix}00000002.ldat"
+    assert correction["state"] == "native" and correction["source_lut_sha256"] == lut_sha
+    assert correction["native_table_sha256"] == manifest["native_table"]["sha256"]
+    # refusals: existing output, INI without (or with another) active table, split gaps
+    with pytest.raises(LutError, match="exists"):
+        write_conversion_manifest(conv, prefix, table, ini, out, raw_source="r", command="c")
+    with pytest.raises(LutError, match="must activate"):
+        write_conversion_manifest(conv, prefix, table, source_ini, tmp_path / "a.json", raw_source="r", command="c")
+    other = tmp_path / "other.ini"
+    other.write_text(f"[main]\ntime_offset_calibration_table = {(tmp_path / 'native.tsv').as_posix()}\n")
+    with pytest.raises(LutError, match="must activate"):
+        write_conversion_manifest(conv, prefix, table, other, tmp_path / "b.json", raw_source="r", command="c")
+    gap = tmp_path / "gap"
+    gap.mkdir()
+    for index in (0, 2):
+        (gap / f"{prefix}{index:08d}.ldat").write_bytes(b"x")
+    with pytest.raises(LutError, match="consecutive"):
+        write_conversion_manifest(gap, prefix, table, ini, tmp_path / "c.json", raw_source="r", command="c")
+    # reading back: the run's prefix, split sizes and the native table must still match
+    with pytest.raises(LutError, match="prefix"):
+        conversion_inputs(out, conv, "norm_other_coincCompact_")
+    (conv / f"{prefix}00000001.ldat").write_bytes(b"short")
+    with pytest.raises(LutError, match="size-mismatched"):
+        conversion_inputs(out, conv, prefix)
+    (conv / f"{prefix}00000001.ldat").write_bytes(b"x" * 11)
+    table.write_text(table.read_text() + "# edited\n")
+    with pytest.raises(LutError, match="missing or changed"):
+        conversion_inputs(out, conv, prefix)
+
+
+@pytest.mark.fr("008-FR-20")
+def test_residual_lut_is_not_exported(tmp_path):
+    setup = make_setup(tmp_path)
+    lut_path, rows = small_lut(tmp_path, setup)
+    assert CanonicalLut.read(lut_path).input_correction == UNCORRECTED
+    # LUTs written before T9c have no input_correction and are for uncorrected data
+    manifest = json.loads(lut_path.with_suffix(".json").read_text())
+    del manifest["input_correction"]
+    lut_path.with_suffix(".json").write_text(json.dumps(manifest))
+    assert CanonicalLut.read(lut_path).input_correction == UNCORRECTED
+    residual = tmp_path / "residual.csv"
+    state = {"state": "native", "native_table_sha256": "a" * 64, "source_lut_sha256": "b" * 64}
+    write_lut(residual, ts.Solution(rows, np.zeros(0, ts.PAIR_RESIDUAL_DTYPE), {}), {}, state)
+    assert CanonicalLut.read(residual).input_correction == state
+    with pytest.raises(LutError, match="residual LUT"):
+        write_native_table(residual, tmp_path / "never.tsv")
+    assert not (tmp_path / "never.tsv").exists()
+
+
+@pytest.mark.fr("008-FR-20")
+def test_compose_lut_sources(tmp_path):
+    lut_path, rows, table, _, _ = native_setup(tmp_path)
+    source = CanonicalLut.read(lut_path)
+    native, _, _ = read_native_table(table)
+    residual = rows.copy()
+    calibrated, unobserved = ts.CALIBRATED, ts.CHANNEL_STATUSES.index("unobserved")
+    # 0, 2-4: second pass applied; 1: only the first pass; 5: only the second pass; 6, 7: neither
+    residual["status"] = [calibrated, unobserved, calibrated, ts.LOW_STATISTICS, calibrated, calibrated,
+                          unobserved, ts.CHANNEL_STATUSES.index("hardware unavailable")]
+    residual["apply"] = np.isin(residual["status"], ts.APPLIED_STATUSES)
+    residual["delay_ps"] = np.where(residual["apply"], [3.0, 0, -1.5, 40.0, 0.25, 12.0, 0, 0], np.nan)
+    residual["sigma_ps"] = residual["raw_sigma_ps"] = np.where(residual["apply"], 9.0, np.nan)
+    channels, counts = compose_lut(residual, native, source)
+    assert counts == {"residual plus native": 4, "native only": 1, "residual only": 1, "not applied": 2}
+    c = channels["time_channel"]
+    for k, extra in ((0, 3.0), (2, -1.5), (3, 40.0), (4, 0.25)):
+        assert channels["delay_ps"][k] == pytest.approx(native[int(c[k])] + extra)
+        assert channels["sigma_ps"][k] == 9.0 and channels["status"][k] == residual["status"][k]
+    assert channels["delay_ps"][1] == native[int(c[1])] and channels["status"][1] == rows["status"][1]
+    assert channels["sigma_ps"][1] == 6.0  # the source row's uncertainty
+    assert channels["delay_ps"][5] == 12.0 and int(c[5]) not in native
+    assert not channels["apply"][6:].any() and np.isnan(channels["delay_ps"][6:]).all()
+    composed = tmp_path / "composed.csv"
+    write_lut(composed, ts.Solution(channels, np.zeros(0, ts.PAIR_RESIDUAL_DTYPE), {"composition": counts}), {})
+    assert CanonicalLut.read(composed).input_correction == UNCORRECTED
+    assert write_native_table(composed, tmp_path / "composed_native.tsv")["table"]["rows"] == 6
+    # refusals: a residual source, offsets not from the source LUT, different channel sets
+    with pytest.raises(LutError, match="not the applied delays"):
+        compose_lut(residual, native | {int(c[0]): native[int(c[0])] + 1.0}, source)
+    with pytest.raises(LutError, match="different TIME channels"):
+        compose_lut(residual[:-1], native, source)
+    state = {"state": "native", "native_table_sha256": "a" * 64, "source_lut_sha256": "b" * 64}
+    write_lut(tmp_path / "res.csv", ts.Solution(rows, np.zeros(0, ts.PAIR_RESIDUAL_DTYPE), {}), {}, state)
+    with pytest.raises(LutError, match="uncorrected"):
+        compose_lut(residual, native, CanonicalLut.read(tmp_path / "res.csv"))

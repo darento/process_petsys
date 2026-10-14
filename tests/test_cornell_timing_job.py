@@ -11,31 +11,33 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cornell_timing_helpers import ROOT, T0, make_setup, shifted, side, write
+from cornell_timing_helpers import ROOT, T0, channels, make_setup, shifted, side, write
 from src.cornell import timing_cache as tc
 from src.cornell import timing_job as tj
 from src.cornell import timing_pairs as tp
 from src.cornell import timing_plots as tpl
 from src.cornell import timing_solver as ts
-from src.cornell.timing_petsys import CanonicalLut
+from src.cornell.timing_petsys import (CanonicalLut, LutError, activated_ini, read_native_table,
+                                       write_conversion_manifest, write_native_table)
+from src.utils import get_absolute_id, get_electronics_nums
 
 pytestmark = pytest.mark.fr("008-FR-18")
 FILES = 3
 TOF_PS = 934.0  # diametric branch TOF for the 140 mm mid-radius shell
 
 
-def coincidence_records(setup, rng, count, shift):
-    """SM 1 vs SM 16, two minimodules: dt = shift +- branch TOF + kernel noise."""
+def coincidence_records(setup, rng, count, shift, mms=(5, 6)):
+    """SM 1 vs SM 16, alternating minimodules: dt = shift +- branch TOF + kernel noise."""
     out = []
     for k in range(count):
-        mm = (5, 6)[k % 2]
+        mm = mms[k % len(mms)]
         dt = int(round(shift + rng.choice((-TOF_PS, TOF_PS)) + rng.normal(0, 150)))
         stamp = T0 + k * 1_000_000
         out.append((side(setup, 1, mm=mm, stamp=stamp), side(setup, 16, mm=mm, stamp=stamp - dt)))
     return out
 
 
-def make_run(base, setup, name, *, seed, accepted=70, shift=600.0):
+def make_run(base, setup, name, *, seed, accepted=70, shift=600.0, mms=(5, 6)):
     """FILES chronological splits plus a succeeded conversion ledger."""
     directory = base / name
     directory.mkdir(parents=True)
@@ -43,7 +45,7 @@ def make_run(base, setup, name, *, seed, accepted=70, shift=600.0):
     prefix = f"norm_test_{name}_coincCompact_"
     artifacts = []
     for index in range(FILES):
-        records = coincidence_records(setup, rng, accepted, shift)
+        records = coincidence_records(setup, rng, accepted, shift, mms)
         offset = index * 10 ** 12  # one second per split, chronological
         records = [(shifted(a, offset), shifted(b, offset)) for a, b in records]
         records.sort(key=lambda r: min(h[0] for h in r[0] + r[1]))
@@ -284,3 +286,143 @@ def test_per_run_encal_prefix_and_solves(runs, tmp_path):
                               base / "r.encal")
     with pytest.raises(tj.JobError, match="no records_validated"):
         tj.calibration_prefix(ledger, [{"index": 0, "path": Path(items[0]["directory"]) / "x.ldat"}], own)
+
+
+def corrected_run(base, setup, name, *, seed, shift, mm, table, ini):
+    """A run 'converted with the native table': splits plus a native-conversion manifest, no ledger."""
+    item = make_run(base, setup, name, seed=seed, shift=shift, mms=(mm,))
+    Path(item.pop("ledger")).unlink()
+    manifest = base / f"{name}_conversion.json"
+    write_conversion_manifest(item["directory"], item["prefix"], table, ini, manifest,
+                              raw_source=f"/raw/{name}", command="convert_raw_to_coincidence --writeBinaryCompact")
+    return item | {"conversion": str(manifest)}
+
+
+@pytest.mark.fr("008-FR-20")
+def test_second_pass_on_corrected_runs(runs, finished, tmp_path):
+    base, items = runs
+    first, _ = finished
+    # the first pass (shift 600 ps) gives the source LUT and its native table
+    table = tmp_path / "time_offset_v3.tsv"
+    write_native_table(first.lut, table)
+    (tmp_path / "config.ini").write_text("[main]\n#time_offset_calibration_table = %CDIR%/x.tsv\n")
+    ini = tmp_path / "config_v3.ini"
+    activated_ini(tmp_path / "config.ini", table, ini)
+    native, _, _ = read_native_table(table)
+    (tmp_path / "setup").mkdir()
+    setup = make_setup(tmp_path / "setup")
+    mm = next(m for m in (5, 6) if channels(setup, 1, m)[0][3] in native)
+    c1, c16 = channels(setup, 1, mm)[0][3], channels(setup, 16, mm)[0][3]
+    # the true uncorrected shift is 700 ps (first pass: 600); corrected data keep 700 - (b1 - b16)
+    shift = 700.0 - (native[c1] - native[c16])
+    ca = corrected_run(tmp_path, setup, "ca", seed=11, shift=shift, mm=mm, table=table, ini=ini)
+    ca["energy_calibration_prefix"] = {"1": 50, "2": 0}
+    cb = corrected_run(tmp_path, setup, "cb", seed=12, shift=shift, mm=mm, table=table, ini=ini)
+    # cb's own .encal came from a calibrate run over the uncorrected files: other names, same split indices
+    own = tmp_path / "cb_resolved.encal"
+    own.write_bytes((base / "r.encal").read_bytes())
+    ledger = {"attempts": [{"details": {"cli_status": "succeeded", "summary": {"inputs": [
+        {"path": f"/mnt/nvme/data/x/norm_test_rb_coincCompact_{k:08d}.ldat", "records_validated": 8 + k}
+        for k in range(FILES)]}},
+        "artifacts": [{"kind": "encal", "path": f"/x/{own.name}", "size_bytes": own.stat().st_size}]}]}
+    (tmp_path / "cb_cal.json").write_text(json.dumps(ledger))
+    cb |= {"encal": str(own), "energy_calibration_prefix": {"calibration_run": str(tmp_path / "cb_cal.json")}}
+
+    job = tj.load_job(job_file(tmp_path / "job.json", base, [ca, cb], native_source_lut=str(first.lut),
+                               lut="out/residual.csv"))
+    report = tj.run_job(job, log=lambda message: None)
+    assert report["status"] == "succeeded"
+    lut_sha = json.loads(first.lut.with_suffix(".json").read_text())["table"]["sha256"]
+    state = report["input_correction"]
+    assert state["state"] == "native" and state["source_lut_sha256"] == lut_sha
+    assert set(state["conversion_manifests"]) == {"ca", "cb"}
+    # held-out prefixes: uncorrected counts by split index plus 2 %
+    assert report["runs"]["ca"]["energy_calibration_prefix"] == {"1": 51, "2": 0}
+    assert report["runs"]["ca"]["first_failure"]["validation"]["energy calibration prefix"] == 51
+    assert report["runs"]["cb"]["energy_calibration_prefix"] == {"1": 10, "2": 11}  # ceil(9 * 1.02), ceil(10 * 1.02)
+    assert report["runs"]["cb"]["energy_calibration_prefix_margin"] == 0.02
+    # residual LUT: the remaining ~100 ps, never exported natively
+    residual = CanonicalLut.read(job.lut)
+    assert residual.input_correction["state"] == "native"
+    with pytest.raises(LutError, match="residual LUT"):
+        write_native_table(job.lut, tmp_path / "never.tsv")
+    assert sorted(residual.rows["time_channel"][residual.rows["apply"]]) == sorted([c1, c16])
+    # composed LUT for uncorrected data recovers the true 700 ps, not the first pass
+    composed_path = job.lut.with_name("residual_composed.csv")
+    composed = CanonicalLut.read(composed_path)
+    assert composed.input_correction == {"state": "uncorrected"}
+    rows = {int(r["time_channel"]): r for r in composed.rows}
+    sigma = float(np.hypot(rows[c1]["sigma_ps"], rows[c16]["sigma_ps"]))
+    difference = composed.delay(c1) - composed.delay(c16)
+    assert abs(difference - 700.0) < 4 * sigma and abs(difference - 600.0) > 8 * sigma and sigma < 30
+    assert report["composed_lut"]["composition"] == {"residual plus native": 2, "native only": 0,
+                                                     "residual only": 0, "not applied": len(composed.rows) - 2}
+    assert report["composed_lut"]["sha256"] == composed.manifest["table"]["sha256"]
+    assert composed.manifest["provenance"]["residual_lut"]["sha256"] == report["lut"]["sha256"]
+    assert all(p.exists() for p in tpl.plot_paths(composed_path))
+    assert write_native_table(composed_path, tmp_path / "time_offset_v4.tsv")["table"]["rows"] == 2
+    assert report["second_pass"]["applied_channels"] == 2 and report["second_pass"]["listed_in_native_table"] == 2
+
+    # refusals before any work: mixed states, missing/unexpected/wrong source LUT, ledger and conversion together
+    for run_items, extra, message in (
+            ([ca, items[0]], {"native_source_lut": str(first.lut)}, "mix"),
+            ([ca, cb], {}, "native_source_lut"),
+            (items, {"native_source_lut": str(first.lut)}, "native_source_lut"),
+            ([ca, cb], {"native_source_lut": str(job.lut)}, "not the source LUT")):
+        bad = tj.load_job(job_file(tmp_path / "bad.json", base, run_items, work_directory="bad", lut="out/bad.csv",
+                                   **extra))
+        with pytest.raises(tj.JobError, match=message):
+            tj.run_job(bad, log=lambda message: None)
+        assert not (tmp_path / "bad" / "ca").exists() and not (tmp_path / "out/bad.csv").exists()
+    with pytest.raises(tj.JobError, match="run entries"):
+        tj.load_job(job_file(tmp_path / "bad.json", base, [dict(ca, ledger=items[0]["ledger"])]))
+
+
+@pytest.mark.fr("008-FR-20")
+def test_second_pass_diagnostics():
+    rng = np.random.default_rng(93)
+    ids = [get_absolute_id(0, 0, chip, ch) for chip in range(40) for ch in range(64)]
+    rows = np.zeros(len(ids), ts.CHANNEL_DTYPE)
+    rows["time_channel"], rows["status"], rows["apply"], rows["sigma_ps"] = ids, ts.CALIBRATED, True, 5.0
+    native = {c: float(v) for c, v in zip(ids, rng.uniform(-5000, 5000, len(ids)))}
+    asic_channel = np.array([get_electronics_nums(c)[3] for c in ids])
+    # clipping-like shrinkage (1 % of the native offset), +30 ps on ASIC channel 11, a common 7 ps gauge
+    rows["delay_ps"] = (0.01 * np.array([native[c] for c in ids]) + 30.0 * (asic_channel == 11) + 7.0
+                        + rng.normal(0, 5, len(ids)))
+    rows["apply"][:3] = False  # not applied in the second pass: excluded
+    rows["status"][:3] = ts.CHANNEL_STATUSES.index("unobserved")
+    pairs = np.zeros(4000, ts.PAIR_RESIDUAL_DTYPE)
+    pairs["channel_i"], pairs["channel_j"] = rng.choice(ids, (2, 4000))
+    shift = np.array([native[int(i)] - native[int(j)] for i, j in zip(pairs["channel_i"], pairs["channel_j"])])
+    pairs["normalized_residual"] = (rng.normal(0, 1, 4000) * (1 + np.abs(shift) / 4000)
+                                    + 0.5 * np.sign(shift) * (np.abs(shift) >= 4000))
+    source = type("Lut", (), {"manifest": {"provenance": {
+        "cross_run_outliers": [{"time_channel": ids[11], "runs": {}}, {"time_channel": ids[0], "runs": {}}],
+        "asic_pattern_outliers": {"channels": [{"time_channel": ids[13]}]}}}})()
+    out = tj.second_pass_report(ts.Solution(rows, pairs), native, source)
+    assert out["applied_channels"] == out["listed_in_native_table"] == len(ids) - 3
+    trend = out["trend_vs_native"]
+    assert trend["slope"] == pytest.approx(0.01, abs=5 * trend["slope_sigma"])
+    assert [b["from"] for b in trend["bins_abs_native_ps"]] == [0, 1000, 2000, 4000]
+    assert trend["bins_abs_native_ps"][-1]["to"] is None
+    groups = out["asic_channel_groups"]
+    assert groups["11"]["count"] == 40 and groups["13"]["count"] == 40
+    assert groups["11"]["mean_ps"] - groups["other"]["mean_ps"] == pytest.approx(30, abs=10)
+    assert abs(groups["13"]["mean_ps"] - groups["other"]["mean_ps"]) < 10
+    chi2 = [b["chi2_per_pair"] for b in out["pair_chi2_by_abs_native_pair_shift"]]
+    assert chi2 == sorted(chi2) and chi2[0] < 1.6
+    assert out["pair_chi2_by_abs_native_pair_shift"][-1]["mean_signed_z"] == pytest.approx(0.5, abs=0.25)
+    assert [e["time_channel"] for e in out["source_cross_run_outliers"]] == [ids[11], ids[0]]
+    assert out["source_cross_run_outliers"][0]["residual_ps"] > 15  # ASIC channel 11 carries the +30 ps
+    assert out["source_cross_run_outliers"][1]["residual_ps"] is None  # not applied in the second pass
+    assert out["source_asic_pattern_outliers"][0]["time_channel"] == ids[13]
+    assert not out["source_asic_pattern_outliers_computed"]
+    json.dumps(out, allow_nan=False)
+    # a source LUT from before FR-19 lists no pattern outliers: computed from its applied delays
+    source_rows = rows.copy()
+    source_rows["apply"], source_rows["delay_ps"] = True, rng.normal(0, 20, len(ids))
+    source_rows["delay_ps"][100] += 3000.0
+    old = type("Lut", (), {"manifest": {"provenance": {}}, "rows": source_rows})()
+    out = tj.second_pass_report(ts.Solution(rows, pairs), native, old)
+    assert out["source_asic_pattern_outliers_computed"] and out["source_cross_run_outliers"] == []
+    assert [e["time_channel"] for e in out["source_asic_pattern_outliers"]] == [ids[100]]

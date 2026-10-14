@@ -25,6 +25,15 @@ delays compared with the pooled and reference-run solutions, so a
 rate-dependent offset stays visible. Test files are never evaluated here. A failing run stops the job; the pool is never silently shrunk.
 After the LUT, per-ASIC plots and channels breaking the per-ASIC pattern
 (``timing_plots``, FR-19) are written next to it; listed, never changed.
+
+Second pass (T9c, FR-20): a run may name a native-conversion manifest
+(``conversion``) instead of a Manager ``ledger``. All runs share one input
+correction; a corrected job needs ``native_source_lut`` (the LUT the native
+table came from), writes the residual LUT at ``lut`` and the composed
+candidate ``<lut stem>_composed.csv`` for uncorrected data, and reports the
+residual diagnostics under ``second_pass``. Held-out ``.encal`` prefixes of
+corrected runs match the uncorrected counts by split index, enlarged by
+``corrected_prefix_margin``.
 """
 from __future__ import annotations
 
@@ -37,6 +46,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import time
@@ -49,7 +59,9 @@ from src.cornell import timing_pairs as tp
 from src.cornell import timing_plots as tpl
 from src.cornell import timing_solver as ts
 from src.cornell.timing_ingest import GeometryHypothesis, LegacySetup, time_channel_classes
-from src.cornell.timing_petsys import write_lut
+from src.cornell.timing_petsys import (UNCORRECTED, CanonicalLut, compose_lut, conversion_inputs,
+                                      read_native_table, write_lut)
+from src.utils import get_electronics_nums
 from src.mapping_generator import map_factory
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,9 +73,12 @@ _REQUIRED = {"schema", "config", "encal", "reference_run", "down_regions", "runs
              "work_directory", "lut"}
 _OPTIONAL = {"workers": 1, "seed": 0, "guard_ps": 1_000_000, "partitions": 16, "energy_peak_tolerance": 0.02,
              "disk_margin": 1.25, "min_peak_entries": 200, "per_run_solves": False, "reproducibility_floor": False,
-             "outlier_threshold": 5.0, "pattern_outlier_ps": tpl.DEFAULT_THRESHOLD_PS}
-_RUN_KEYS = {"name", "directory", "ledger", "prefix", "energy_calibration_prefix"}
-_RUN_OPTIONAL = {"encal"}
+             "outlier_threshold": 5.0, "pattern_outlier_ps": tpl.DEFAULT_THRESHOLD_PS, "native_source_lut": None,
+             "corrected_prefix_margin": 0.02}
+_RUN_KEYS = {"name", "directory", "prefix", "energy_calibration_prefix"}
+_RUN_OPTIONAL = {"encal", "ledger", "conversion"}
+# pair/channel bins of |native offset| for the second-pass report, ps
+_SECOND_PASS_BINS_PS = (0.0, 1000.0, 2000.0, 4000.0, math.inf)
 
 
 class JobError(ValueError):
@@ -79,6 +94,7 @@ class RunSpec:
     energy_calibration_prefix: dict | None
     calibration_run: Path | None = None
     encal: Path | None = None
+    conversion: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +121,8 @@ class Job:
     reproducibility_floor: bool
     outlier_threshold: float
     pattern_outlier_ps: float
+    native_source_lut: Path | None = None
+    corrected_prefix_margin: float = 0.02
 
 
 def load_job(path):
@@ -127,8 +145,10 @@ def load_job(path):
 
     runs = []
     for item in spec["runs"]:
-        if not isinstance(item, dict) or not _RUN_KEYS <= set(item) <= _RUN_KEYS | _RUN_OPTIONAL:
-            raise JobError(f"run entries need {sorted(_RUN_KEYS)} (optional {sorted(_RUN_OPTIONAL)}): {item!r}")
+        if (not isinstance(item, dict) or not _RUN_KEYS <= set(item) <= _RUN_KEYS | _RUN_OPTIONAL
+                or ("ledger" in item) == ("conversion" in item)):
+            raise JobError(f"run entries need {sorted(_RUN_KEYS)} and one of 'ledger'/'conversion' "
+                           f"(optional 'encal'): {item!r}")
         # "none": no record of this run fed its .encal; {split: records} excluded prefixes; or
         # {"calibration_run": run.json} of the Manager calibrate run that produced this run's .encal
         value = item["energy_calibration_prefix"]
@@ -142,8 +162,10 @@ def load_job(path):
         else:
             raise JobError(f"{item['name']}: energy_calibration_prefix must be 'none', {{split: records}} "
                            "or {\"calibration_run\": path}")
-        runs.append(RunSpec(str(item["name"]), local(item["directory"]), local(item["ledger"]), str(item["prefix"]),
-                            prefix, calibration_run, local(item["encal"]) if "encal" in item else None))
+        runs.append(RunSpec(str(item["name"]), local(item["directory"]),
+                            local(item["ledger"]) if "ledger" in item else None, str(item["prefix"]),
+                            prefix, calibration_run, local(item["encal"]) if "encal" in item else None,
+                            local(item["conversion"]) if "conversion" in item else None))
     names = [run.name for run in runs]
     if not runs or len(set(names)) != len(names) or any(not n or os.sep in n or "/" in n for n in names):
         raise JobError("runs need unique simple names")
@@ -156,8 +178,10 @@ def load_job(path):
     if set(roles) != {"validation", "test"}:
         raise JobError("roles must list 'validation' and 'test' file indices")
     if not (int(options["workers"]) >= 1 and int(options["partitions"]) >= 1 and 0 < options["energy_peak_tolerance"] < 1
-            and options["disk_margin"] >= 1 and int(options["guard_ps"]) >= 0 and options["pattern_outlier_ps"] > 0):
-        raise JobError("invalid workers/partitions/tolerance/disk margin/guard/pattern outlier threshold")
+            and options["disk_margin"] >= 1 and int(options["guard_ps"]) >= 0 and options["pattern_outlier_ps"] > 0
+            and 0 <= options["corrected_prefix_margin"] < 1):
+        raise JobError("invalid workers/partitions/tolerance/disk margin/guard/pattern outlier threshold/"
+                       "corrected prefix margin")
     regions = tuple(tuple(int(v) for v in region) for region in spec["down_regions"])
     if any(len(region) != 2 for region in regions):
         raise JobError("down regions are [SM, MM] pairs")
@@ -169,7 +193,9 @@ def load_job(path):
                int(options["guard_ps"]), int(options["partitions"]), float(options["energy_peak_tolerance"]),
                float(options["disk_margin"]), int(options["min_peak_entries"]), bool(options["per_run_solves"]),
                bool(options["reproducibility_floor"]), float(options["outlier_threshold"]),
-               float(options["pattern_outlier_ps"]))
+               float(options["pattern_outlier_ps"]),
+               None if options["native_source_lut"] is None else local(options["native_source_lut"]),
+               float(options["corrected_prefix_margin"]))
 
 
 def peak_memory():
@@ -216,9 +242,15 @@ def _scan(path, lookup):
     return td.scan_file(path, lookup)
 
 
-def inventory(run, lookup, directory, workers, log=_print):
-    """Full raw inventory of a run's ledger outputs, reused while identities match."""
-    inputs = td.ledger_inputs(run.ledger, run.directory, run.prefix)
+def run_inputs(run):
+    """``(inputs, input_correction)`` from the run's conversion ledger or native-conversion manifest."""
+    if run.conversion is None:
+        return td.ledger_inputs(run.ledger, run.directory, run.prefix), UNCORRECTED
+    return conversion_inputs(run.conversion, run.directory, run.prefix)
+
+
+def inventory(run, inputs, lookup, directory, workers, log=_print):
+    """Full raw inventory of a run's conversion outputs, reused while identities match."""
     target = Path(directory) / "inventory.json"
     identities = [{"name": i["path"].name, "size_bytes": i["path"].stat().st_size,
                    "mtime_ns": i["path"].stat().st_mtime_ns} for i in inputs]
@@ -324,11 +356,13 @@ def pair_residuals(fits, solution):
             "abs_z_gt_5": int((np.abs(z) > 5).sum())}
 
 
-def calibration_prefix(calibration_run, inputs, encal):
+def calibration_prefix(calibration_run, inputs, encal, *, by_index=False):
     """{split index: records_validated} from the Manager calibrate run that produced ``encal``.
 
     Every input split must appear once in the run's summary; the run's ``encal``
-    artifact must have the same name and size as the ``.encal`` in use.
+    artifact must have the same name and size as the ``.encal`` in use. With
+    ``by_index`` (a corrected conversion of the calibrated files, other names)
+    splits match by their ``NNNNNNNN.ldat`` index instead of the file name.
     """
     ledger = json.loads(Path(calibration_run).read_text(encoding="utf-8"))
     attempts = [a for a in ledger.get("attempts", []) if (a.get("details") or {}).get("cli_status") == "succeeded"]
@@ -342,13 +376,19 @@ def calibration_prefix(calibration_run, inputs, encal):
     used = {}
     for entry in attempt["details"]["summary"]["inputs"]:
         name = entry["path"].replace("\\", "/").rsplit("/", 1)[-1]
+        if by_index:
+            match = re.search(r"(\d{8})\.ldat$", name)
+            if not match:
+                raise JobError(f"{calibration_run}: {name} has no split index")
+            name = int(match[1])
         if name in used:
             raise JobError(f"{calibration_run}: {name} listed twice")
         used[name] = int(entry["records_validated"])
-    missing = [item["path"].name for item in inputs if item["path"].name not in used]
+    key = (lambda item: item["index"]) if by_index else (lambda item: item["path"].name)
+    missing = [item["path"].name for item in inputs if key(item) not in used]
     if missing:
         raise JobError(f"{calibration_run}: no records_validated for {missing[:3]}")
-    return {item["index"]: used[item["path"].name] for item in inputs}
+    return {item["index"]: used[key(item)] for item in inputs}
 
 
 def compare_delays(a, b):
@@ -369,6 +409,89 @@ def compare_delays(a, b):
             "z_rms": float(np.sqrt(np.mean(z ** 2))), "abs_z_gt_5": int((np.abs(z) > 5).sum())}
 
 
+def _edge(value):
+    return None if math.isinf(value) else value
+
+
+def _bins(values, edges):
+    return [(lo, hi, (values >= lo) & (values < hi)) for lo, hi in zip(edges[:-1], edges[1:])]
+
+
+def _weighted_mean(values, sigma):
+    if not len(values):
+        return {"count": 0}
+    w = 1 / sigma ** 2
+    return {"count": int(len(values)), "mean_ps": float((w * values).sum() / w.sum()),
+            "mean_sigma_ps": float(1 / math.sqrt(w.sum())), "z_rms": float(np.sqrt(np.mean((values / sigma) ** 2)))}
+
+
+def second_pass_report(solution, native_offsets, source, pattern_outlier_ps=tpl.DEFAULT_THRESHOLD_PS):
+    """Residual delays of a corrected job: distribution, trend against the native offset,
+    pair chi2 by |native pair shift|, ASIC channel 11/13 groups and the source LUT's listed outliers.
+    """
+    rows = solution.channels[solution.channels["apply"]]
+    if not len(rows):
+        return {"applied_channels": 0}
+    channels = rows["time_channel"].astype(np.int64)
+    sigma = rows["sigma_ps"]
+    weight = 1 / sigma ** 2
+    # residual gauge: weighted mean removed, so a common shift never reads as a residual
+    gauge = float((weight * rows["delay_ps"]).sum() / weight.sum())
+    residual = rows["delay_ps"] - gauge
+    z = residual / sigma
+    native = np.array([native_offsets.get(int(c), np.nan) for c in channels])
+    listed = np.isfinite(native)
+    out = {"applied_channels": int(len(rows)), "listed_in_native_table": int(listed.sum()), "gauge_ps": gauge,
+           "residual_ps_quantiles_1_50_99": np.percentile(residual, [1, 50, 99]).tolist(),
+           "z_rms": float(np.sqrt(np.mean(z ** 2))), "abs_z_gt_3": int((np.abs(z) > 3).sum()),
+           "abs_z_gt_5": int((np.abs(z) > 5).sum())}
+    if listed.sum() >= 2:
+        x, y, w = native[listed], residual[listed], weight[listed]
+        centred = x - (w * x).sum() / w.sum()
+        spread = (w * centred ** 2).sum()
+        out["trend_vs_native"] = {"slope": float((w * centred * y).sum() / spread),
+                                  "slope_sigma": float(1 / math.sqrt(spread)) if spread > 0 else None,
+                                  "bins_abs_native_ps": [
+                                      {"from": lo, "to": _edge(hi)} | _weighted_mean(y[m], sigma[listed][m])
+                                      for lo, hi, m in _bins(np.abs(x), _SECOND_PASS_BINS_PS)]}
+    pairs = solution.pairs[np.isfinite(solution.pairs["normalized_residual"])]
+    if len(pairs):
+        shift = np.array([native_offsets.get(int(i), 0.0) - native_offsets.get(int(j), 0.0)
+                          for i, j in zip(pairs["channel_i"], pairs["channel_j"])])
+        r = pairs["normalized_residual"]
+        out["pair_chi2_by_abs_native_pair_shift"] = [
+            {"from": lo, "to": _edge(hi), "pairs": int(m.sum()),
+             "chi2_per_pair": float(np.mean(r[m] ** 2)) if m.any() else None,
+             "mean_signed_z": float(np.mean(r[m] * np.sign(shift[m]))) if m.any() else None}
+            for lo, hi, m in _bins(np.abs(shift), _SECOND_PASS_BINS_PS)]
+    asic_channel = np.array([get_electronics_nums(int(c))[3] for c in channels])
+    out["asic_channel_groups"] = {name: _weighted_mean(residual[m], sigma[m]) for name, m in (
+        ("11", asic_channel == 11), ("13", asic_channel == 13),
+        ("other", (asic_channel != 11) & (asic_channel != 13)))}
+    provenance = source.manifest.get("provenance", {})
+    pattern = provenance.get("asic_pattern_outliers")
+    if pattern is None:
+        # LUTs before FR-19 (v3) list none: computed here from the source's applied delays
+        applied = source.rows[source.rows["apply"]]
+        pattern = {"threshold_ps": pattern_outlier_ps, "computed": True, "channels": tpl.pattern_outliers(
+            tpl.asic_pattern(applied["time_channel"], applied["delay_ps"]), pattern_outlier_ps)}
+    index = {int(c): k for k, c in enumerate(channels)}
+
+    def listed_rows(entries):
+        out_rows = []
+        for entry in entries:
+            channel = int(entry["time_channel"])
+            k = index.get(channel)
+            out_rows.append({"time_channel": channel, "native_ps": native_offsets.get(channel),
+                             "residual_ps": None if k is None else float(residual[k]),
+                             "z": None if k is None else float(z[k])})
+        return out_rows
+    out["source_cross_run_outliers"] = listed_rows(provenance.get("cross_run_outliers") or [])
+    out["source_asic_pattern_outliers"] = listed_rows(pattern["channels"])
+    out["source_asic_pattern_outliers_computed"] = bool(pattern.get("computed", False))
+    return out
+
+
 def _disk_preflight(job, run, inputs, cache_dir):
     done = tc.FeatureCache(cache_dir).files if (Path(cache_dir) / "manifest.json").exists() else {}
     pending = sum(item["path"].stat().st_size for item in inputs if item["index"] not in done)
@@ -379,11 +502,11 @@ def _disk_preflight(job, run, inputs, cache_dir):
     return {"estimated_bytes": int(need), "free_bytes": int(free)}
 
 
-def _prepare_run(job, run, info, lookup, hypothesis, log):
+def _prepare_run(job, run, inputs, corrected, info, lookup, hypothesis, log):
     """Inventory, frozen roles, feature cache and observation set of one run."""
     run_dir = job.work / run.name
     clock = time.perf_counter()
-    inputs, scans = inventory(run, lookup, run_dir, job.workers, log)
+    inputs, scans = inventory(run, inputs, lookup, run_dir, job.workers, log)
     info["stages"]["inventory_seconds"] = time.perf_counter() - clock
     holdout = td.freeze_holdout(scans, validation=job.validation, test=job.test, guard_ps=job.guard_ps)
     if not holdout["qualified"]:
@@ -398,12 +521,16 @@ def _prepare_run(job, run, info, lookup, hypothesis, log):
     info["encal"], info["encal_sha256"] = str(encal), digest
     info["disk"] = _disk_preflight(job, run, inputs, run_dir / f"features{tag}")
     if run.calibration_run is not None:
-        prefix = calibration_prefix(run.calibration_run, inputs, encal)
+        prefix = calibration_prefix(run.calibration_run, inputs, encal, by_index=corrected)
         prefix = {index: prefix[index] for index in job.validation + job.test}
     elif run.energy_calibration_prefix is not None:
         prefix = run.energy_calibration_prefix
     else:
         prefix = {index: 0 for index in job.validation + job.test}
+    if corrected:
+        # owner decision 2026-10-14: corrected splits hold ~1 % fewer records than the calibrated ones
+        prefix = {index: math.ceil(records * (1 + job.corrected_prefix_margin)) for index, records in prefix.items()}
+    info["energy_calibration_prefix_margin"] = job.corrected_prefix_margin if corrected else 0.0
     info["energy_calibration_prefix"] = {str(k): v for k, v in sorted(prefix.items())}
     clock = time.perf_counter()
     features = tc.build_feature_cache(run_dir / f"features{tag}", inputs, config_path=job.config,
@@ -430,14 +557,50 @@ def run_job(job, *, log=_print):
     report = {"schema": "cornell-timing-job-report/1", "job": str(job.path), "job_sha256": job.sha256,
               "started_utc": started_utc, "status": "running", "runs": {}, "stages": {}}
     target = job.work / "job-report.json"
+    composed_lut = job.lut.with_name(job.lut.stem + "_composed.csv")
     try:
-        if job.lut.exists() or job.lut.with_suffix(".json").exists():
-            raise JobError(f"output LUT exists: {job.lut}; choose a new name")
-        if any(path.exists() for path in tpl.plot_paths(job.lut)):
-            raise JobError(f"per-ASIC plots of {job.lut} exist; choose a new name")
+        for lut in (job.lut, composed_lut):
+            if lut.exists() or lut.with_suffix(".json").exists():
+                raise JobError(f"output LUT exists: {lut}; choose a new name")
+            if any(path.exists() for path in tpl.plot_paths(lut)):
+                raise JobError(f"per-ASIC plots of {lut} exist; choose a new name")
         for path in (job.config, job.encal):
             if not path.is_file():
                 raise JobError(f"missing input: {path}")
+        inputs, states = {}, {}
+        for run in job.runs:
+            if (run.ledger is not None and not run.ledger.is_file()) or not run.directory.is_dir():
+                raise JobError(f"{run.name}: missing ledger or directory")
+            for path in (run.encal, run.calibration_run, run.conversion):
+                if path is not None and not path.is_file():
+                    raise JobError(f"{run.name}: missing input: {path}")
+            try:
+                inputs[run.name], correction = run_inputs(run)
+            except (ValueError, OSError) as error:
+                raise JobError(f"{run.name}: {type(error).__name__}: {error}") from error
+            states[run.name] = correction
+        keys = {json.dumps({k: c.get(k) for k in ("state", "native_table_sha256", "source_lut_sha256")})
+                for c in states.values()}
+        if len(keys) != 1:
+            raise JobError(f"runs mix input correction states: {sorted(keys)}")
+        correction = dict(next(iter(states.values())))
+        corrected = correction["state"] != "uncorrected"
+        if corrected:
+            correction["conversion_manifests"] = {name: c["conversion_manifest"] for name, c in states.items()}
+            correction["conversion_manifests_sha256"] = {name: c["conversion_manifest_sha256"]
+                                                         for name, c in states.items()}
+            for name in ("conversion_manifest", "conversion_manifest_sha256"):
+                correction.pop(name)
+        report["input_correction"] = correction
+        if corrected != (job.native_source_lut is not None):
+            raise JobError("native_source_lut is required for natively corrected runs and only for them")
+        if corrected:
+            source = CanonicalLut.read(job.native_source_lut)
+            if source.manifest["table"]["sha256"] != correction["source_lut_sha256"]:
+                raise JobError(f"{job.native_source_lut} is not the source LUT of the native table")
+            native_offsets, skipped, duplicates = read_native_table(correction["native_table"])
+            if skipped or duplicates:
+                raise JobError(f"native table has skipped lines {skipped[:3]} or duplicates {duplicates[:3]}")
         setup = LegacySetup.from_files(job.config, job.encal, root=ROOT)
         _, operational, down = time_channel_classes(setup, job.down_regions)
         _, modules, _, _ = map_factory(str(ROOT / setup.provenance["map"]))
@@ -445,14 +608,10 @@ def run_job(job, *, log=_print):
         hypothesis = GeometryHypothesis.selected(job.config, setup)
         sets = {}
         for run in job.runs:
-            if not run.ledger.is_file() or not run.directory.is_dir():
-                raise JobError(f"{run.name}: missing ledger or directory")
-            for path in (run.encal, run.calibration_run):
-                if path is not None and not path.is_file():
-                    raise JobError(f"{run.name}: missing input: {path}")
             report["runs"][run.name] = {"directory": str(run.directory), "stages": {}}
             try:
-                sets[run.name] = _prepare_run(job, run, report["runs"][run.name], lookup, hypothesis, log)
+                sets[run.name] = _prepare_run(job, run, inputs[run.name], corrected, report["runs"][run.name],
+                                              lookup, hypothesis, log)
             except (ValueError, OSError) as error:
                 if isinstance(error, JobError):
                     raise
@@ -536,12 +695,36 @@ def run_job(job, *, log=_print):
                           for name, s in sets.items()},
                       "cross_run_outliers": report.get("cross_run_outliers"),
                       "asic_pattern_outliers": {"threshold_ps": job.pattern_outlier_ps, "channels": pattern_outliers},
-                      "status": "pooled train solve; native qualification (T9a) pending"}
+                      "status": ("residual of natively corrected data: never exported natively nor applied to "
+                                 "uncorrected data; use the composed LUT" if corrected
+                                 else "pooled train solve of uncorrected data")}
         job.lut.parent.mkdir(parents=True, exist_ok=True)
-        manifest = write_lut(job.lut, solution, provenance)
+        manifest = write_lut(job.lut, solution, provenance, correction if corrected else UNCORRECTED)
         report["lut"] = {"path": str(job.lut), "sha256": manifest["table"]["sha256"], "rows": manifest["table"]["rows"]}
         report["asic_pattern"] = tpl.write_asic_plots(job.lut, applied["time_channel"], applied["delay_ps"],
                                                       threshold_ps=job.pattern_outlier_ps)
+        if corrected:
+            report["second_pass"] = second_pass_report(solution, native_offsets, source, job.pattern_outlier_ps)
+            channels, counts = compose_lut(solution.channels, native_offsets, source)
+            composed = ts.Solution(channels, solution.pairs, {
+                "composition": counts,
+                "status_counts": {name: int((channels["status"] == k).sum())
+                                  for k, name in enumerate(ts.CHANNEL_STATUSES)}})
+            manifest = write_lut(composed_lut, composed, {
+                "composed": "b_native + b_residual where the residual is applied; native offset with the source "
+                            "row where only the source applies; residual alone where only it applies (FR-20)",
+                "job": str(job.path), "job_sha256": job.sha256, "runs": [r.name for r in job.runs],
+                "source_lut": {"path": str(job.native_source_lut), "sha256": correction["source_lut_sha256"]},
+                "native_table": {"path": correction["native_table"], "sha256": correction["native_table_sha256"]},
+                "residual_lut": {"path": str(job.lut), "sha256": report["lut"]["sha256"]},
+                "status": "composed candidate for uncorrected data; the owner decides whether it replaces the "
+                          "source LUT (T9c)"})
+            applied = channels[channels["apply"]]
+            report["composed_lut"] = {
+                "path": str(composed_lut), "sha256": manifest["table"]["sha256"], "composition": counts,
+                "vs_source": compare_delays(composed, ts.Solution(source.rows, solution.pairs)),
+                "asic_pattern": tpl.write_asic_plots(composed_lut, applied["time_channel"], applied["delay_ps"],
+                                                     threshold_ps=job.pattern_outlier_ps)}
         report["status"] = "succeeded"
     except Exception as error:
         report["status"] = "failed"
