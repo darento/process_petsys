@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m src.cornell.timing_roundtrip UNCORRECTED.ldat CORRECTED.ldat TABLE.tsv [--records N]
+    python -m src.cornell.timing_roundtrip UNCORRECTED.ldat CORRECTED.ldat TABLE.tsv [--records N] [--clock-ps 5000]
 
 Both files come from the same RAWF converted without and with the native
 table (``timing_petsys.write_native_table``). PETsys subtracts each hit's
@@ -15,7 +15,12 @@ until that span is passed. Reported, never assumed:
 
 * hypothesis counts for k = 1 (applied once), 0 (not applied), 2 (twice) and
   -1 (sign flipped) on hits of listed channels with ``|b| >= min_offset_ps``;
-* exact equality for hits of unlisted channels and of energies;
+* exact equality of time and energy for hits of unlisted channels;
+* energies of listed hits against PETsys's QDC side effect: ``ProcessHit``
+  subtracts the offset from the hit time but not from the integration end,
+  and ``energy = t_eq - (timeEnd - time)``, so a listed hit's energy moves by
+  ``-b / clock_ps`` (within the 0.05 Newton tolerance of ``t_eq``). Valid for
+  QDC calibration without PETsys energy calibration (Cornell's INI);
 * per-channel median ``t_A - t_B`` against ``b`` (identity);
 * matched records whose detector order swapped, with the corrected ``dt``
   checked against ``dt_A - b_1 + b_2`` in the uncorrected orientation;
@@ -109,7 +114,8 @@ def _nearest(a_channel, a_time, channel, time):
     return best
 
 
-def compare(uncorrected, corrected, offsets, *, tolerance_ps=2.0, min_offset_ps=10.0, edge_ps=1_000_000):
+def compare(uncorrected, corrected, offsets, *, tolerance_ps=2.0, min_offset_ps=10.0, edge_ps=1_000_000,
+            clock_ps=5000.0, energy_tolerance=0.05):
     """Roundtrip report for hit dicts from ``read_hits`` and ``{channel: offset ps}``."""
     a, b = uncorrected, corrected
     offset_b = np.array([offsets.get(int(c), 0.0) for c in b["channel"]])
@@ -151,7 +157,20 @@ def compare(uncorrected, corrected, offsets, *, tolerance_ps=2.0, min_offset_ps=
         "matched": int(unlisted.sum()),
         "changed": int((b["timestamp"][unlisted] != a["timestamp"][index[unlisted]]).sum())}
     both = matched & hit_in
-    report["energy_changed_hits"] = int((b["energy"][both] != a["energy"][index[both]]).sum())
+    d_energy = b["energy"].astype(np.float64)[both] - a["energy"][index[both]]
+    on_listed = listed[both]
+    model = d_energy[on_listed] + offset_b[both][on_listed] / clock_ps
+    within = int((np.abs(model) <= energy_tolerance).sum())
+    x = offset_b[both][on_listed]
+    slope = float(np.polyfit(x, d_energy[on_listed], 1)[0]) if len(x) > 1 and np.ptp(x) > 0 else 0.0
+    report["energy"] = {
+        "model": "listed TIME channels: dE = -b/clock_ps (PETsys QDC ProcessHit); unlisted: unchanged",
+        "clock_ps": clock_ps, "tolerance": energy_tolerance,
+        "unlisted_changed": int((d_energy[~on_listed] != 0).sum()),
+        "listed_matched": int(on_listed.sum()), "listed_within_model": within,
+        "listed_outside_model": int(on_listed.sum()) - within,
+        "model_residual_pct_1_50_99": np.percentile(model, [1, 50, 99]).round(4).tolist() if len(model) else None,
+        "fitted_clock_ps": round(-1 / slope, 1) if slope else None}
 
     # record level: every hit has a candidate (same channel, restored time within tolerance) in one
     # uncorrected record of the same hit count. PETsys may write one photon into several coincidence
@@ -231,7 +250,8 @@ def compare(uncorrected, corrected, offsets, *, tolerance_ps=2.0, min_offset_ps=
     other = sum(v for k, v in counts.items() if k != "applied once")
     report["passed"] = bool(
         once > 0 and once >= 0.99 * (once + other) and report["unlisted_channel_hits"]["changed"] == 0
-        and report["energy_changed_hits"] == 0 and dt_bad == 0
+        and report["energy"]["unlisted_changed"] == 0 and within >= 0.99 * report["energy"]["listed_matched"]
+        and dt_bad == 0
         and (not deviation or max(deviation) <= tolerance_ps))
     return report
 
@@ -242,6 +262,8 @@ def main(argv=None):
     parser.add_argument("corrected", type=Path, help="LDAT of the same RAWF converted with the table")
     parser.add_argument("table", type=Path, help="native time-offset TSV used for the corrected conversion")
     parser.add_argument("--records", type=int, default=500_000, help="corrected records compared (default 500000)")
+    parser.add_argument("--clock-ps", type=float, default=5000.0,
+                        help="acquisition clock period in ps for the energy model (default 5000, 200 MHz)")
     args = parser.parse_args(argv)
     offsets, skipped, duplicates = read_native_table(args.table)
     if skipped or duplicates:
@@ -250,7 +272,7 @@ def main(argv=None):
     corrected, n_b = read_hits(args.corrected, max_records=args.records)
     restored_end = int((corrected["timestamp"] + np.array([offsets.get(int(c), 0.0) for c in corrected["channel"]])).max())
     uncorrected, n_a = read_hits(args.uncorrected, stop_after_ps=restored_end)
-    report = compare(uncorrected, corrected, offsets)
+    report = compare(uncorrected, corrected, offsets, clock_ps=args.clock_ps)
     report["files"] = {"uncorrected": str(args.uncorrected), "corrected": str(args.corrected),
                        "table": str(args.table), "records_read": {"uncorrected": n_a, "corrected": n_b}}
     print(json.dumps(report, indent=1))

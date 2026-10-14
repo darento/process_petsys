@@ -2,8 +2,10 @@
 
 A synthetic "conversion" draws each hit's exact time T (ps, double) once; the
 uncorrected file stores trunc(T) and the corrected one trunc(T - b) for listed
-channels, as PETsys's ProcessHit + compact writer do. Records may change
-detector order or exist in only one conversion (grouping/window changes).
+channels, as PETsys's ProcessHit + compact writer do. In QDC mode ProcessHit
+also lowers a listed hit's energy by b/T (T = 5000 ps), because the
+integration end keeps the uncorrected time. Records may change detector order
+or exist in only one conversion (grouping/window changes).
 """
 import json
 
@@ -36,14 +38,19 @@ def physical_events(rng, count):
     return events
 
 
-def convert(events, factor=1.0, *, swap=(), drop=(), extra=()):
-    """Records as PETsys would write them with offsets scaled by ``factor`` (1 = applied once)."""
+def convert(events, factor=1.0, *, swap=(), drop=(), extra=(), energy_factor=None):
+    """Records as PETsys would write them with offsets scaled by ``factor`` (1 = applied once).
+
+    Listed energies move by ``-energy_factor * b / 5000`` (default ``factor``, as ProcessHit does).
+    """
+    energy_factor = factor if energy_factor is None else energy_factor
     records = []
     for k, sides in enumerate(events):
         if k in drop:
             continue
-        out = [[(int(np.floor(t - factor * np.float32(OFFSETS.get(c, 0.0)))), e, c) for c, t, e in side]
-               for side in sides]
+        out = [[(int(np.floor(t - factor * np.float32(OFFSETS.get(c, 0.0)))),
+                 float(np.float32(e - energy_factor * np.float32(OFFSETS.get(c, 0.0)) / 5000)), c)
+                for c, t, e in side] for side in sides]
         records.append((out[1], out[0]) if k in swap else (out[0], out[1]))
     return records + list(extra)
 
@@ -64,7 +71,10 @@ def test_applies_correction_once(tmp_path):
     low, high = report["hits"]["residual_ps_min_max"]
     assert -1 <= low and high <= 1  # integer-ps truncation of t and t - b
     assert report["unlisted_channel_hits"]["matched"] > 1000 and report["unlisted_channel_hits"]["changed"] == 0
-    assert report["energy_changed_hits"] == 0 and report["channels"]["max_abs_median_minus_offset_ps"] <= 1
+    energy = report["energy"]
+    assert energy["unlisted_changed"] == 0 and energy["listed_within_model"] == energy["listed_matched"] > 1000
+    assert energy["fitted_clock_ps"] == pytest.approx(5000, rel=1e-3)
+    assert report["channels"]["max_abs_median_minus_offset_ps"] <= 1
     assert report["channels"]["listed_seen"] == len(OFFSETS)
     assert report["records"]["only_corrected"] == report["records"]["only_uncorrected"] == 0
     # wrong conversions are diagnosed, never passed
@@ -74,6 +84,18 @@ def test_applies_correction_once(tmp_path):
         counts = result["hypotheses_on_listed_hits"]
         assert not result["passed"] and counts["applied once"] <= counts["hits"] // 1000, name
         assert counts[name] == counts["hits"], name
+    # listed energies unchanged (no PETsys side effect) or an unlisted energy changed: not the model
+    for kwargs in ({"energy_factor": 0.0}, {"energy_factor": 3.0}):
+        bad = write(tmp_path / "energy.ldat", convert(events, 1.0, **kwargs))
+        result = tr.compare(hits_of(a), hits_of(bad), OFFSETS)
+        assert not result["passed"] and result["energy"]["listed_outside_model"] > 0.5 * result["energy"]["listed_matched"]
+        (tmp_path / "energy.ldat").unlink()
+    records = convert(events, 1.0)
+    unlisted = next(k for k in range(len(records) // 2, len(records)) if records[k][0][0][2] not in OFFSETS)
+    (t, e, c), *rest = records[unlisted][0]
+    records[unlisted] = ([(t, e + 1.0, c), *rest], records[unlisted][1])
+    result = tr.compare(hits_of(a), hits_of(write(tmp_path / "unlisted.ldat", records)), OFFSETS)
+    assert not result["passed"] and result["energy"]["unlisted_changed"] == 1
 
 
 def test_membership_changes_and_endpoint_swaps(tmp_path, capsys):
