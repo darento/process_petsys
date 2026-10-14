@@ -710,6 +710,9 @@ def run_job(job, *, log=_print):
                 "composition": counts,
                 "status_counts": {name: int((channels["status"] == k).sum())
                                   for k, name in enumerate(ts.CHANNEL_STATUSES)}})
+            applied = channels[channels["apply"]]
+            composed_pattern = tpl.pattern_outliers(tpl.asic_pattern(applied["time_channel"], applied["delay_ps"]),
+                                                    job.pattern_outlier_ps)
             manifest = write_lut(composed_lut, composed, {
                 "composed": "b_native + b_residual where the residual is applied; native offset with the source "
                             "row where only the source applies; residual alone where only it applies (FR-20)",
@@ -717,9 +720,11 @@ def run_job(job, *, log=_print):
                 "source_lut": {"path": str(job.native_source_lut), "sha256": correction["source_lut_sha256"]},
                 "native_table": {"path": correction["native_table"], "sha256": correction["native_table_sha256"]},
                 "residual_lut": {"path": str(job.lut), "sha256": report["lut"]["sha256"]},
+                # second-pass listings, as the source LUT carries the first pass's (bug-composed-provenance)
+                "cross_run_outliers": report.get("cross_run_outliers"),
+                "asic_pattern_outliers": {"threshold_ps": job.pattern_outlier_ps, "channels": composed_pattern},
                 "status": "composed candidate for uncorrected data; the owner decides whether it replaces the "
                           "source LUT (T9c)"})
-            applied = channels[channels["apply"]]
             report["composed_lut"] = {
                 "path": str(composed_lut), "sha256": manifest["table"]["sha256"], "composition": counts,
                 "vs_source": compare_delays(composed, ts.Solution(source.rows, solution.pairs)),

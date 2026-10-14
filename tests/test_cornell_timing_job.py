@@ -329,7 +329,7 @@ def test_second_pass_on_corrected_runs(runs, finished, tmp_path):
     cb |= {"encal": str(own), "energy_calibration_prefix": {"calibration_run": str(tmp_path / "cb_cal.json")}}
 
     job = tj.load_job(job_file(tmp_path / "job.json", base, [ca, cb], native_source_lut=str(first.lut),
-                               lut="out/residual.csv"))
+                               lut="out/residual.csv", per_run_solves=True))
     report = tj.run_job(job, log=lambda message: None)
     assert report["status"] == "succeeded"
     lut_sha = json.loads(first.lut.with_suffix(".json").read_text())["table"]["sha256"]
@@ -360,7 +360,8 @@ def test_second_pass_on_corrected_runs(runs, finished, tmp_path):
     assert report["composed_lut"]["sha256"] == composed.manifest["table"]["sha256"]
     assert composed.manifest["provenance"]["residual_lut"]["sha256"] == report["lut"]["sha256"]
     assert all(p.exists() for p in tpl.plot_paths(composed_path))
-    assert write_native_table(composed_path, tmp_path / "time_offset_v4.tsv")["table"]["rows"] == 2
+    native_v4 = write_native_table(composed_path, tmp_path / "time_offset_v4.tsv")
+    assert native_v4["table"]["rows"] == 2
     assert report["second_pass"]["applied_channels"] == 2 and report["second_pass"]["listed_in_native_table"] == 2
 
     # refusals before any work: mixed states, missing/unexpected/wrong source LUT, ledger and conversion together
@@ -376,6 +377,23 @@ def test_second_pass_on_corrected_runs(runs, finished, tmp_path):
         assert not (tmp_path / "bad" / "ca").exists() and not (tmp_path / "out/bad.csv").exists()
     with pytest.raises(tj.JobError, match="run entries"):
         tj.load_job(job_file(tmp_path / "bad.json", base, [dict(ca, ledger=items[0]["ledger"])]))
+
+
+@pytest.mark.fr("bug-composed-provenance")
+def test_composed_lut_carries_second_pass_listings(runs, finished, tmp_path, monkeypatch):
+    """The composed LUT lists the second pass's cross-run and ASIC pattern outliers (v4 manifest showed 0)."""
+    listed_run = [{"time_channel": 4877, "runs": {"r7": {"difference_ps": 7944.5, "z": 66.8}}}]
+    monkeypatch.setattr(tj.ts, "cross_run_outliers", lambda *args, **kwargs: listed_run)
+    test_second_pass_on_corrected_runs(runs, finished, tmp_path)
+    report = json.loads((tmp_path / "work" / "job-report.json").read_text())
+    composed = CanonicalLut.read(tmp_path / "out" / "residual_composed.csv")
+    provenance = composed.manifest["provenance"]
+    assert report["cross_run_outliers"] == listed_run
+    assert provenance["cross_run_outliers"] == report["cross_run_outliers"]
+    listed = [o["time_channel"] for o in report["composed_lut"]["asic_pattern"]["outliers"]]
+    assert [o["time_channel"] for o in provenance["asic_pattern_outliers"]["channels"]] == listed
+    native = json.loads((tmp_path / "time_offset_v4.json").read_text())
+    assert native["policy"]["listed_cross_run_outliers"] == len(report["cross_run_outliers"])
 
 
 @pytest.mark.fr("008-FR-20")
