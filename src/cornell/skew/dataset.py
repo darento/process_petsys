@@ -175,8 +175,8 @@ def freeze_holdout(scans, *, validation=(5, 11), test=(3, 8, 14), guard_ps=1_000
             "interpretation": "record-anchor intervals; raw scan counts include the excluded edges"}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew inventory", description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--prefix", required=True)
@@ -186,7 +186,7 @@ def main():
     parser.add_argument("--chunk-bytes", type=int, default=MAX_CHUNK_BYTES)
     parser.add_argument("--full-hash", action="store_true")
     parser.add_argument("--unavailable-region", action="append", default=[], help="acquisition-specific SM:MM")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("output already exists; use a new name")
     inputs = ledger_inputs(args.ledger, args.directory, args.prefix)
@@ -247,6 +247,3 @@ def main():
     os.link(partial, args.output)
     partial.unlink()
 
-
-if __name__ == "__main__":
-    main()

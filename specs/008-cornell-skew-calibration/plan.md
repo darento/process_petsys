@@ -87,15 +87,24 @@ Local planning probe, Windows, synthetic 90,000 variable-length pairs / 990,000 
 
 ## 2. Create a reusable bounded ingestion core
 
-Proposed tracked components:
+Tracked components (layout after T10, owner decision 2026-10-14; modules were `src/cornell/timing_*.py` before):
 
 ```text
-src/ldat_stream.py             validated record boundaries and compiled hit batches
-src/cornell/timing_ingest.py   reference/compiled selection, calibration and cache
-src/cornell/timing_geometry.py measured detector transforms and finite-shell templates
-src/cornell/timing_solver.py   pair fits, graph, gauge, sparse solve, optional refinement
-src/cornell/timing_report.py   provenance, quality status, held-out timing diagnostics
-scripts_cornell/cornell_skew_cal_bigdata.py  thin local entry point
+src/ldat_stream.py                validated record boundaries and compiled hit batches
+src/cornell/skew/__main__.py      the one command: python -m src.cornell.skew {run,validate,plot,export,conversion,roundtrip}
+src/cornell/skew/dataset.py       raw inventory, ledger inputs, frozen holdout (dev command: inventory)
+src/cornell/skew/geometry.py      detector transforms and finite-shell intervals/TOF
+src/cornell/skew/ingest.py        reference/compiled selection and calibration
+src/cornell/skew/cache.py         feature and observation caches
+src/cornell/skew/pairs.py         two-branch pair fits
+src/cornell/skew/solver.py        graph, gauge, sparse solve, reproducibility floor
+src/cornell/skew/lut.py           canonical LUT, offline sign contract, native table, conversion manifest, composition
+src/cornell/skew/plots.py         per-ASIC diagnostics
+src/cornell/skew/job.py           pooled multi-run job and second pass
+src/cornell/skew/validation.py    frozen-LUT test evaluation
+src/cornell/skew/roundtrip.py     native conversion roundtrip
+src/cornell/skew/benchmark.py     decoder baseline (development)
+scripts_cornell/cornell_skew_cal_bigdata.py  thin local launcher (untracked)
 ```
 
 Extract/delegate shared low-level logic rather than copying private Inspector functions into another script. Initially preserve Inspector's API and results. A direct call to `process_file_fast` is unsuitable for unbounded calibration: it collects accepted chunk arrays and concatenates all file rows. Streaming must yield/reduce each chunk immediately.
@@ -179,10 +188,10 @@ Validate finite thickness, miscentering, axial edges, asymmetric peak amplitudes
 | FR-10, FR-12 | Sparse solve, graph/gauge, uncertainties, channel-status output |
 | FR-11 | Optional template/likelihood refinement, held-out decision |
 | FR-13 | Independent CTR pipeline and frozen evaluation manifest |
-| FR-18 | `src/cornell/timing_job.py`: job file, per-run inventory/roles/caches, pooled pair fits/solve/LUT, per-run energy-peak and held-out residual reports |
-| FR-19 | `src/cornell/timing_plots.py`: per-ASIC decoding, pattern residuals and outlier list, PNG plots and summary; called by `timing_job` after the LUT and as `python -m src.cornell.timing_plots LUT.csv` |
-| FR-15 | Thin launcher, regression/compatibility tests, retirement checklist |
-| FR-16 | Run 7 inventory, selection/coverage report, fixed holdout manifest and uncertainty/convergence assessment; `src/cornell/timing_validation.py`: frozen-LUT test-file pair residuals (once), nested event-fraction training-size study and per-channel sufficiency |
-| FR-17 | Canonical channel LUT; `timing_petsys.write_native_table`/`read_native_table`/`activated_ini` native adapter; `src/cornell/timing_roundtrip.py` matched-event conversion roundtrip |
+| FR-18 | `src/cornell/skew/job.py`: job file, per-run inventory/roles/caches, pooled pair fits/solve/LUT, per-run energy-peak and held-out residual reports |
+| FR-19 | `src/cornell/skew/plots.py`: per-ASIC decoding, pattern residuals and outlier list, PNG plots and summary; called by the job after the LUT and as `python -m src.cornell.skew plot LUT.csv` |
+| FR-15 | `src/cornell/skew/__main__.py` one command; thin local launcher; `tests/test_cornell_timing_cli.py`; retirement checklist |
+| FR-16 | Run 7 inventory, selection/coverage report, fixed holdout manifest and uncertainty/convergence assessment; `src/cornell/skew/validation.py`: frozen-LUT test-file pair residuals (once), nested event-fraction training-size study and per-channel sufficiency |
+| FR-17 | Canonical channel LUT; `skew/lut.py` `write_native_table`/`read_native_table`/`activated_ini` native adapter, conversion manifest and `compose_lut` (FR-20); `src/cornell/skew/roundtrip.py` matched-event conversion roundtrip |
 
 Implement in the [task order](tasks.md). First deliver baseline/sign/geometry agreement and a fast streaming reader; then change the estimator. Performance and physics changes need separately attributable comparisons. Input files, precise interaction/source geometry and installed converter qualification remain pending. Independent known-position CTR validation is additional to annulus LUT qualification.

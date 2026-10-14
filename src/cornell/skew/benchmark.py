@@ -177,14 +177,14 @@ def benchmark_prefix(prefix, *, repeats=5):
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew benchmark", description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("--max-records", type=int, default=10_000)
     parser.add_argument("--max-bytes", type=int, default=4 * 1024 * 1024)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.output.resolve() == args.input.resolve():
         parser.error("output must differ from input")
     # Exclusive creation preserves previous benchmark reports and all user files.
@@ -193,6 +193,3 @@ def main():
         json.dump(benchmark_prefix(prefix, repeats=args.repeats), output, indent=2)
         output.write("\n")
 
-
-if __name__ == "__main__":
-    main()

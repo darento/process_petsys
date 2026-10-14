@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -u -m src.cornell.timing_validation VALIDATION.json
+    python -u -m src.cornell.skew validate VALIDATION.json
 
 The validation file names a timing job file and the canonical LUT that job
 wrote. The LUT is frozen: its manifest must carry the job's SHA-256 and the
@@ -42,13 +42,13 @@ import time
 
 import numpy as np
 
-from src.cornell import timing_cache as tc
-from src.cornell import timing_job as tj
-from src.cornell import timing_pairs as tp
-from src.cornell import timing_plots as tpl
-from src.cornell import timing_solver as ts
-from src.cornell.timing_ingest import LegacySetup, time_channel_classes
-from src.cornell.timing_petsys import CanonicalLut
+from src.cornell.skew import cache as tc
+from src.cornell.skew import job as tj
+from src.cornell.skew import pairs as tp
+from src.cornell.skew import plots as tpl
+from src.cornell.skew import solver as ts
+from src.cornell.skew.ingest import LegacySetup, time_channel_classes
+from src.cornell.skew.lut import CanonicalLut
 
 SCHEMA = "cornell-timing-validation/1"
 DEFAULT_FRACTIONS = (1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1.0)
@@ -334,7 +334,7 @@ def run_validation(spec, *, log=tj._print):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Frozen-LUT validation of a Cornell timing job (spec 008 T9).")
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew validate", description="Frozen-LUT validation of a Cornell timing job (spec 008 T9).")
     parser.add_argument("validation", type=Path, help="validation JSON file")
     args = parser.parse_args(argv)
     try:
@@ -348,6 +348,3 @@ def main(argv=None):
                      indent=1, default=float))
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(main())

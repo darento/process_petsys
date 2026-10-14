@@ -4,9 +4,9 @@ import json
 import numpy as np
 import pytest
 
-from src.cornell import timing_plots as tpl
-from src.cornell import timing_solver as ts
-from src.cornell.timing_petsys import write_lut
+from src.cornell.skew import plots as tpl
+from src.cornell.skew import solver as ts
+from src.cornell.skew.lut import write_lut
 from src.utils import get_absolute_id
 
 pytestmark = pytest.mark.fr("008-FR-19")

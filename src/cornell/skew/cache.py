@@ -32,10 +32,10 @@ import shutil
 import numpy as np
 import yaml
 
-from src.cornell import timing_geometry, timing_ingest
+from src.cornell.skew import geometry as skew_geometry, ingest
 from src import ldat_stream
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: sources hashed under src/cornell/skew/ (T10); version-1 caches are refused
 FEATURE_DTYPE = np.dtype([
     ("file", "<i2"), ("record", "<i8"), ("time_channel_1", "<i4"), ("time_channel_2", "<i4"),
     ("sm_1", "<i2"), ("mm_1", "<i2"), ("sm_2", "<i2"), ("mm_2", "<i2"), ("slab_1", "i1"), ("slab_2", "i1"),
@@ -89,9 +89,9 @@ def feature_rows(features, file_index):
     """``FeatureBatch`` rows as ``FEATURE_DTYPE`` (keV rounded to float32)."""
     rows = np.empty(len(features.ints), FEATURE_DTYPE)
     rows["file"] = file_index
-    for name in timing_ingest.FEATURE_INT:
+    for name in ingest.FEATURE_INT:
         rows[name] = features.column(name)
-    for name in timing_ingest.FEATURE_FLOAT:
+    for name in ingest.FEATURE_FLOAT:
         rows[name] = features.column(name)
     return rows
 
@@ -123,15 +123,15 @@ def _compiled_lookup(config_path, encal_path, root):
                                for path in (Path(config_path), Path(root) / config["map_file"], Path(encal_path)))
     if key not in _LOOKUP:
         _LOOKUP.clear()
-        setup = timing_ingest.LegacySetup.from_files(config_path, encal_path, root=root)
-        _LOOKUP[key] = timing_ingest.CompiledLookup.from_setup(setup)
+        setup = ingest.LegacySetup.from_files(config_path, encal_path, root=root)
+        _LOOKUP[key] = ingest.CompiledLookup.from_setup(setup)
     return _LOOKUP[key]
 
 
 def _ingest_file(directory, item, config_path, encal_path, root, partition, seed, max_records, block_rows):
     """Worker: one file into ``features/fNNN``; returns the small ``done`` record."""
     lookup = _compiled_lookup(config_path, encal_path, root)
-    partition = timing_ingest.Partition(**partition)
+    partition = ingest.Partition(**partition)
     index, path = item["index"], Path(item["path"])
     final = Path(directory) / "features" / f"f{index:03d}"
     work = final.with_name(final.name + ".partial")
@@ -149,11 +149,11 @@ def _ingest_file(directory, item, config_path, encal_path, root, partition, seed
         blocks.append({"name": name, "rows": int(len(rows)), "sha256": _sha256(work / name)})
 
     pending = 0
-    for features in timing_ingest.production_batches(path, lookup, partition, max_records=max_records, seed=seed):
+    for features in ingest.production_batches(path, lookup, partition, max_records=max_records, seed=seed):
         records += len(features.codes)
         codes, found = np.unique(features.codes, return_counts=True)
         for code, n in zip(codes.tolist(), found.tolist()):
-            label = timing_ingest.code_label(code)
+            label = ingest.code_label(code)
             counts[label] = counts.get(label, 0) + n
         if len(features.ints):
             buffered.append(feature_rows(features, index))
@@ -178,7 +178,7 @@ def build_feature_cache(directory, inputs, *, config_path, encal_path, root, hol
                         energy_calibration_prefix, seed=0, max_records=None, workers=1, block_rows=1_000_000):
     """Ingest each input once into level-1 blocks; complete files are reused, never redone.
 
-    ``inputs`` are ``{"index", "path"}`` items (``timing_dataset.ledger_inputs``).
+    ``inputs`` are ``{"index", "path"}`` items (``dataset.ledger_inputs``).
     One process pool serves all pending files; workers return metadata only.
     """
     root = Path(root)
@@ -188,7 +188,7 @@ def build_feature_cache(directory, inputs, *, config_path, encal_path, root, hol
         stat = Path(item["path"]).stat()
         items.append({"index": int(item["index"]), "path": str(item["path"]), "name": Path(item["path"]).name,
                       "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns})
-    partitions = {item["index"]: asdict(timing_ingest.Partition.from_holdout(
+    partitions = {item["index"]: asdict(ingest.Partition.from_holdout(
         holdout, item["index"], energy_calibration_prefix)) for item in items}
     fingerprint = {
         "schema_version": SCHEMA_VERSION, "kind": "cornell timing features",
@@ -196,12 +196,12 @@ def build_feature_cache(directory, inputs, *, config_path, encal_path, root, hol
         "config_sha256": _sha256(config_path), "map_sha256": _sha256(root / config["map_file"]),
         "encal_sha256": _sha256(encal_path),
         "sources_sha256": {name: _sha256(module.__file__) for name, module in
-                           (("timing_ingest", timing_ingest), ("ldat_stream", ldat_stream))},
+                           (("ingest", ingest), ("ldat_stream", ldat_stream))},
         "partitions": {str(k): v for k, v in partitions.items()}, "seed": seed, "max_records": max_records,
         "feature_dtype": FEATURE_DTYPE.descr}
     fingerprint = _plain(fingerprint)
     manifest = {"fingerprint": fingerprint, "fingerprint_sha256": _digest(fingerprint),
-                "labels": list(timing_ingest.PRODUCTION_LABELS),
+                "labels": list(ingest.PRODUCTION_LABELS),
                 "notes": ["rows: holdout-kept records passing every pre-geometry cut",
                           "energy_kev stored as float32"]}
     _prepare(directory, manifest)
@@ -318,7 +318,7 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
                    "features_sha256": feature_cache.manifest["fingerprint_sha256"],
                    "hypothesis": describe_hypothesis(hypothesis), "partitions": partitions,
                    "sources_sha256": {name: _sha256(module.__file__) for name, module in
-                                      (("timing_ingest", timing_ingest), ("timing_geometry", timing_geometry))},
+                                      (("ingest", ingest), ("geometry", skew_geometry))},
                    "observation_dtype": OBSERVATION_DTYPE.descr}
     fingerprint = _plain(fingerprint)
     if directory.exists():
@@ -339,7 +339,7 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
     chunks = [0] * partitions
     keys = [np.empty(0, np.int64) for _ in range(partitions)]
     counts = [np.empty(0, np.uint64) for _ in range(partitions)]
-    geometry = {role: dict.fromkeys((timing_ingest.ACCEPTED,) + timing_ingest.GEOMETRY_REJECTIONS, 0)
+    geometry = {role: dict.fromkeys((ingest.ACCEPTED,) + ingest.GEOMETRY_REJECTIONS, 0)
                 for role in ROLES}
 
     def spill(p):
@@ -353,7 +353,7 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
     for _, role, block in feature_cache.blocks():
         for start in range(0, len(block), slice_rows):
             rows = np.array(block[start:start + slice_rows])
-            result = timing_ingest.apply_geometry(_Columns(rows), hypothesis)
+            result = ingest.apply_geometry(_Columns(rows), hypothesis)
             for label, n in result.counts().items():
                 geometry[role][label] += n
             observations = canonical_observations(rows, result, role)

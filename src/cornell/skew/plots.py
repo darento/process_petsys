@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m src.cornell.timing_plots LUT.csv [--threshold-ps 1000]
+    python -m src.cornell.skew plot LUT.csv [--threshold-ps 1000]
 
 Global TIME-channel IDs decode into PETsys port/slave/chip/channel
 (``src.utils.get_electronics_nums``); one ASIC is one (port, slave, chip).
@@ -224,9 +224,9 @@ def write_asic_plots(lut_path, time_channels, delays_ps, *, threshold_ps=DEFAULT
 
 
 def main(argv=None):
-    from src.cornell.timing_petsys import CanonicalLut, LutError
+    from src.cornell.skew.lut import CanonicalLut, LutError
 
-    parser = argparse.ArgumentParser(description="Per-ASIC skew plots of a canonical Cornell delay LUT (spec 008).")
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew plot", description="Per-ASIC skew plots of a canonical Cornell delay LUT (spec 008).")
     parser.add_argument("lut", type=Path, help="canonical LUT CSV (its .json manifest must sit next to it)")
     parser.add_argument("--threshold-ps", type=float, default=DEFAULT_THRESHOLD_PS,
                         help="list channels whose residual from the per-ASIC pattern exceeds this (ps)")
@@ -242,6 +242,3 @@ def main(argv=None):
     print(json.dumps({k: result[k] for k in ("files", "summary", "outliers")}, indent=1))
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(main())

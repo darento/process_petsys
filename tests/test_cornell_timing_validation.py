@@ -4,12 +4,12 @@ import json
 import numpy as np
 import pytest
 
-from src.cornell import timing_cache as tc
-from src.cornell import timing_job as tj
-from src.cornell import timing_pairs as tp
-from src.cornell import timing_solver as ts
-from src.cornell import timing_validation as tv
-from test_cornell_timing_job import job_file, runs  # noqa: F401  (synthetic two-run job fixture)
+from src.cornell.skew import cache as tc
+from src.cornell.skew import job as tj
+from src.cornell.skew import pairs as tp
+from src.cornell.skew import solver as ts
+from src.cornell.skew import validation as tv
+from cornell_timing_helpers import job_file, runs  # noqa: F401  (synthetic two-run job fixture)
 
 pytestmark = pytest.mark.fr("008-FR-16")
 
@@ -101,7 +101,7 @@ def test_frozen_lut_binding_and_test_evaluated_once(runs, tmp_path, monkeypatch)
     def no_reads(*args, **kwargs):
         raise AssertionError("LDAT read during validation")
     monkeypatch.setattr(tj.td, "scan_file", no_reads)
-    monkeypatch.setattr(tc.timing_ingest, "LdatStream", no_reads)
+    monkeypatch.setattr(tc.ingest, "LdatStream", no_reads)
     marker_seen, fit = [], tp.fit_observation_set
 
     def watched(observations, model, *args, roles=(0,), **kwargs):

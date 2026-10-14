@@ -39,9 +39,9 @@ from src import utils
 from src.detector_features import calculate_centroid
 from src.filters import filter_coincidence, filter_min_ch, filter_total_energy
 from src.ldat_inspector.fastread import _pow
-from src.cornell.timing_geometry import (C_MM_PER_PS, NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
-                                         SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, AnnularSource,
-                                         FacetedDetectorFrame, GeometryError, build_faceted_detector_frames)
+from src.cornell.skew.geometry import (C_MM_PER_PS, NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
+                                       SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, AnnularSource,
+                                       FacetedDetectorFrame, GeometryError, build_faceted_detector_frames)
 from src.ldat_stream import LdatStream
 from src.mapping_generator import ChannelType, map_factory
 
@@ -658,7 +658,7 @@ class Partition:
 
     @classmethod
     def from_holdout(cls, holdout, file_index, energy_calibration_prefix):
-        """From ``timing_dataset.freeze_holdout`` output; held-out files need a prefix bound."""
+        """From ``dataset.freeze_holdout`` output; held-out files need a prefix bound."""
         if not holdout.get("qualified") or not holdout.get("roles_frozen_before_fitting"):
             raise ValueError("holdout is not qualified and frozen")
         matches = [p for p in holdout["partitions"] if p["index"] == file_index]
@@ -682,7 +682,7 @@ def holdout_codes(batch, partition):
     """Per-record holdout code: prefix first, then anchor outside the guarded interval.
 
     The anchor is the record's first hit (detector 1, else detector 2), as in
-    ``timing_dataset``; a record without hits has no anchor and is guarded out.
+    ``dataset``; a record without hits has no anchor and is guarded out.
     """
     records = batch.first_record + np.arange(batch.count, dtype=np.int64)
     has_hits = (batch.n1.astype(np.int64) + batch.n2) > 0
@@ -808,7 +808,7 @@ def _add_bound(bounds, n, t):
 
 @numba.njit(cache=True)
 def _shell(p, q, center, axis, r_in, r_out, z_min, z_max, fractions, tof):
-    """timing_geometry.shell_intervals port: segment count, -1 for a degenerate LOR."""
+    """geometry.shell_intervals port: segment count, -1 for a degenerate LOR."""
     d0, d1, d2 = q[0] - p[0], q[1] - p[1], q[2] - p[2]
     length = math.sqrt(d0 * d0 + d1 * d1 + d2 * d2)
     if not (np.isfinite(length) and length > 0):

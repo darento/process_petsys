@@ -2,10 +2,10 @@
 
 Usage::
 
-    python -m src.cornell.timing_roundtrip UNCORRECTED.ldat CORRECTED.ldat TABLE.tsv [--records N] [--clock-ps 5000]
+    python -m src.cornell.skew roundtrip UNCORRECTED.ldat CORRECTED.ldat TABLE.tsv [--records N] [--clock-ps 5000]
 
 Both files come from the same RAWF converted without and with the native
-table (``timing_petsys.write_native_table``). PETsys subtracts each hit's
+table (``lut.write_native_table``). PETsys subtracts each hit's
 offset before grouping, so the compact writer gives ``t_B = trunc((T - b)
 Tps)`` against ``t_A = trunc(T Tps)``: a corrected hit sits within 1 ps of
 ``t_A - b``. The first ``records`` corrected records are matched hit by hit
@@ -36,7 +36,7 @@ import sys
 
 import numpy as np
 
-from src.cornell.timing_petsys import read_native_table
+from src.cornell.skew.lut import read_native_table
 from src.ldat_stream import LdatStream
 
 HYPOTHESES = {"applied once": 1, "not applied": 0, "applied twice": 2, "sign flipped": -1}
@@ -257,7 +257,7 @@ def compare(uncorrected, corrected, offsets, *, tolerance_ps=2.0, min_offset_ps=
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Matched-event check of a native PETsys time-offset conversion.")
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew roundtrip", description="Matched-event check of a native PETsys time-offset conversion.")
     parser.add_argument("uncorrected", type=Path, help="LDAT converted without the table")
     parser.add_argument("corrected", type=Path, help="LDAT of the same RAWF converted with the table")
     parser.add_argument("table", type=Path, help="native time-offset TSV used for the corrected conversion")
@@ -278,6 +278,3 @@ def main(argv=None):
     print(json.dumps(report, indent=1))
     return 0 if report["passed"] else 1
 
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -28,7 +28,7 @@ from scipy.optimize import nnls
 import scipy.sparse as sp
 from scipy.sparse.csgraph import connected_components
 
-from src.cornell import timing_pairs as tp
+from src.cornell.skew import pairs as tp
 
 CHANNEL_STATUSES = ("calibrated", "low statistics", "insufficient statistics", "disconnected", "ambiguous",
                     "failed fit", "unobserved", "hardware unavailable")

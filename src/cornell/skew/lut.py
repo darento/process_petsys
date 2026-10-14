@@ -37,14 +37,14 @@ import hashlib
 import io
 import json
 import math
+from numbers import Integral, Real
 from pathlib import Path
 import re
 import sys
 
 import numpy as np
 
-from src.cornell import timing_solver as ts
-from src.cornell.timing_convention import corrected_dt_ps
+from src.cornell.skew import solver as ts
 from src.utils import get_absolute_id, get_electronics_nums
 
 SCHEMA = "cornell-time-delay-lut/1"
@@ -53,6 +53,19 @@ COLUMNS = ("time_channel", "delay_ps", "sigma_ps", "raw_sigma_ps", "status", "ap
 CONVENTION = "subtractive: t_corrected = t - delay_ps; dt_corrected = (t_i - t_j) - delay_i + delay_j"
 SCOPE = ("operational and hardware-unavailable TIME channels of the selected map; channels absent from the "
          "table are never corrected")
+
+
+
+# offline difference contract (T2a): positive subtractive delays, integers subtracted first
+def corrected_dt_ps(timestamp_i, timestamp_j, delay_i_ps, delay_j_ps):
+    """y_corrected = (t_i-t_j) - b_i + b_j; subtract integers before floats."""
+    if any(isinstance(t, bool) or not isinstance(t, Integral) for t in (timestamp_i, timestamp_j)):
+        raise ValueError("raw compact timestamps must be integers in ps")
+    if any(isinstance(b, bool) or not isinstance(b, Real) or not math.isfinite(b)
+           for b in (delay_i_ps, delay_j_ps)):
+        raise ValueError("explicit finite delays in ps required")
+    # Python ints also avoid signed int64 overflow for an extreme difference.
+    return math.fsum((float(int(timestamp_i) - int(timestamp_j)), -float(delay_i_ps), float(delay_j_ps)))
 
 
 UNCORRECTED = {"state": "uncorrected"}
@@ -397,10 +410,10 @@ def compose_lut(residual, native_offsets, source):
     return out, counts
 
 
-def _conversion_main(argv):
+def conversion_main(argv=None):
     import argparse
 
-    parser = argparse.ArgumentParser(prog="python -m src.cornell.timing_petsys conversion",
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew conversion",
                                      description="Declare a PETsys conversion made with a native time-offset table.")
     parser.add_argument("directory", type=Path, help="conversion output directory")
     parser.add_argument("--prefix", required=True, help="split prefix before NNNNNNNN.ldat")
@@ -420,14 +433,10 @@ def _conversion_main(argv):
     return 0
 
 
-def main(argv=None):
+def export_main(argv=None):
     import argparse
 
-    argv = sys.argv[1:] if argv is None else list(argv)
-    if argv[:1] == ["conversion"]:
-        return _conversion_main(argv[1:])
-
-    parser = argparse.ArgumentParser(description="Export a canonical Cornell LUT as a PETsys time-offset table.")
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew export", description="Export a canonical Cornell LUT as a PETsys time-offset table.")
     parser.add_argument("lut", type=Path, help="canonical LUT CSV (manifest next to it)")
     parser.add_argument("table", type=Path, help="native TSV to write (manifest .json next to it)")
     parser.add_argument("--ini", type=Path, help="PETsys config.ini to copy with the table activated")
@@ -446,6 +455,3 @@ def main(argv=None):
     print(json.dumps(result, indent=1))
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(main())

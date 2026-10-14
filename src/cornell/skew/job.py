@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -u -m src.cornell.timing_job JOB.json
+    python -u -m src.cornell.skew run JOB.json
 
 The job file lists every input explicitly (nothing is globbed or parsed from
 basenames): runs with their conversion directory, ``run.json`` ledger and
@@ -11,7 +11,7 @@ down regions; file-index roles; work directory and LUT path. Relative paths
 resolve against the job file's directory, except ``config``, which (like its
 ``map_file``) is relative to the repository root.
 
-Per run: inventory (``timing_dataset``), frozen file roles, feature cache and
+Per run: inventory (``dataset``), frozen file roles, feature cache and
 selected-geometry observation set, each reused when complete and matching.
 Pooled (owner decision 2026-10-13): train events of all runs are fitted
 together per channel pair with one global kernel, then one global solve and
@@ -24,7 +24,7 @@ pooled delays; with ``per_run_solves`` each run is also solved alone and its
 delays compared with the pooled and reference-run solutions, so a
 rate-dependent offset stays visible. Test files are never evaluated here. A failing run stops the job; the pool is never silently shrunk.
 After the LUT, per-ASIC plots and channels breaking the per-ASIC pattern
-(``timing_plots``, FR-19) are written next to it; listed, never changed.
+(``plots``, FR-19) are written next to it; listed, never changed.
 
 Second pass (T9c, FR-20): a run may name a native-conversion manifest
 (``conversion``) instead of a Manager ``ledger``. All runs share one input
@@ -53,18 +53,18 @@ import time
 
 import numpy as np
 
-from src.cornell import timing_cache as tc
-from src.cornell import timing_dataset as td
-from src.cornell import timing_pairs as tp
-from src.cornell import timing_plots as tpl
-from src.cornell import timing_solver as ts
-from src.cornell.timing_ingest import GeometryHypothesis, LegacySetup, time_channel_classes
-from src.cornell.timing_petsys import (UNCORRECTED, CanonicalLut, compose_lut, conversion_inputs,
-                                      read_native_table, write_lut)
+from src.cornell.skew import cache as tc
+from src.cornell.skew import dataset as td
+from src.cornell.skew import pairs as tp
+from src.cornell.skew import plots as tpl
+from src.cornell.skew import solver as ts
+from src.cornell.skew.ingest import GeometryHypothesis, LegacySetup, time_channel_classes
+from src.cornell.skew.lut import (UNCORRECTED, CanonicalLut, compose_lut, conversion_inputs,
+                                  read_native_table, write_lut)
 from src.utils import get_electronics_nums
 from src.mapping_generator import map_factory
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 JOB_SCHEMA = "cornell-timing-job/1"
 # T5 run7: 13.18 GB of feature blocks from 222.8 GB of compact LDAT.
 FEATURE_BYTES_PER_LDAT_BYTE = 0.0592
@@ -744,7 +744,7 @@ def run_job(job, *, log=_print):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Pooled multi-run Cornell TIME-channel calibration (spec 008).")
+    parser = argparse.ArgumentParser(prog="python -m src.cornell.skew run", description="Pooled multi-run Cornell TIME-channel calibration (spec 008).")
     parser.add_argument("job", type=Path, help="job JSON file")
     args = parser.parse_args(argv)
     try:
@@ -755,6 +755,3 @@ def main(argv=None):
     print(json.dumps({k: report[k] for k in ("status", "lut", "stages")}, indent=1))
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(main())

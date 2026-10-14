@@ -8,8 +8,8 @@ import struct
 import numpy as np
 import pytest
 
-from src.cornell.timing_benchmark import (Prefix, benchmark_prefix, decode_compiled,
-                                         decode_reference, read_prefix)
+from src.cornell.skew.benchmark import (Prefix, benchmark_prefix, decode_compiled,
+                                        decode_reference, read_prefix)
 
 
 def records():

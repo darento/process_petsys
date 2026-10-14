@@ -11,70 +11,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cornell_timing_helpers import ROOT, T0, channels, make_setup, shifted, side, write
-from src.cornell import timing_cache as tc
-from src.cornell import timing_job as tj
-from src.cornell import timing_pairs as tp
-from src.cornell import timing_plots as tpl
-from src.cornell import timing_solver as ts
-from src.cornell.timing_petsys import (CanonicalLut, LutError, activated_ini, read_native_table,
-                                       write_conversion_manifest, write_native_table)
+from cornell_timing_helpers import (FILES, ROOT, T0, channels, job_file, make_run, make_setup, runs,  # noqa: F401
+                                    shifted, side, write)
+from src.cornell.skew import cache as tc
+from src.cornell.skew import job as tj
+from src.cornell.skew import pairs as tp
+from src.cornell.skew import plots as tpl
+from src.cornell.skew import solver as ts
+from src.cornell.skew.lut import (CanonicalLut, LutError, activated_ini, read_native_table,
+                                  write_conversion_manifest, write_native_table)
 from src.utils import get_absolute_id, get_electronics_nums
 
 pytestmark = pytest.mark.fr("008-FR-18")
-FILES = 3
-TOF_PS = 934.0  # diametric branch TOF for the 140 mm mid-radius shell
-
-
-def coincidence_records(setup, rng, count, shift, mms=(5, 6)):
-    """SM 1 vs SM 16, alternating minimodules: dt = shift +- branch TOF + kernel noise."""
-    out = []
-    for k in range(count):
-        mm = mms[k % len(mms)]
-        dt = int(round(shift + rng.choice((-TOF_PS, TOF_PS)) + rng.normal(0, 150)))
-        stamp = T0 + k * 1_000_000
-        out.append((side(setup, 1, mm=mm, stamp=stamp), side(setup, 16, mm=mm, stamp=stamp - dt)))
-    return out
-
-
-def make_run(base, setup, name, *, seed, accepted=70, shift=600.0, mms=(5, 6)):
-    """FILES chronological splits plus a succeeded conversion ledger."""
-    directory = base / name
-    directory.mkdir(parents=True)
-    rng = np.random.default_rng(seed)
-    prefix = f"norm_test_{name}_coincCompact_"
-    artifacts = []
-    for index in range(FILES):
-        records = coincidence_records(setup, rng, accepted, shift, mms)
-        offset = index * 10 ** 12  # one second per split, chronological
-        records = [(shifted(a, offset), shifted(b, offset)) for a, b in records]
-        records.sort(key=lambda r: min(h[0] for h in r[0] + r[1]))
-        path = write(directory / f"{prefix}{index:08d}.ldat", records)
-        artifacts.append({"kind": "ldat", "cleanup": "retained", "path": str(path), "size_bytes": path.stat().st_size,
-                          "input_descriptor": {"format": "compact", "population": "coincidence"}})
-    ledger = {"status": "succeeded", "attempts": [{"stage_id": "conversion", "status": "succeeded", "exit_code": 0,
-                                                  "artifacts": artifacts}]}
-    (directory / "run.json").write_text(json.dumps(ledger))
-    return {"name": name, "directory": str(directory), "ledger": str(directory / "run.json"), "prefix": prefix,
-            "energy_calibration_prefix": "none" if name != "ra" else {"1": 5, "2": 0}}
-
-
-@pytest.fixture(scope="module")
-def runs(tmp_path_factory):
-    base = tmp_path_factory.mktemp("job")
-    setup = make_setup(base)
-    return base, [make_run(base, setup, "ra", seed=1), make_run(base, setup, "rb", seed=2)]
-
-
-def job_file(path, base, run_items, **overrides):
-    spec = {"schema": tj.JOB_SCHEMA, "config": "configs/cornell_full_system.yaml", "encal": str(base / "r.encal"),
-            "reference_run": run_items[0]["name"], "down_regions": [[14, 0]], "runs": run_items,
-            "roles": {"validation": [1], "test": [2]}, "geometry": "selected", "work_directory": "work",
-            "lut": "out/lut.csv", "workers": 1} | overrides
-    path.write_text(json.dumps(spec))
-    return path
-
-
 def test_job_file_is_explicit_and_validated(tmp_path, runs):
     base, items = runs
     job = tj.load_job(job_file(tmp_path / "job.json", base, items))
@@ -141,7 +89,7 @@ def test_runs_roles_and_resume(runs, finished, monkeypatch):
     def no_reads(*args, **kwargs):
         raise AssertionError("LDAT read during resume")
     monkeypatch.setattr(tj.td, "scan_file", no_reads)
-    monkeypatch.setattr(tc.timing_ingest, "LdatStream", no_reads)
+    monkeypatch.setattr(tc.ingest, "LdatStream", no_reads)
     resumed = tj.run_job(again, log=lambda message: None)
     assert resumed["status"] == "succeeded" and all(p.exists() for p in tpl.plot_paths(again.lut))
     # an existing plot blocks a new LUT of that name before any work

@@ -9,9 +9,9 @@ import json
 import numpy as np
 import pytest
 
-from src.cornell import timing_pairs as tp
-from src.cornell import timing_solver as ts
-from src.cornell.timing_petsys import CanonicalLut, LutError, write_lut
+from src.cornell.skew import pairs as tp
+from src.cornell.skew import solver as ts
+from src.cornell.skew.lut import CanonicalLut, LutError, write_lut
 
 pytestmark = pytest.mark.fr("008-FR-10", "008-FR-12")
 

@@ -1,10 +1,13 @@
-"""Shared synthetic Cornell timing fixtures (spec 008 T4/T5 tests)."""
+"""Shared synthetic Cornell timing fixtures (spec 008 T4/T5 tests; T7a/T9 job runs)."""
+import json
 from pathlib import Path
 import struct
 
 import numpy as np
+import pytest
 
-from src.cornell.timing_ingest import LegacySetup
+from src.cornell.skew import job as tj
+from src.cornell.skew.ingest import LegacySetup
 from src.mapping_generator import ChannelType
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,7 +122,7 @@ DRAWING_SOURCE = {"inner_radius_mm": 137.5, "outer_radius_mm": 142.5, "axial_min
 
 
 def production(path, lookup, partition, **kwargs):
-    from src.cornell.timing_ingest import FeatureBatch, production_batches
+    from src.cornell.skew.ingest import FeatureBatch, production_batches
     batches = list(production_batches(path, lookup, partition, **kwargs))
     return FeatureBatch(0, np.concatenate([b.codes for b in batches]),
                         np.concatenate([b.ints for b in batches]), np.concatenate([b.floats for b in batches]))
@@ -127,3 +130,57 @@ def production(path, lookup, partition, **kwargs):
 
 def shifted(hits, delta):
     return [(t + delta, e, c) for t, e, c in hits]
+
+
+# synthetic pooled-job runs (spec 008 T7a): SM 1 vs SM 16 with a known pair shift
+FILES = 3
+TOF_PS = 934.0  # diametric branch TOF for the 140 mm mid-radius shell
+
+
+def coincidence_records(setup, rng, count, shift, mms=(5, 6)):
+    """SM 1 vs SM 16, alternating minimodules: dt = shift +- branch TOF + kernel noise."""
+    out = []
+    for k in range(count):
+        mm = mms[k % len(mms)]
+        dt = int(round(shift + rng.choice((-TOF_PS, TOF_PS)) + rng.normal(0, 150)))
+        stamp = T0 + k * 1_000_000
+        out.append((side(setup, 1, mm=mm, stamp=stamp), side(setup, 16, mm=mm, stamp=stamp - dt)))
+    return out
+
+
+def make_run(base, setup, name, *, seed, accepted=70, shift=600.0, mms=(5, 6)):
+    """FILES chronological splits plus a succeeded conversion ledger."""
+    directory = base / name
+    directory.mkdir(parents=True)
+    rng = np.random.default_rng(seed)
+    prefix = f"norm_test_{name}_coincCompact_"
+    artifacts = []
+    for index in range(FILES):
+        records = coincidence_records(setup, rng, accepted, shift, mms)
+        offset = index * 10 ** 12  # one second per split, chronological
+        records = [(shifted(a, offset), shifted(b, offset)) for a, b in records]
+        records.sort(key=lambda r: min(h[0] for h in r[0] + r[1]))
+        path = write(directory / f"{prefix}{index:08d}.ldat", records)
+        artifacts.append({"kind": "ldat", "cleanup": "retained", "path": str(path), "size_bytes": path.stat().st_size,
+                          "input_descriptor": {"format": "compact", "population": "coincidence"}})
+    ledger = {"status": "succeeded", "attempts": [{"stage_id": "conversion", "status": "succeeded", "exit_code": 0,
+                                                  "artifacts": artifacts}]}
+    (directory / "run.json").write_text(json.dumps(ledger))
+    return {"name": name, "directory": str(directory), "ledger": str(directory / "run.json"), "prefix": prefix,
+            "energy_calibration_prefix": "none" if name != "ra" else {"1": 5, "2": 0}}
+
+
+@pytest.fixture(scope="module")
+def runs(tmp_path_factory):
+    base = tmp_path_factory.mktemp("job")
+    setup = make_setup(base)
+    return base, [make_run(base, setup, "ra", seed=1), make_run(base, setup, "rb", seed=2)]
+
+
+def job_file(path, base, run_items, **overrides):
+    spec = {"schema": tj.JOB_SCHEMA, "config": "configs/cornell_full_system.yaml", "encal": str(base / "r.encal"),
+            "reference_run": run_items[0]["name"], "down_regions": [[14, 0]], "runs": run_items,
+            "roles": {"validation": [1], "test": [2]}, "geometry": "selected", "work_directory": "work",
+            "lut": "out/lut.csv", "workers": 1} | overrides
+    path.write_text(json.dumps(spec))
+    return path

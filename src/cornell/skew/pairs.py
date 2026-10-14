@@ -37,7 +37,7 @@ import numba
 import numpy as np
 from scipy.optimize import minimize
 
-from src.cornell.timing_ingest import LEGACY_COINCIDENCE_WINDOW_PS
+from src.cornell.skew.ingest import LEGACY_COINCIDENCE_WINDOW_PS
 
 STATUSES = ("usable", "one branch", "alias unresolved", "merged branches", "scan edge", "fit failed")
 USABLE, ONE_BRANCH, ALIAS_UNRESOLVED, MERGED, SCAN_EDGE, FIT_FAILED = range(len(STATUSES))

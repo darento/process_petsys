@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from cornell_timing_helpers import T0, write
-from src.cornell import timing_roundtrip as tr
+from src.cornell.skew import roundtrip as tr
 from src.utils import get_absolute_id
 
 pytestmark = pytest.mark.fr("008-FR-17", "008-FR-3")

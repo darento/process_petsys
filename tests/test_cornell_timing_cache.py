@@ -13,10 +13,10 @@ import pytest
 
 from cornell_timing_helpers import (CONFIG, DRAWING_SOURCE, ROOT, T0, accepted_pair, make_setup, production,
                                     random_records, side, write)
-from src.cornell import timing_cache as tc
-from src.cornell.timing_geometry import AnnularSource
-from src.cornell.timing_ingest import (PASSED_PRE_GEOMETRY, CompiledLookup, GeometryHypothesis, Partition,
-                                       apply_geometry)
+from src.cornell.skew import cache as tc
+from src.cornell.skew.geometry import AnnularSource
+from src.cornell.skew.ingest import (PASSED_PRE_GEOMETRY, CompiledLookup, GeometryHypothesis, Partition,
+                                     apply_geometry)
 
 pytestmark = pytest.mark.fr("008-FR-7", "008-FR-8")
 EVERYTHING = (-2 ** 62, 2 ** 62)

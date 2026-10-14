@@ -11,9 +11,9 @@ import math
 import numpy as np
 import pytest
 
-from src.cornell.timing_ingest import (ACCEPTED, FEATURE_INT, REJECTIONS, LegacySetup, legacy_cylinder,
-                                       legacy_local_to_global, reference_counts, reference_outcomes,
-                                       slab_bit)
+from src.cornell.skew.ingest import (ACCEPTED, FEATURE_INT, REJECTIONS, LegacySetup, legacy_cylinder,
+                                     legacy_local_to_global, reference_counts, reference_outcomes,
+                                     slab_bit)
 from cornell_timing_helpers import (CONFIG, DRAWING_SOURCE, FULL, INVALID_SM, MISSING_SM, ROOT, SUMMARY, T0, accepted_pair,
                                     channels, make_setup, production, random_records, shifted, side, write)
 
@@ -179,21 +179,21 @@ def test_seeded_slab_is_record_keyed(tmp_path, setup):
 
 # --- T4b: compiled kernels reproduce the reference ---------------------------
 def _worker_outcomes(path, config, encal):
-    from src.cornell.timing_ingest import CompiledLookup, compiled_legacy_outcomes
+    from src.cornell.skew.ingest import CompiledLookup, compiled_legacy_outcomes
     setup = LegacySetup.from_files(config, encal, root=ROOT)
     lookup = CompiledLookup.from_setup(setup)
     return [(r, label) for r, label, _ in compiled_legacy_outcomes(path, setup, lookup, file_index=0)]
 
 
 def compiled(setup, path, lookup=None, **kwargs):
-    from src.cornell.timing_ingest import CompiledLookup, compiled_legacy_outcomes
+    from src.cornell.skew.ingest import CompiledLookup, compiled_legacy_outcomes
     lookup = lookup or CompiledLookup.from_setup(setup)
     return list(compiled_legacy_outcomes(path, setup, lookup, file_index=0, **kwargs))
 
 
 def test_reference_compiled_selection_parity(tmp_path, setup):
     N = 6000
-    from src.cornell.timing_ingest import CompiledLookup, compiled_batches
+    from src.cornell.skew.ingest import CompiledLookup, compiled_batches
     lookup = CompiledLookup.from_setup(setup)
     det1, det2 = accepted_pair(setup)
     _, e_ch0 = channels(setup, 1, 0)
@@ -220,7 +220,7 @@ def test_reference_compiled_selection_parity(tmp_path, setup):
 
 def test_seed_independent_of_chunks_and_workers(tmp_path, setup):
     from concurrent.futures import ProcessPoolExecutor
-    from src.cornell.timing_ingest import CompiledLookup
+    from src.cornell.skew.ingest import CompiledLookup
     lookup = CompiledLookup.from_setup(setup)
     det1 = side(setup, 1, time={3: 12.0})
     det2 = side(setup, 16, time={4: 12.0}, stamp=T0 - 100)
@@ -242,8 +242,8 @@ def test_seed_independent_of_chunks_and_workers(tmp_path, setup):
 # --- T4c: holdout roles, separate geometry stage, operational coverage -------
 @pytest.mark.fr("008-FR-16")
 def test_holdout_excludes_energy_calibration_prefix(tmp_path, setup):
-    from src.cornell.timing_ingest import (PASSED_PRE_GEOMETRY, RUN7_ENERGY_CALIBRATION_PREFIX,
-                                           CompiledLookup, Partition, code_label)
+    from src.cornell.skew.ingest import (PASSED_PRE_GEOMETRY, RUN7_ENERGY_CALIBRATION_PREFIX,
+                                         CompiledLookup, Partition, code_label)
     lookup = CompiledLookup.from_setup(setup)
     det1, det2 = accepted_pair(setup)
     start, end = T0 + 10_000, T0 + 20_000
@@ -290,7 +290,7 @@ def test_holdout_excludes_energy_calibration_prefix(tmp_path, setup):
 
 def _scalar_geometry(frames, source, row_i, row_f):
     """Expected label/endpoints from the tracked scalar geometry functions."""
-    from src.cornell.timing_geometry import legacy_opposition_accepts, shell_intervals
+    from src.cornell.skew.geometry import legacy_opposition_accepts, shell_intervals
     p = frames[row_i[FEATURE_INT.index("sm_1")]].to_global(row_f[2], row_f[3])
     q = frames[row_i[FEATURE_INT.index("sm_2")]].to_global(row_f[4], row_f[5])
     segments = shell_intervals(p, q, source)
@@ -301,9 +301,9 @@ def _scalar_geometry(frames, source, row_i, row_f):
 
 @pytest.mark.fr("008-FR-2", "008-FR-5")
 def test_geometry_stage_hypotheses_without_reread(tmp_path, setup):
-    from src.cornell.timing_geometry import AnnularSource, GeometryError, build_detector_frames
-    from src.cornell.timing_ingest import (GEOMETRY_REJECTIONS, CompiledLookup, FeatureBatch,
-                                           GeometryHypothesis, Partition, apply_geometry)
+    from src.cornell.skew.geometry import AnnularSource, GeometryError, build_detector_frames
+    from src.cornell.skew.ingest import (GEOMETRY_REJECTIONS, CompiledLookup, FeatureBatch,
+                                         GeometryHypothesis, Partition, apply_geometry)
     lookup = CompiledLookup.from_setup(setup)
     det1, det2 = accepted_pair(setup)
     path = write(tmp_path / "geometry.ldat", random_records(setup, 3000, seed=23) + [(det1, det2)])
@@ -354,9 +354,9 @@ def test_geometry_stage_hypotheses_without_reread(tmp_path, setup):
 
 @pytest.mark.fr("008-FR-6", "008-FR-16")
 def test_operational_time_coverage_and_down_regions(tmp_path, setup):
-    from src.cornell.timing_geometry import AnnularSource
-    from src.cornell.timing_ingest import (CompiledLookup, GeometryHypothesis, Partition, apply_geometry,
-                                           time_channel_coverage)
+    from src.cornell.skew.geometry import AnnularSource
+    from src.cornell.skew.ingest import (CompiledLookup, GeometryHypothesis, Partition, apply_geometry,
+                                         time_channel_coverage)
     down = json.loads(SUMMARY.read_text(encoding="utf-8"))["known_unavailable_regions"]
     assert down == [[14, 0], [14, 1], [14, 4], [14, 5]]
     time_ok, time_down, time_unpopulated = channels(setup, 1, 5)[0][3], channels(setup, 14, 0)[0][3], \

@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 import yaml
 
-from src.cornell.timing_geometry import (AnnularSource, C_MM_PER_PS, GeometryError,
-                                        build_detector_frames, build_faceted_detector_frames,
-                                        geometric_tof_ps,
-                                        legacy_opposition_accepts, shell_intervals)
+from src.cornell.skew.geometry import (AnnularSource, C_MM_PER_PS, GeometryError,
+                                       build_detector_frames, build_faceted_detector_frames,
+                                       geometric_tof_ps,
+                                       legacy_opposition_accepts, shell_intervals)
 from src.mapping_generator import map_factory, ChannelType
 
 pytestmark = pytest.mark.fr("008-FR-2", "008-FR-5")
@@ -371,8 +371,8 @@ PAIR_FITS = ROOT / "specs/008-cornell-skew-calibration/run7-pair-fits.json"
 
 
 def test_transforms_match_measured_geometry():
-    from src.cornell.timing_geometry import (NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
-                                            SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN)
+    from src.cornell.skew.geometry import (NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
+                                           SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN)
     import json
     assert (SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, OWNER_INTERACTION_DEPTH_MM) == (-1, 1, 7.0)
     assert NORMALIZATION_PHANTOM == shell(axial_min_mm=-150.0, axial_max_mm=150.0)

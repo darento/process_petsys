@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 
 from cornell_timing_helpers import DRAWING_SOURCE
-from src.cornell import timing_pairs as tp
-from src.cornell.timing_cache import OBSERVATION_DTYPE
-from src.cornell.timing_geometry import C_MM_PER_PS, AnnularSource, shell_intervals
+from src.cornell.skew import pairs as tp
+from src.cornell.skew.cache import OBSERVATION_DTYPE
+from src.cornell.skew.geometry import C_MM_PER_PS, AnnularSource, shell_intervals
 
 pytestmark = pytest.mark.fr("008-FR-9")
 SOURCE = AnnularSource(**DRAWING_SOURCE)

@@ -10,13 +10,14 @@ import numpy as np
 import pytest
 
 from cornell_timing_helpers import make_setup
-from src.cornell import timing_pairs as tp
-from src.cornell import timing_solver as ts
-from src.cornell.timing_ingest import time_channel_classes
-from src.cornell.timing_petsys import (CONVENTION, UNCORRECTED, CanonicalLut, LutError, activated_ini, compose_lut,
-                                       conversion_inputs, read_native_table, write_conversion_manifest, write_lut,
-                                       write_native_table)
-from src.cornell.timing_petsys import main as native_main
+from src.cornell.skew import pairs as tp
+from src.cornell.skew import solver as ts
+from src.cornell.skew.ingest import time_channel_classes
+from src.cornell.skew.lut import (CONVENTION, UNCORRECTED, CanonicalLut, LutError, activated_ini, compose_lut,
+                                  conversion_inputs, read_native_table, write_conversion_manifest, write_lut,
+                                  write_native_table)
+from src.cornell.skew.lut import export_main as native_main
+from src.cornell.skew.__main__ import main as skew_main
 from src.utils import get_absolute_id
 from src.mapping_generator import ChannelType
 
@@ -209,9 +210,9 @@ def test_conversion_manifest_identity(tmp_path):
         (conv / f"{prefix}{index:08d}.ldat").write_bytes(b"x" * (10 + index))
     (conv / "norm_other_coincCompact_00000005.ldat").write_bytes(b"y")  # another run's split is not listed
     out = tmp_path / "r7c_conversion.json"
-    assert native_main(["conversion", str(conv), "--prefix", prefix, "--table", str(table), "--ini", str(ini),
-                        "--raw-source", "/media/raw/norm_r7", "--command", "convert_raw_to_coincidence ...",
-                        "--output", str(out)]) == 0
+    assert skew_main(["conversion", str(conv), "--prefix", prefix, "--table", str(table), "--ini", str(ini),
+                      "--raw-source", "/media/raw/norm_r7", "--command", "convert_raw_to_coincidence ...",
+                      "--output", str(out)]) == 0
     manifest = json.loads(out.read_text())
     assert [f["name"] for f in manifest["files"]] == [f"{prefix}{k:08d}.ldat" for k in range(3)]
     assert [f["size_bytes"] for f in manifest["files"]] == [10, 11, 12]

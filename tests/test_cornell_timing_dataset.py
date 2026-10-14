@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-from src.cornell.timing_dataset import channel_lookup, freeze_holdout, ledger_inputs, scan_file
+from src.cornell.skew.dataset import channel_lookup, freeze_holdout, ledger_inputs, scan_file
 
 pytestmark = pytest.mark.fr("008-FR-1", "008-FR-6", "008-FR-16")
 

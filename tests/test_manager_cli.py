@@ -491,7 +491,8 @@ class CLIChecks(CLIFixtures, unittest.TestCase):
         intended = set(subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "src/cornell",
                                        "src/petsys_manager"], cwd=REPO, capture_output=True, text=True,
                                       check=True).stdout.split())
-        for path in sorted((REPO / "src/cornell").glob("*.py")) + sorted((REPO / "src/petsys_manager").glob("*.py")):
+        # src/cornell recursively: the skew package (spec 008 T10) stays audited after leaving src/cornell/*.py
+        for path in sorted((REPO / "src/cornell").rglob("*.py")) + sorted((REPO / "src/petsys_manager").glob("*.py")):
             relative = path.relative_to(REPO).as_posix()
             self.assertIn(relative, tracked | intended)
             tree = ast.parse(path.read_text(encoding="utf-8"))

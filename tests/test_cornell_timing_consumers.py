@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from src.cornell.timing_convention import corrected_dt_ps
-from src.cornell.timing_geometry import C_MM_PER_PS, geometric_tof_ps
+from src.cornell.skew.lut import corrected_dt_ps
+from src.cornell.skew.geometry import C_MM_PER_PS, geometric_tof_ps
 from src.mapping_generator import ChannelType
 from src.utils import apply_skew
 
