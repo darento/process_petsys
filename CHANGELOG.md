@@ -36,6 +36,10 @@ Tag convention: `<Program>-v<MAJOR.MINOR.PATCH>`, e.g. `LDATInspector-v1.0.0`, `
 
 ## LDAT Inspector
 
+### 1.0.1 — 2026-10-18
+
+- Fix: on Linux with ibus as the X input method, closing the window could hang in Tk. Tk now opens without an X input method (`XMODIFIERS=@im=none`); plain typing is unaffected (bug-tk-ibus-destroy-hang).
+
 ### 1.0.0 — 2026-10-06
 
 First versioned release. Offline LDAT inspection as shipped by:
@@ -45,6 +49,10 @@ First versioned release. Offline LDAT inspection as shipped by:
 - [Spec 004](specs/004-ldat-inspector-package/spec.md) — engine moved to the `src/ldat_inspector` package.
 
 ## PETsys Manager
+
+### 1.1.1 — 2026-10-18
+
+- Fix: on Linux with ibus as the X input method, Tk could hang when destroying a widget. Tk now opens without an X input method (`XMODIFIERS=@im=none`); plain typing is unaffected (bug-tk-ibus-destroy-hang).
 
 ### 1.1.0 — 2026-10-11
 

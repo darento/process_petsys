@@ -22,6 +22,12 @@ BLAS_THREADS = {name: "1" for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"
 for _name, _value in BLAS_THREADS.items():
     os.environ.setdefault(_name, _value)
 
+# Before any Tk root, inherited by workers and children: Tk with ibus as X input method hangs on
+# destroy (bug-tk-ibus-destroy-hang).
+from src.tk_input import disable_x_input_method  # noqa: E402
+
+disable_x_input_method()
+
 
 def pytest_addoption(parser):
     parser.addoption("--fr", action="append", default=[], metavar="ID",

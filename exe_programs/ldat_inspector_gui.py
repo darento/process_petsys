@@ -39,9 +39,11 @@ from src.ldat_inspector.engine import (
     system_channel_findings, uniformity,
 )
 from src.ldat_inspector.memory import estimate_memory
+from src.tk_input import disable_x_input_method
 
+disable_x_input_method()  # before any Tk root (bug-tk-ibus-destroy-hang)
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 # Strong colours for plotted channel states; table rows keep the pale RAWInspector colours.
 STATE_EDGES = {"OK": "#4c9a5b", "NOT OBSERVED": "#d62728", "HIGH": "#c2185b", "LOW": "#ef8a00",
                "INSUFFICIENT EVENTS": "#8c939a"}
