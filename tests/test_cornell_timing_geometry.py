@@ -1,11 +1,13 @@
 """Analytic source truth and declared Cornell frame policies (008 T2a)."""
 import math
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pytest
 import yaml
 
+from cornell_timing_helpers import CONFIG
 from src.cornell.skew.geometry import (AnnularSource, C_MM_PER_PS, GeometryError,
                                        build_detector_frames, build_faceted_detector_frames,
                                        geometric_tof_ps,
@@ -24,9 +26,19 @@ def shell(**kwargs):
 
 
 def config_and_map():
-    config = yaml.safe_load((ROOT / "configs/cornell_full_system.yaml").read_text())
+    config = yaml.safe_load(CONFIG.read_text())
     local, modules, types, _ = map_factory(str(ROOT / config["map_file"]))
     return config, local, modules, types
+
+
+@pytest.mark.fr("bug-timing-tests-untracked-config")
+def test_timing_config_and_its_map_are_tracked():
+    """A fresh clone failed 45 timing tests: they read the gitignored configs/cornell_full_system.yaml."""
+    config = yaml.safe_load(CONFIG.read_text())
+    for path in (CONFIG, ROOT / config["map_file"]):
+        relative = path.resolve().relative_to(ROOT).as_posix()
+        assert subprocess.run(["git", "ls-files", "--error-unmatch", relative], cwd=ROOT,
+                              capture_output=True).returncode == 0, relative
 
 
 @pytest.mark.parametrize("origin", [(48.0, 48.0), (51.61, 51.61)])

@@ -11,7 +11,8 @@ from src.cornell.skew.ingest import LegacySetup
 from src.mapping_generator import ChannelType
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "configs/cornell_full_system.yaml"
+# tracked copy of the local configs/cornell_full_system.yaml (September map); configs/ is gitignored
+CONFIG = ROOT / "tests/data/configs/cornell_september.yaml"
 HIT = struct.Struct("<qfi")
 T0 = 1_000_000_000_000
 MISSING_SM, INVALID_SM = 13, 8     # SMs whose TIME channels lack / have invalid keV factors
@@ -178,7 +179,7 @@ def runs(tmp_path_factory):
 
 
 def job_file(path, base, run_items, **overrides):
-    spec = {"schema": tj.JOB_SCHEMA, "config": "configs/cornell_full_system.yaml", "encal": str(base / "r.encal"),
+    spec = {"schema": tj.JOB_SCHEMA, "config": CONFIG.relative_to(ROOT).as_posix(), "encal": str(base / "r.encal"),
             "reference_run": run_items[0]["name"], "down_regions": [[14, 0]], "runs": run_items,
             "roles": {"validation": [1], "test": [2]}, "geometry": "selected", "work_directory": "work",
             "lut": "out/lut.csv", "workers": 1} | overrides

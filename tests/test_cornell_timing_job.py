@@ -26,7 +26,7 @@ pytestmark = pytest.mark.fr("008-FR-18")
 def test_job_file_is_explicit_and_validated(tmp_path, runs):
     base, items = runs
     job = tj.load_job(job_file(tmp_path / "job.json", base, items))
-    assert job.config == ROOT / "configs/cornell_full_system.yaml"
+    assert job.config == ROOT / "tests/data/configs/cornell_september.yaml"
     assert job.work == tmp_path / "work" and job.lut == tmp_path / "out/lut.csv"
     assert [r.name for r in job.runs] == ["ra", "rb"] and job.validation == (1,) and job.test == (2,)
     assert job.energy_peak_tolerance == 0.02 and job.partitions == 16
