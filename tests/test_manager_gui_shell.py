@@ -281,7 +281,8 @@ class ShellChecks(GUIBase):
             shutil.copy2(REPO / "exe_programs" / name, relocated / "exe_programs" / name)
         shutil.copytree(REPO / "exe_programs" / "assets", relocated / "exe_programs" / "assets")
         (relocated / "src").mkdir()
-        shutil.copy2(REPO / "src" / "__init__.py", relocated / "src" / "__init__.py")
+        for name in ("__init__.py", "tk_input.py"):  # tk_input: bug-tk-ibus-destroy-hang
+            shutil.copy2(REPO / "src" / name, relocated / "src" / name)
         shutil.copytree(REPO / "src" / "petsys_manager", relocated / "src" / "petsys_manager",
                         ignore=shutil.ignore_patterns("__pycache__"))
         (relocated / "maps").mkdir()
