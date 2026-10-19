@@ -36,6 +36,11 @@ def _roundtrip(argv):
     return roundtrip.main(argv)
 
 
+def _ctr(argv):
+    from src.cornell.skew import ctr
+    return ctr.main(argv)
+
+
 def _inventory(argv):
     from src.cornell.skew import dataset
     return dataset.main(argv)
@@ -53,6 +58,7 @@ COMMANDS = {
     "export": (_export, "canonical LUT -> native PETsys time-offset table (+ activated INI)"),
     "conversion": (_conversion, "declare a conversion made with a native table (manifest JSON)"),
     "roundtrip": (_roundtrip, "matched-event check of a native conversion"),
+    "ctr": (_ctr, "independent CTR from known-position point sources: CTR.json"),
     "inventory": (_inventory, "raw LDAT inventory and holdout (development)"),
     "benchmark": (_benchmark, "bounded raw-decoder benchmark (development)"),
 }

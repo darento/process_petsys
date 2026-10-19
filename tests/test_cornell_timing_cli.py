@@ -21,7 +21,8 @@ def test_options_restart_and_export_contract(runs, tmp_path, capsys, monkeypatch
     assert main(["-h"]) == 0
     listed = capsys.readouterr().out
     assert all(f"  {name} " in listed for name in COMMANDS)
-    assert set(COMMANDS) == {"run", "validate", "plot", "export", "conversion", "roundtrip", "inventory", "benchmark"}
+    assert set(COMMANDS) == {"run", "validate", "plot", "export", "conversion", "roundtrip", "ctr", "inventory",
+                             "benchmark"}
     assert main([]) == 2 and "usage" in capsys.readouterr().err
     assert main(["calibrate"]) == 2 and "unknown command 'calibrate'" in capsys.readouterr().err
     for name in COMMANDS:  # each command's own options, under the one program name
