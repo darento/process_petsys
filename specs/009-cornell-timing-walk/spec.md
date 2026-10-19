@@ -1,6 +1,6 @@
 # Spec 009 — Cornell time-walk correction
 
-Status: `clarified` (2026-10-19; owner decisions below; awaiting approval before plan/tasks)
+Status: `approved` (2026-10-19; owner approved after clarification; [plan](plan.md), [tasks](tasks.md))
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (per-channel skew LUT, point-source CTR). Evidence (untracked): [docs/research/cornell-timing-walk.md](../../docs/research/cornell-timing-walk.md).
 
