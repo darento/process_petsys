@@ -141,6 +141,43 @@ def test_frozen_holdout_and_geometric_tof(tmp_path):
     assert located.acquisitions[0].source_mm is None and located.acquisitions[0].declared == "X0Y-6Z0 cm"
 
 
+def test_analysis_energy_window(tmp_path):
+    """Owner 2026-10-19: only energy_range may differ from the LUT job's configuration; the run is flagged."""
+    case = _case(tmp_path, count=100)
+    text = CONFIG.read_text(encoding="utf-8")
+
+    def config(name, old, new):
+        assert text.count(old) == 1
+        path = tmp_path / name
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        return str(path)
+
+    same = ctr.run_ctr(ctr.load_ctr(_spec(tmp_path, case, bootstrap=0, config=config("same.yaml", "min_ch: 4", "min_ch:  4"))),
+                       log=lambda *_: None)
+    assert same["frozen_inputs"]["cuts_identical_to_lut_job"] and same["cuts"]["identical_to_lut_job"]
+    assert same["cuts"]["energy_window_kev"] == [357.0, 665.0]
+
+    messages = []
+    wide = ctr.run_ctr(ctr.load_ctr(_spec(tmp_path, case, bootstrap=0, config=config(
+        "wide.yaml", "energy_range: [357, 665]", "energy_range: [100, 1000]"))), log=messages.append)
+    assert wide["cuts"]["energy_window_kev"] == [100.0, 1000.0] and not wide["cuts"]["identical_to_lut_job"]
+    assert wide["frozen_inputs"]["lut_job_energy_range_kev"] == [357, 665]
+    assert wide["counts"]["point"]["stages"]["in window"] == 100
+    assert any("not the FR-13 result" in m for m in messages)
+
+    # the window is applied: one that excludes the synthetic photopeak keeps nothing
+    narrow = ctr.run_ctr(ctr.load_ctr(_spec(tmp_path, case, bootstrap=0, config=config(
+        "narrow.yaml", "energy_range: [357, 665]", "energy_range: [700, 800]"))), log=lambda *_: None)
+    assert narrow["counts"]["point"]["stages"]["passed pre-geometry"] == 0
+    assert narrow["counts"]["point"]["pre_geometry"]["energy window"] == 100
+
+    with pytest.raises(ctr.CtrError, match=r"\['min_ch'\]"):
+        ctr.run_ctr(ctr.load_ctr(_spec(tmp_path, case, bootstrap=0, config=config("min.yaml", "min_ch: 4", "min_ch: 3"))))
+    with pytest.raises(ctr.CtrError, match="low < high"):
+        ctr.run_ctr(ctr.load_ctr(_spec(tmp_path, case, bootstrap=0, config=config(
+            "bad.yaml", "energy_range: [357, 665]", "energy_range: [665, 357]"))))
+
+
 def _spec_object(tmp_path, names, bootstrap, window=1500.0):
     return ctr.CtrSpec(tmp_path / "c.json", "", CONFIG, tmp_path / "r.encal", tmp_path / "l.csv", "", tmp_path / "o.json",
                        tuple(ctr.Acquisition(n, tmp_path / f"{n}.ldat", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0), None)

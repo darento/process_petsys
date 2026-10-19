@@ -9,7 +9,9 @@ configuration and ``.encal`` of the job that solved it, and uncorrected
 point-source LDATs, each with a declared source position and uncertainty
 (mm, scanner frame of the selected geometry). The LUT's job file must still
 exist: it proves that the configuration and ``.encal`` are the job's and that
-no point-source LDAT was a job input.
+no point-source LDAT was a job input. The configuration may differ from the
+job's only in ``energy_range`` (owner 2026-10-19): such a run is reported as a
+study at other cuts (``cuts_identical_to_lut_job: false``), not the FR-13 result.
 
 A source position is either declared (mm) or ``"lor_convergence"``: the point
 closest to the acquisition's own LORs (least squares, refitted on LORs within
@@ -59,6 +61,7 @@ import time
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import ndtr
+import yaml
 
 from src.cornell.skew.geometry import (C_MM_PER_PS, NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
                                        SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN)
@@ -76,6 +79,7 @@ _OPTIONAL = {"lor_distance_mm": 15.0, "sensitivity_lor_mm": [10.0, 25.0], "windo
 _ACQUISITION_KEYS = {"name", "ldat", "source_mm", "source_sigma_mm", "input_correction"}
 _ACQUISITION_OPTIONAL = {"provenance", "declared"}
 LOCALIZE = "lor_convergence"
+ANALYSIS_KEY = "energy_range"   # the one configuration key a CTR run may change against the LUT job (owner 2026-10-19)
 LOCALIZATION_ITERATIONS = 6
 LOCALIZATION_FLOOR_MM = 5.0
 FWHM_PER_SIGMA = 2 * math.sqrt(2 * math.log(2))
@@ -230,8 +234,16 @@ def frozen_inputs(spec):
     job_config = Path(job["config"])
     job_config = job_config if job_config.is_absolute() else ROOT / job_config
     config_sha = _sha256(spec.config)
-    if config_sha != _sha256(job_config):
-        raise CtrError(f"configuration {spec.config} differs from the LUT job's {job_config}")
+    ours = yaml.safe_load(spec.config.read_text(encoding="utf-8"))
+    theirs = yaml.safe_load(job_config.read_text(encoding="utf-8"))
+    differ = sorted(key for key in set(ours) | set(theirs) if ours.get(key) != theirs.get(key))
+    if set(differ) - {ANALYSIS_KEY}:
+        raise CtrError(f"configuration {spec.config} differs from the LUT job's {job_config} in "
+                       f"{sorted(set(differ) - {ANALYSIS_KEY})}; only {ANALYSIS_KEY!r} may differ")
+    window = ours.get(ANALYSIS_KEY)
+    if not (isinstance(window, list) and len(window) == 2 and all(isinstance(v, (int, float)) for v in window)
+            and all(math.isfinite(v) for v in window) and 0 <= window[0] < window[1]):
+        raise CtrError(f"{ANALYSIS_KEY} must be [low, high] keV with 0 <= low < high")
     encal_sha = _sha256(spec.encal)
     if encal_sha not in set((provenance.get("encal_sha256") or {}).values()):
         raise CtrError(f".encal {spec.encal} is not one the LUT job used")
@@ -245,8 +257,10 @@ def frozen_inputs(spec):
     return {"lut": str(spec.lut), "lut_sha256": lut_sha, "lut_table_sha256": lut.manifest["table"]["sha256"],
             "lut_input_correction": lut.input_correction, "lut_job": str(job_path),
             "lut_job_sha256": provenance["job_sha256"], "lut_runs": provenance.get("runs"),
-            "config": str(spec.config), "config_sha256": config_sha, "encal": str(spec.encal),
-            "encal_sha256": encal_sha}, lut
+            "config": str(spec.config), "config_sha256": config_sha, "lut_job_config": str(job_config),
+            "lut_job_config_sha256": _sha256(job_config), "energy_range_kev": [float(v) for v in window],
+            "lut_job_energy_range_kev": theirs.get(ANALYSIS_KEY), "cuts_identical_to_lut_job": not differ,
+            "encal": str(spec.encal), "encal_sha256": encal_sha}, lut
 
 
 class Delays:
@@ -345,6 +359,12 @@ def _model(params, edges):
 
 def _width_at(counts, centers, background_per_bin, fraction):
     """Model-free full width at ``fraction`` of the peak height above the background (3-bin smoothing)."""
+    crossing = level_crossings(counts, centers, background_per_bin, fraction)
+    return None if crossing is None else float(crossing[1] - crossing[0])
+
+
+def level_crossings(counts, centers, background_per_bin, fraction):
+    """(left, right, level) where the smoothed histogram crosses ``fraction`` of its height above background."""
     smooth = np.convolve(counts, np.ones(3) / 3, mode="same")
     k = int(np.argmax(smooth))
     height = smooth[k] - background_per_bin
@@ -362,7 +382,7 @@ def _width_at(counts, centers, background_per_bin, fraction):
         return None
     x_left = centers[left - 1] + width * (level - smooth[left - 1]) / (smooth[left] - smooth[left - 1])
     x_right = centers[right] + width * (smooth[right] - level) / (smooth[right] - smooth[right + 1])
-    return float(x_right - x_left)
+    return float(x_left), float(x_right), float(level)
 
 
 def fit_histogram(counts, edges, *, start=None):
@@ -594,6 +614,9 @@ def run_ctr(spec, *, log=print):
     """Stream every acquisition once, fit, write the report JSON, histogram CSV and plot; return the report."""
     started = time.perf_counter()
     inputs, lut = frozen_inputs(spec)
+    if not inputs["cuts_identical_to_lut_job"]:
+        log(f"energy window {inputs['energy_range_kev']} keV differs from the LUT job's "
+            f"{inputs['lut_job_energy_range_kev']} keV: a study at other cuts, not the FR-13 result")
     acquisitions = []
     for acquisition in spec.acquisitions:
         if not acquisition.ldat.is_file():
@@ -637,6 +660,8 @@ def run_ctr(spec, *, log=print):
         "acquisitions": acquisitions,
         "cuts": {"pre_geometry": "LUT job selection (energy window, minimodule, slab draw seed "
                                  f"{spec.seed}, coincidence window)",
+                 "energy_window_kev": inputs["energy_range_kev"],
+                 "identical_to_lut_job": inputs["cuts_identical_to_lut_job"],
                  "geometry": hypotheses[0].name, "lor_distance_mm": spec.lor_distance_mm,
                  "lor_between_endpoints": True, "window_ps": spec.window_ps, "bin_ps": spec.bin_ps,
                  "max_records": spec.max_records},
@@ -660,7 +685,7 @@ def run_ctr(spec, *, log=print):
     spec.output.parent.mkdir(parents=True, exist_ok=True)
     spec.output.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
     _write_histograms(spec, accumulator)
-    _plot(spec, accumulator, results)
+    _plot(spec, accumulator, results, inputs["energy_range_kev"])
     return report
 
 
@@ -676,7 +701,7 @@ def _write_histograms(spec, accumulator):
                              int(nominal[:, k].sum())])
 
 
-def _plot(spec, accumulator, results):
+def _plot(spec, accumulator, results, energy_window_kev):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -690,11 +715,21 @@ def _plot(spec, accumulator, results):
         if fit["status"] == "fitted":
             model = _model((fit["mean_ps"], fit["sigma_ps"], fit["signal_events"], fit["background_events"]), edges)
             ax.plot(centers, model, lw=1.2, label=f"Gaussian + flat, FWHM {fit['fwhm_ps']:.0f} ps")
-        ax.set_yscale(scale)
+            background = fit["background_events"] / len(centers)
+            for fraction, label, colour in ((0.5, "model-free FWHM", "tab:red"), (0.1, "model-free FWTM", "tab:green")):
+                crossing = level_crossings(pooled, centers, background, fraction)
+                if crossing is not None:
+                    left, right, level = crossing
+                    ax.plot([left, right], [level, level], "|-", color=colour, lw=1.4, ms=10,
+                            label=f"{label} {right - left:.0f} ps")
+        ax.set_yscale(scale if pooled.any() else "linear")
+        if scale == "linear":
+            ax.set_xlim(-1500, 1500)
         ax.set_xlabel("corrected t1 - t2 minus geometric TOF (ps)")
         ax.set_ylabel(f"events / {spec.bin_ps:g} ps")
         ax.legend(fontsize=8)
-    figure.suptitle(f"Point-source CTR, LUT {spec.lut.name}, LOR <= {spec.lor_distance_mm:g} mm")
+    figure.suptitle(f"Point-source CTR, LUT {spec.lut.name}, energy {energy_window_kev[0]:g}-{energy_window_kev[1]:g} keV, "
+                    f"LOR <= {spec.lor_distance_mm:g} mm")
     figure.tight_layout()
     figure.savefig(spec.output.with_suffix(".png"), dpi=120)
     plt.close(figure)
@@ -716,6 +751,11 @@ def main(argv=None):
         print(f"pooled fit unavailable: {fit['status']}")
         return 1
     total = (pooled["uncertainty"]["fwhm_ps"] or {}).get("total")
-    print(f"pooled CTR FWHM {fit['fwhm_ps']:.1f} ps" + (f" +- {total:.1f} ps" if total is not None else "")
-          + f" (model-free {fit['model_free_fwhm_ps']}, {fit['events']:.0f} events)")
+    free = (pooled["uncertainty"]["model_free_fwhm_ps"] or {}).get("total")
+    print(f"pooled CTR: model-free FWHM "
+          + (f"{fit['model_free_fwhm_ps']:.1f}" if fit["model_free_fwhm_ps"] is not None else "n/a")
+          + (f" +- {free:.1f}" if free is not None else "") + f" ps, Gaussian FWHM {fit['fwhm_ps']:.1f}"
+          + (f" +- {total:.1f}" if total is not None else "") + f" ps; {fit['events']:.0f} events, energy window "
+          f"{report['cuts']['energy_window_kev']} keV"
+          + ("" if report["cuts"]["identical_to_lut_job"] else " (differs from the LUT job)"))
     return 0
