@@ -1,6 +1,6 @@
 # Spec 008 — Cornell streaming timing calibration
 
-Status: `in progress` (2026-10-13; owner authorizes isolated skew work while spec 005 awaits operator verification)
+Status: `shipped` (2026-10-19; T11 validation on Windows, [known limitations](#known-limitations-at-closing))
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md).
 
@@ -73,6 +73,16 @@ Owner inputs and qualification, 2026-10-11 to 2026-10-13:
 ## Completion criteria
 
 All requirements have a passing named check and documented limitations. Known synthetic delays recover exactly in the noiseless case after fixing the gauge; noisy/asymmetric-source fixtures recover within declared uncertainty. A provisional 10 ps channel precision target is a quality gate, not a reason to fabricate estimates for poorly constrained channels. Cornell real-data validation includes independent timing assessment and equivalent workloads for performance. Shared reader changes also retain IMAS parity. All required repository suites run; unavailable acquisitions produce explicit skips and leave real-data validation pending.
+
+## Known limitations at closing
+
+Owner decisions 2026-10-19, closing the spec:
+
+- **FR-14 accepted as is.** The >=10x gate rests on T1a warm decoding (~19.96x, matched prefix only). The >=3x complete-job target was not measured (no worker sweep, disk ceiling or matched legacy job) and no complete-job speedup is claimed.
+- **CTR outliers (T9b, r7-only T10 LUT).** 8 channels keep a point-source offset beyond 1 ns after the LUT: 5389, 131853, 131915, 528653, 655629, 656141, 659725, 659917; 655629, 656141 and 659917 are ~3.5-5 ns off and suspect. Satellite peaks at -5/+5 ns hold 1.4 %/0.7 % of the main peak (one 200 MHz clock period; likely a timestamp effect). Both are recorded, not corrected; statuses and delays are unchanged.
+- **No production LUT.** Cornell operators deleted the pooled v3 LUT and the v4 native table (not rebuilt); the only surviving LUT is the r7-only T10 replacement LUT. Production use needs a new pooled job and `export`.
+- **Normalization-phantom axial centre unconfirmed.** `NORMALIZATION_PHANTOM` is centred at frame z = 0 (middle-SM centre), 26 mm from the centre of the 10 active axial rows (third SM half populated, permanent).
+- **TOF-only source spacing** agrees with LOR convergence within ~2 % (scale 0.981 +- 0.002, cut dependent); no timing-scale error is claimed.
 
 ## Qualifications still needed before physical calibration
 

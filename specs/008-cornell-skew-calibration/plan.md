@@ -1,6 +1,6 @@
 # Plan — Cornell streaming timing calibration
 
-Status: approved plan for [in-progress spec 008](spec.md), updated 2026-10-13. Owner authorizes isolated skew implementation; spec 005 is paused awaiting operator verification. Run7 inputs pass bounded preparation checks; full data/physical/converter qualification pending. [Ordered tasks](tasks.md). [Paper research](../../docs/research/cornell-skew-calibration.md). [Local probe evidence](../../docs/research/cornell-skew-probes.md). [PETsys native-offset contract](../../docs/research/petsys-time-offset-contract.md).
+Status: approved plan for [spec 008](spec.md), shipped 2026-10-19 (T11); updated 2026-10-13. Owner authorizes isolated skew implementation; spec 005 is paused awaiting operator verification. Run7 inputs pass bounded preparation checks; full data/physical/converter qualification pending. [Ordered tasks](tasks.md). [Paper research](../../docs/research/cornell-skew-calibration.md). [Local probe evidence](../../docs/research/cornell-skew-probes.md). [PETsys native-offset contract](../../docs/research/petsys-time-offset-contract.md).
 
 ## Recommendation
 
