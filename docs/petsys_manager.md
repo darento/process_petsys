@@ -10,6 +10,10 @@ PETsys Manager runs the Cornell acquisition, RAW conversion, energy calibration,
 | Hardware workflows (DAQD, initialize, acquire, live QC, pipeline) | Accepted on the Cornell machine on 2026-10-06 (T19): initialization, acquisition, STOP and bias-off, retries, live QC, complete pipeline and close ([`acceptance.md`](../specs/003-petsys-manager-migration/acceptance.md)) |
 | Linux runtime environment | Clean-checkout audit (5/5, production process backend) and dummy process checks (16/16) pass on the Cornell machine (2026-10-02) |
 | Comparison with the reference scripts on real data | Pass on the January 2026 Cornell data: calibration, LM and QC identical to the reference; P = 1 calibration and QC also identical on Cornell F18 compact data (2026-10-05) ([`acceptance.md`](../specs/003-petsys-manager-migration/acceptance.md)) |
+| GUI usability (1.1.0, [spec 005](../specs/005-manager-gui-usability/spec.md)) | Released; the Cornell operator walkthrough (T17) is pending |
+| LM timing correction (1.2.0, [spec 009](../specs/009-cornell-timing-walk/spec.md); GUI 1.3.0, [spec 010](../specs/010-manager-timing-lut-gui/spec.md)) | Checked on Windows and the Cornell PC (2026-10-20); see [Timing correction in LM](#timing-correction-in-lm) for its limits |
+
+The installed version is in the window title and the first command-log line; releases are listed in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## Prerequisites (Cornell Linux machine)
 
@@ -64,6 +68,9 @@ doi_limits_file: /path/to/doi_limits.txt    # LM
 calibration_file: /path/to/system.encal     # manual LM (per-slab or position .encal)
 pair_map_file: /path/to/pairs.txt           # LM module-pair IDs
 region_map_file: /path/to/regions.tsv       # LM regions
+skew_lut_file: /path/to/time_delays.csv     # optional (1.2.0+): canonical skew LUT applied to LM dt
+walk_lut_file: /path/to/walk_lut.json       # optional (1.2.0+): walk LUT, needs its skew LUT
+lm_timing_uncorrected: keep                 # keep (raw dt, counted) or drop (counted): events without a correction
 daq_type: PFP_KX7
 cards: [/dev/psdaq1, /dev/psdaq0]
 socket_path: /tmp/d.sock
@@ -102,7 +109,10 @@ lm_metadata:                                 # written into every LM header; all
   detector_pixels_x: null                    # 1..127
   detector_pixels_y: null
   timestamp_unit: null
+last_folders: {}                             # 1.1.0+: last folder of each file dialog, kept by the GUI
 ```
+
+Version compatibility: a profile with `last_folders` needs Manager 1.1.0 or later, and one with the timing fields needs 1.2.0 or later. Unset timing fields are not written, so such a profile stays readable by older versions.
 
 ## Private input checklist
 
@@ -114,6 +124,7 @@ These files are machine- and system-specific, are not in the repository, and are
 - [ ] LM pair map and region map.
 - [ ] A system energy calibration (`.encal`) for manual LM, either per slab (`ID(t_ch, slab)`) or by position (`ID(time_ch, slab, region)`). The pipeline makes its own.
 - [ ] LM header metadata confirmed for the reconstruction software (geometry, pixels, isotope, timestamp unit).
+- [ ] Optional: a skew LUT and walk LUT for LM timing correction, fitted on the same map and COG/DOI limits (on the Cornell PC: `~/timing_luts/`).
 
 ## Workflows and format routes
 
@@ -123,14 +134,38 @@ These files are machine- and system-specific, are not in the repository, and are
 | Acquire | Acq. Time, Acquisition Name, optional hardware trigger | `<name>.rawf`/`.idxf` (`data_dir`) |
 | Convert, coincidence | `.rawf` | compact coincidence `.ldat` (`data_dir`) |
 | Create energy cal file | compact coincidence `.ldat`; positions per slab P; event limit (target T per histogram, or the reference 10 M per file) | P = 1: per-slab `.encal`; P ≥ 2: position `.encal` with COG regions; plus status, sidecar and plot (`calibration_dir/<run>`) |
-| Generate LM file | compact coincidence `.ldat` (read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
+| Generate LM file | compact coincidence `.ldat` (read at the Max Hits per Side of its conversion), `.encal`, limits, pair/region maps, LM metadata; optional skew/walk LUTs | `.lm` with provenance and optional debug plots (`lm_dir/<run>`) |
 | Run quality control (live) | 60 s with source or 180 s without (fixed presets), Acquisition Name | compact coincidence conversion, then QC report (run folder in `data_dir`) |
 | Analyze existing compact LDAT | **compact coincidence** `.ldat` | QC report (`report_dir/<run>`) |
 | Run complete pipeline | Acq. Time, Acquisition Name, splits, max hits, positions per slab | acquire → compact coincidence conversion → calibration → LM, all in one run folder in `data_dir` |
 
 `.ldat` files carry no reliable format marker, so every input list must be confirmed as compact coincidence before use. Each stage checks the records it reads (hit counts, truncation, channels of the selected map, finite energies) in the same pass, before publishing anything from them, and never reads a file only to check it (FR-24): conversion checks the first 10,000 records of each output and records them as structure-checked; LM reads and checks whole files once; calibration stops at its passing-event limit; QC checks its sample. Records a stage does not read are not checked, and its provenance says so (QC: records in the file are known only when the whole file was read). A defect after the first 10,000 records fails the first stage that reads it.
 
-Not available: singles counts (LDAT coincidence records contain two detectors, not a singles population), keV energies in QC (QC reports raw a.u.), calibrated DOI depth (the DOI value is a light-sharing ratio), and hardware actions off the Cornell Linux machine.
+## Window
+
+- **Progress:** each stage shows a progress bar, counter, elapsed time and time remaining (input bytes, calibration phases and fit keys, conversion splits). Pipeline and live QC also show a stage overview.
+- **Banners:** a warning banner for failures, stopped runs and an unknown SiPM bias state. During acquisition the banner is green while the RAW file grows and red when it stops.
+- **Recent Runs tab:** lists the runs in each destination's `runs.tsv`. From a finished run, next-step offers and "use as input" fill the target tab from its `run.json`; a conversion run folder can be picked as input directly.
+- **Advanced sections:** expert settings are in collapsible Advanced sections, which show how many values differ from their defaults.
+- **File dialogs** open in the last folder used for that input (`last_folders` in the profile).
+
+## Timing correction in LM
+
+LM can correct each event's `dt` (ps) with a skew LUT ([spec 008](../specs/008-cornell-skew-calibration/spec.md)) and, optionally, a walk LUT ([spec 009](../specs/009-cornell-timing-walk/spec.md)). Without a skew LUT, the `.lm` file is byte-identical to an uncorrected run.
+
+- **Setting it:** in the LM tab, "LM File Generation Settings": **Skew LUT (timing)** and **Walk LUT (timing)** file rows, and the policy for events without a correction (**Keep with raw dt (counted)** or **Drop (counted)**, disabled without a skew LUT). They are the profile fields `skew_lut_file`, `walk_lut_file` and `lm_timing_uncorrected`; Save writes them.
+- **Events without a correction:** either TIME channel has no applied skew delay, or a walk input is missing. `keep` (default) writes them with their raw `dt`; `drop` rejects them. Both are counted.
+- **Before START:** the LM tab and the pipeline plan state which correction the next run applies (`Timing correction: none (raw dt)`, or the table names and policy). The prerequisites run the LM stage's table checks and block START on a mismatch: a skew LUT of another map, a residual LUT solved on natively corrected data, a walk LUT fitted with other COG/DOI limits or not paired with the skew LUT, or a calibration layout or region count the walk LUT cannot accept. For the pipeline, whose calibration does not exist yet, the layout comes from Positions per Slab.
+- **Result:** the LM stage report shows events corrected, kept with raw `dt` or dropped, walk-input clamps, and a warning when the calibration differs from the walk fit's (both SHA-256 prefixes). The job record and sidecar record both tables' SHA-256 values and the counts.
+- **Calibration:** LM converts keV with the run's own calibration. One other than the walk fit's is accepted if it has the same layout and region count, and the run is flagged `calibration_differs_from_fit`.
+- **Limits:**
+  - **Uncorrected LDAT only.** The LUTs are solved on LDAT converted without PETsys's native time-offset table, and LM cannot tell a natively corrected LDAT from its contents. Apply them only to uncorrected conversions (e.g. `NEMA_SR_*_conv_uncorr`); applying them to natively corrected data (e.g. the Cornell `norm_10082026_r*` LDATs) corrects twice.
+  - The current walk LUT was fitted with a per-slab calibration, so it accepts only per-slab calibrations (pipeline: Positions per Slab = 1) until a walk LUT is fitted with a region layout.
+  - Fitting LUTs is not done in the Manager; see specs 008 and 009.
+
+## Not available
+
+Singles counts (LDAT coincidence records contain two detectors, not a singles population), keV energies in QC (QC reports raw a.u.), calibrated DOI depth (the DOI value is a light-sharing ratio), and hardware actions off the Cornell Linux machine.
 
 ## Safety semantics
 
@@ -187,7 +222,9 @@ Not available: singles counts (LDAT coincidence records contain two detectors, n
 | `src/cornell/cli.py` | Headless processing CLI: request/result JSON, progress events, exit codes |
 | `src/cornell/inputs.py` | Processing config/map/limits/calibration loading, bounded LDAT validation |
 | `src/cornell/calibration.py` | Per-slab/position energy calibration (two bounded passes) |
-| `src/cornell/listmode.py` | Streamed LM writer with the reference header/record layout |
+| `src/cornell/listmode.py` | Streamed LM writer with the reference header/record layout; optional skew/walk `dt` correction |
+| `src/cornell/skew/lut.py`, `src/cornell/skew/walk.py` | Skew and walk LUT loading and checks used by LM (the rest of `src/cornell/skew/` fits them offline) |
+| `src/cornell/parallel.py` | Worker pool shared by calibration, LM and QC |
 | `src/cornell/qc.py`, `src/cornell/qc_report.py` | QC analysis and its PDF/Excel/plot reports |
 | shared `src/` modules | Readers, mapping (`mapping_generator.py`), fits and helpers reused from the package |
 
