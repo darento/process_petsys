@@ -494,6 +494,8 @@ def run_listmode(request, events, cancelled):
         "en_min_ch_applied": False,
         "calibration_non_positive_mu_as_no_factor": len(calibration.non_positive),
         "zero_width_limit_keys": {"cog": len(cog.zero_width), "doi": len(doi.zero_width)},
+        "timing_correction": None if timing is None else timing.record,   # spec 010 FR-4: the job record's block
+        "calibration_sha256": calibration.sha256,
     }
     return written, summary
 

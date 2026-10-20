@@ -98,6 +98,7 @@ class ManagerSession:
         self._threads = []
         self._probes = {}        # selection key -> (request, cancellation Event)
         self._map_cache = None   # (file stamps, mapping) for the event-limit plan
+        self._timing_cache = {}  # file stamps -> spec 010 FR-5 table issues
         self._probe_request = 0
         self._folders_unsaved = False   # "no profile file" for dialog folders is logged once
 
@@ -191,6 +192,8 @@ class ManagerSession:
                     report = preflight(profile, action, options, inputs, repo_root=self.repo_root,
                                        probe=self.probe)
                     issues[key] = report.issues
+                    if report.settings is not None and action in (Action.LISTMODE, Action.PIPELINE):
+                        issues[key] += self._timing_issues(report.settings)
                     if report.settings is not None and action in (Action.CALIBRATE, Action.PIPELINE):
                         try:
                             plans[key] = self._limit_plan(report.settings)
@@ -199,6 +202,26 @@ class ManagerSession:
                 except Exception as exc:  # A probe/profile fault is a reason, never readiness.
                     issues[key] = (PrerequisiteIssue("settings", f"{type(exc).__name__}: {exc}"),)
             self.events.put(ShellEvent("readiness", Readiness(generation, issues, plans)))
+
+    def _timing_issues(self, settings):
+        """Spec 010 FR-5 table checks, cached by the stamps of every file they read: readiness re-runs per edit."""
+        from .workflow import timing_table_issues
+        names = ("yaml_file", "map_file", "cog_limits_file", "doi_limits_file", "skew_lut_file", "walk_lut_file",
+                 "calibration_file")
+        stamp = [settings.action, settings.options.regions]
+        for name in names:
+            path = settings.paths.get(name)
+            try:
+                info = os.stat(path) if path is not None else None
+            except OSError:
+                info = None
+            stamp.append((name, None if path is None else str(path), info and (info.st_size, info.st_mtime_ns)))
+        stamp = tuple(stamp)
+        if stamp not in self._timing_cache:
+            if len(self._timing_cache) >= 8:
+                self._timing_cache.clear()
+            self._timing_cache[stamp] = timing_table_issues(settings)
+        return self._timing_cache[stamp]
 
     def _limit_plan(self, settings):
         """Calibration event-limit plan shown before a run (FR-21); the map's key count is cached per file.

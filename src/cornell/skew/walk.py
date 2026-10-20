@@ -352,17 +352,19 @@ def check_pairing(skew_lut, skew_sha256, walk_lut):
                         "and that skew LUT was not solved with it")
 
 
-def check_files(walk_lut, context):
+def check_files(walk_lut, files):
     """The COG and DOI limits must be the ones the walk LUT was fitted with. The calibration may be another one
     of the same layout and region count (owner 2026-10-20: each run converts keV with its own calibration).
+    ``files``: ``WalkContext.files``; a calibration entry without SHA-256 (spec 010 FR-5: a pipeline's calibration
+    before it exists) is checked by layout and region count only.
     Returns {"calibration_differs_from_fit": bool, "fitted_calibration_sha256": ...}."""
     fitted = walk_lut.manifest.get("listmode_files") or {}
     differ = sorted(k for k in ("cog_limits", "doi_limits")
-                    if (fitted.get(k) or {}).get("sha256") != context.files[k]["sha256"])
+                    if (fitted.get(k) or {}).get("sha256") != files[k]["sha256"])
     if differ:
         raise WalkError(f"listmode files {differ} differ from those the walk LUT was fitted with")
-    ours, theirs = context.files["calibration"], fitted.get("calibration") or {}
-    same = theirs.get("sha256") == ours["sha256"]
+    ours, theirs = files["calibration"], fitted.get("calibration") or {}
+    same = ours["sha256"] is not None and theirs.get("sha256") == ours["sha256"]
     if not same and (theirs.get("layout"), theirs.get("num_regions")) != (ours["layout"], ours["num_regions"]):
         raise WalkError(f"listmode calibration {ours['layout']} with {ours['num_regions']} region(s) differs in "
                         f"layout from the walk LUT's ({theirs.get('layout')}, {theirs.get('num_regions')} region(s))")

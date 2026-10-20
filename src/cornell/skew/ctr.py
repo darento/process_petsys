@@ -752,7 +752,7 @@ def _walk(spec, lut):
         context = walk.WalkContext.from_files(spec.config, *(local(files[k]) for k in ("calibration", "cog_limits",
                                                                                         "doi_limits")))
         walk.check_pairing(lut, _sha256(spec.lut), table)
-        calibration = walk.check_files(table, context)
+        calibration = walk.check_files(table, context.files)
     except walk.WalkError as error:
         raise CtrError(str(error)) from None
     if table.sha256 != str(extra["walk_lut_sha256"]).lower():

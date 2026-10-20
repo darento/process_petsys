@@ -54,7 +54,7 @@ from .contracts import (MANAGER_ROUTE, Action, Artifact, CommandResult, DataForm
                         InputDescriptor, OutputValidation, Population, ResultStatus, RunEvent, SourceMode, freeze,
                         to_plain)
 from .runner import Clock, CommandRunner, RunnerPolicy
-from .settings import RunSettings, lm_header_metadata
+from .settings import PrerequisiteIssue, RunSettings, lm_header_metadata
 
 STAGES = {
     Action.ACQUIRE: ("acquisition",),
@@ -332,6 +332,38 @@ def _processing_config(settings, action):
     return load_processing_config(path, processing_root=settings.processing_root, action=action)
 
 
+TIMING_FIELDS = {"skew_lut": "skew_lut_file", "walk_lut": "walk_lut_file"}
+
+
+def timing_table_issues(settings):
+    """Spec 010 FR-5: the LM stage's skew/walk LUT refusals before START, as profile-field issues.
+
+    LM: against the LM tab's calibration file. Pipeline: its calibration does not exist yet, so only the layout
+    from Positions per Slab (1: one factor per slab) is checked. Empty without a skew LUT or when the listmode
+    files themselves do not load (``prepare`` reports those)."""
+    from src.cornell import listmode as lm
+    from src.cornell.inputs import InputError, load_calibration, load_limits
+    paths = settings.paths
+    if settings.action not in (Action.LISTMODE, Action.PIPELINE) or paths.get("skew_lut_file") is None:
+        return ()
+    try:
+        mapping = _processing_config(settings, Action.LISTMODE).mapping
+        cog = load_limits(paths.get("cog_limits_file"), mapping, kind="cog")
+        doi = load_limits(paths.get("doi_limits_file"), mapping, kind="doi")
+        if settings.action == Action.LISTMODE:
+            calibration = lm.calibration_entry(load_calibration(paths.get("calibration_file"), mapping))
+        else:
+            regions = settings.options.regions
+            calibration = {"path": None, "sha256": None, "layout": "per_slab" if regions == 1 else "position",
+                           "num_regions": regions}
+        lm.check_timing_tables(mapping, calibration, cog, doi, paths["skew_lut_file"], paths.get("walk_lut_file"))
+    except lm.TimingTableError as exc:
+        return (PrerequisiteIssue(TIMING_FIELDS[exc.field], str(exc)),)
+    except (WorkflowError, InputError, OSError, TypeError, ValueError):
+        pass
+    return ()
+
+
 def prepare(settings):
     """Check every stage of the chosen graph; nothing is created or launched. Raises WorkflowError."""
     from src.cornell.inputs import InputError, load_calibration, load_limits, select_inputs
@@ -390,6 +422,8 @@ def prepare(settings):
                 issues.append("LM metadata unavailable: " + ", ".join(missing))
         if action == Action.LISTMODE:   # per-slab or position; its own region count is used
             load_calibration(paths.get("calibration_file"), config.mapping)
+        if "listmode" in stages:      # spec 010 FR-5: never acquire for an LM stage that refuses its tables
+            issues.extend(f"{issue.field}: {issue.message}" for issue in timing_table_issues(settings))
         if action in (Action.CALIBRATE, Action.LISTMODE, Action.QC_ANALYZE):
             select_inputs(settings.inputs, action, processing_root=settings.processing_root)
     except WorkflowError as exc:

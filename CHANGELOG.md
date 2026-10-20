@@ -50,6 +50,14 @@ First versioned release. Offline LDAT inspection as shipped by:
 
 ## PETsys Manager
 
+### 1.3.0 — 2026-10-20
+
+Timing LUTs in the window, as shipped by [spec 010](specs/010-manager-timing-lut-gui/spec.md). The correction and the LM output are those of 1.2.0; profiles stay readable by 1.2.0.
+
+- **LM tab:** "Skew LUT (timing)" and "Walk LUT (timing)" file rows and the keep/drop choice for events without a correction (disabled without a skew LUT), saved in the profile as `skew_lut_file`, `walk_lut_file` and `lm_timing_uncorrected`.
+- **Before START:** the LM tab and the pipeline plan state which correction applies. The prerequisites run the LM stage's table checks (map, COG/DOI limits, skew/walk pairing, calibration layout; for the pipeline, the layout from Positions per Slab), so a mismatch blocks START instead of failing the LM stage after acquisition.
+- **Result:** the LM stage report shows events corrected, kept with raw `dt` or dropped, walk-input clamps, and a warning when the calibration differs from the walk fit's. The listmode CLI summary carries the job record's `timing_correction` block and the calibration SHA-256.
+
 ### 1.2.0 — 2026-10-20
 
 Timing correction in list mode, as shipped by [spec 009](specs/009-cornell-timing-walk/spec.md). Without the new profile fields, the list-mode output is unchanged.

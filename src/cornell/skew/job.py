@@ -628,7 +628,7 @@ def run_job(job, *, log=_print):
                 table = tw.WalkLut.read(job.walk_lut)
                 context = tw.WalkContext.from_files(job.config, job.listmode["calibration"],
                                                     job.listmode["cog_limits"], job.listmode["doi_limits"])
-                calibration = tw.check_files(table, context)
+                calibration = tw.check_files(table, context.files)
             except (ValueError, OSError) as error:
                 raise JobError(f"walk LUT {job.walk_lut}: {error}") from error
             walk = {"lut": table, "context": context}

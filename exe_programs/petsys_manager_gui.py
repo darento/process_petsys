@@ -57,7 +57,7 @@ from src.tk_input import disable_x_input_method
 
 disable_x_input_method()  # before any Tk root (bug-tk-ibus-destroy-hang)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 TITLE = "PETsys Manager - Cornell"
 RECENT_TAB = "Recent Runs"     # spec 005 FR-3
 TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processing",
@@ -87,7 +87,10 @@ PROFILE_FIELDS = {
     "pair_map_file": ("LM Pair Map File:", "file"),
     "region_map_file": ("LM Region Map File:", "file"),
     "lm_dir": ("LM Destination:", "dir"),
+    "skew_lut_file": ("Skew LUT (timing):", "file"),   # spec 010 FR-1: listmode timing correction (spec 009)
+    "walk_lut_file": ("Walk LUT (timing):", "file"),
 }
+TIMING_POLICIES = (("keep", "Keep with raw dt (counted)"), ("drop", "Drop (counted)"))   # spec 010 FR-2
 DAQ_FIELDS = {"daq_type": "DAQ Type:", "cards": "DAQ Cards (comma-separated):", "socket_path": "DAQD Socket:"}
 # Editable acquisition safety limits (FR-20): name -> (label, type). Growth is shown in MB (10^6 bytes).
 SAFETY_FIELDS = {
@@ -543,11 +546,46 @@ class InputSelection:
         return True
 
 
+def timing_plan_text(skew, walk, policy):
+    """Listmode timing correction the current fields give (spec 010 FR-3): display only, no table is read."""
+    if not skew:
+        return "Timing correction: none (raw dt)" + ("; a walk LUT needs its skew LUT" if walk else "")
+    tables = f"skew LUT {Path(skew).name}" + (f" + walk LUT {Path(walk).name}" if walk else "")
+    events = "kept with raw dt" if policy == "keep" else "dropped"
+    return f"Timing correction: {tables}; events without a correction are {events} (counted)"
+
+
+def timing_result_text(summary):
+    """The LM stage's timing correction from its CLI summary (spec 010 FR-4; spec 009 counters)."""
+    block = summary.get("timing_correction")
+    if block is None:
+        return "\n  Timing correction: none (raw dt)"
+    observed, rejected = summary.get("observations") or {}, summary.get("rejected") or {}
+    walk = block.get("walk_lut") or {}
+    text = (f"\n  Timing correction ({'skew + walk LUTs' if walk else 'skew LUT'}): "
+            f"{observed.get('timing_corrected', 0):,} events corrected, ")
+    if block.get("uncorrected_events") == "drop":
+        text += f"{rejected.get('no_timing_correction', 0):,} without a correction dropped"
+    else:
+        text += f"{observed.get('timing_uncorrected_kept', 0):,} without a correction kept with raw dt"
+    clamped = {name[len("walk_clamped_"):]: count for name, count in observed.items()
+               if name.startswith("walk_clamped_") and count}
+    if clamped:
+        text += "\n  Walk inputs clamped to the table edges: " + ", ".join(
+            f"{name} {count:,}" for name, count in clamped.items())
+    if walk.get("calibration_differs_from_fit"):
+        text += (f"\n  Warning: the LM calibration ({str(summary.get('calibration_sha256'))[:12]}...) is not the one "
+                 f"the walk LUT was fitted with ({str(walk.get('fitted_calibration_sha256'))[:12]}...); same layout, "
+                 "accepted")
+    return text
+
+
 def profile_texts(profile):
     """What each profile-backed field shows for ``profile``; ``MachineProfile()`` gives the Advanced defaults."""
     texts = {name: getattr(profile, name) or "" for name in PROFILE_FIELDS}
     texts.update(daq_type=profile.daq_type, cards=", ".join(profile.cards), socket_path=profile.socket_path,
-                 target_per_key=str(profile.limits.calibration_target_per_key), workers=str(profile.limits.workers))
+                 target_per_key=str(profile.limits.calibration_target_per_key), workers=str(profile.limits.workers),
+                 lm_timing_uncorrected=profile.lm_timing_uncorrected)
     for name in SAFETY_FIELDS:
         value = profile.safety.min_growth_bytes / 1e6 if name == "min_growth_mb" else getattr(profile.safety, name)
         texts[f"safety.{name}"] = str(value) if type(value) is int else format(value, ".15g")
@@ -857,6 +895,7 @@ class PETsysManager:
         self.qc_plots = tk.BooleanVar(root, False)
         self.qc_slabs = tk.BooleanVar(root, False)
         self.lm_debug = tk.BooleanVar(root, True)          # the reference LM call always passes -d
+        self.timing_policy = tk.StringVar(root, "keep")    # profile lm_timing_uncorrected (spec 010 FR-2)
         self.limit_mode = tk.StringVar(root, "target")     # FR-21: calibration event limit, per run
         self.target_per_key = tk.StringVar(root)           # FR-21: T, saved in the profile limits
         self.workers = tk.StringVar(root)                  # FR-15: worker processes, saved in the profile limits
@@ -865,7 +904,8 @@ class PETsysManager:
         self.lm_vars = {name: tk.StringVar(root) for name in LM_FIELDS}
         self.field_vars = {**self.vars, **{f"safety.{name}": var for name, var in self.safety_vars.items()},
                            "hit_limit": self.hit_limit, "positions": self.positions, "limit_mode": self.limit_mode,
-                           "target_per_key": self.target_per_key, "workers": self.workers, "lm_debug": self.lm_debug}
+                           "target_per_key": self.target_per_key, "workers": self.workers, "lm_debug": self.lm_debug,
+                           "lm_timing_uncorrected": self.timing_policy}
         # Advanced defaults: an empty profile's values, and this window's initial run options.
         self.defaults = {**profile_texts(MachineProfile()),
                          **{name: self.field_vars[name].get() for name in ("hit_limit", "positions", "limit_mode",
@@ -875,7 +915,7 @@ class PETsysManager:
         for variable in (*self.vars.values(), *self.safety_vars.values(), *self.lm_vars.values(), self.acq_time, self.acq_name,
                          self.hw_trigger, self.raw_input, self.splits, self.convert_duration, self.hit_limit,
                          self.positions, self.qc_source, self.limit_mode, self.target_per_key, self.workers,
-                         self.qc_plots, self.qc_slabs, self.lm_debug):
+                         self.qc_plots, self.qc_slabs, self.lm_debug, self.timing_policy):
             variable.trace_add("write", self._edited)
         session.log(f"PETsys Manager {__version__}; checkout {session.repo_root}")
         self.profile_state = session.open()
@@ -1148,17 +1188,26 @@ class PETsysManager:
     def _lm_tab(self, tab):
         self._selection(tab, "listmode")
         frame = self._frame(tab, "LM File Generation Settings")
-        self._fields(frame, ("calibration_file", "region_map_file", "lm_dir"))
+        self._fields(frame, ("calibration_file", "region_map_file", "lm_dir", "skew_lut_file", "walk_lut_file"))
+        policy = ctk.CTkFrame(frame, fg_color="transparent")   # spec 010 FR-2
+        policy.grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(policy, text="Events without a timing correction:").pack(side="left", padx=(0, 6))
+        self.timing_radios = [ctk.CTkRadioButton(policy, text=text, variable=self.timing_policy, value=value)
+                              for value, text in TIMING_POLICIES]
+        for radio in self.timing_radios:
+            radio.pack(side="left", padx=4)
+        self.timing_plan = ctk.CTkLabel(frame, text="", **self._small())   # spec 010 FR-3
+        self.timing_plan.grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2))
         ctk.CTkLabel(frame, text="Regions come from the calibration file: ID(t_ch, slab) = one factor per slab, a "
                                  "position file = its region count.", **self._small()).grid(
-            row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2))
+            row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 2))
         advanced = self._advanced(frame, "lm")
-        advanced.grid(row=5, column=0, columnspan=3, sticky="ew")
+        advanced.grid(row=9, column=0, columnspan=3, sticky="ew")
         self._fields(advanced.body, ("cog_limits_file", "doi_limits_file", "pair_map_file"))
         ctk.CTkCheckBox(advanced.body, text="Write LM debug plots (reference -d)", variable=self.lm_debug).grid(
             row=4, column=0, columnspan=3, sticky="w", padx=20, pady=2)
         self._button(frame, "listmode", "Generate LM File", command=self.generate_lm).grid(
-            row=6, column=0, columnspan=3, padx=20, pady=10)
+            row=10, column=0, columnspan=3, padx=20, pady=10)
         metadata = self._frame(tab, "LM Header Metadata (saved in the profile; empty = unavailable)")
         metadata.grid_columnconfigure(3, weight=1)
         for index, (name, (label, _)) in enumerate(LM_FIELDS.items()):
@@ -1581,6 +1630,7 @@ class PETsysManager:
                 text += limit_used_text(summary)
             elif stage.stage_id == "listmode" and summary:
                 text += f"\n  {summary.get('records_written', 0):,} LM records written"
+                text += timing_result_text(summary)
                 if summary.get("calibration_non_positive_mu_as_no_factor"):
                     text += f"\n  Warning: {summary['calibration_non_positive_mu_as_no_factor']:,} calibration " \
                             "row(s) with mu <= 0 (failed fits) were read as no factor; their pairs are rejected " \
@@ -1975,12 +2025,17 @@ class PETsysManager:
                       "hits per side (RAWF to LDAT tab)")
         acq_time = self.acq_time.get().strip() or '?'
         name = self.acq_name.get().strip() or '?'
+        skew = self.vars["skew_lut_file"].get().strip()
+        timing = timing_plan_text(skew, self.vars["walk_lut_file"].get().strip(), self.timing_policy.get())
+        self.timing_plan.configure(text=timing)
+        for radio in self.timing_radios:   # the policy applies only with a skew LUT; its value is kept
+            radio.configure(state="normal" if skew else "disabled")
         self.pipeline_plan.configure(
             text=f"This run: acquire {acq_time} s -> compact coincidence conversion, "
                  f"{conversion} -> calibration, {self.positions.get().strip() or '?'} position(s) per slab (LDAT "
                  f"Processing tab) -> LM with the LM tab files and metadata, header acquisition/measurement time "
                  f"{acq_time} s (Acq. Time). One new run folder {name}_pipeline-P{self.positions.get().strip() or '?'}"
-                 "_<date>_<time> in the Output Data Folder, a numbered folder per stage.")
+                 f"_<date>_<time> in the Output Data Folder, a numbered folder per stage.\n{timing}")
         self._show_limit_plans()
         mode = SourceMode(self.qc_source.get())
         self.qc_plan.configure(
@@ -2015,6 +2070,7 @@ class PETsysManager:
         values["cards"] = tuple(card.strip() for card in self.vars["cards"].get().split(",") if card.strip())
         values["safety"] = self.safety_from_ui()
         values["lm_metadata"] = self.lm_metadata_from_ui()
+        values["lm_timing_uncorrected"] = self.timing_policy.get()
         try:
             target = int(self.target_per_key.get().strip())
         except ValueError:

@@ -27,6 +27,7 @@ from src.petsys_manager.contracts import Action, Artifact, CommandResult, Result
 from src.petsys_manager.session import WorkflowResult
 from src.petsys_manager.settings import MachineProfile, ToolCapabilities, load_profile, save_profile
 from src.petsys_manager.workflow import StageOutcome, WorkflowCoordinator, WorkflowOutcome
+from timing_lut_helpers import write_skew_lut, write_walk_lut
 
 
 class ProcessingWorld(ToolWorld):
@@ -62,6 +63,7 @@ class ProcessingChecks(ConversionBase):
         # The manager processes compact coincidence only (FR-10): compact twins of the seeded records.
         descriptors = lm.compact_twins(descriptors, count=1500, random_slabs=False)
         cls.lm_root, cls.lm_files = lm.root, tuple(d.path for d in descriptors)
+        cls.lm_maps, cls.lm_mapping = maps, lm.mapping     # spec 010: LUTs fitted with these files
         cls.files = {"cog_limits_file": str(maps["cog_limits"].path), "doi_limits_file": str(maps["doi_limits"].path),
                      "calibration_file": str(maps["calibration"].path), "pair_map_file": str(maps["pairs"].path),
                      "region_map_file": str(maps["regions"].path)}
@@ -484,6 +486,70 @@ class ProcessingChecks(ConversionBase):
         self.assertEqual((values, profile), ui)                         # only the calibration list was edited
         self.assertEqual(self.digests(), before)
         self.assertEqual(self.settings(), saved)
+        self.assertEqual(app.guard.violations, [])
+
+    @pytest.mark.slow  # ~16 s
+    @pytest.mark.fr("010-FR-1", "010-FR-2", "010-FR-3", "010-FR-4", "010-FR-5")  # spec 010 T5
+    def test_timing_luts_in_the_lm_tab(self):
+        maps = self.lm_maps
+        skew = write_skew_lut(self.base / "skew.csv", self.lm_mapping)
+        walk = write_walk_lut(self.base / "walk.json", skew, maps["calibration"], maps["cog_limits"],
+                              maps["doi_limits"])
+        other = write_skew_lut(self.base / "other skew.csv", self.lm_mapping, seed=5)
+        app = self.processing_app("lm", real_cli=True)
+        self.select(app, "listmode", self.lm_files, "compact_coincidence")
+        # FR-1: both rows in the LM tab's main section, not in its Advanced section.
+        body = str(app.advanced["lm"].body)
+        for name in ("skew_lut_file", "walk_lut_file"):
+            (entry,) = app.entries[name]
+            self.assertFalse(str(entry).startswith(body), name)
+            self.assertEqual(app.vars[name].get(), "")
+        # FR-2/FR-3: no skew LUT: radios disabled, no correction planned.
+        self.assertEqual([radio.cget("state") for radio in app.timing_radios], ["disabled", "disabled"])
+        self.assertEqual(app.timing_plan.cget("text"), "Timing correction: none (raw dt)")
+        self.assertIn("\nTiming correction: none (raw dt)", app.pipeline_plan.cget("text"))
+        app.vars["walk_lut_file"].set(str(walk))
+        self.settle_edit(app, app.vars["skew_lut_file"], str(skew))
+        self.assertEqual([radio.cget("state") for radio in app.timing_radios], ["normal", "normal"])
+        planned = gui.timing_plan_text(str(skew), str(walk), "keep")
+        self.assertEqual(app.timing_plan.cget("text"), planned)
+        self.assertIn(planned, app.pipeline_plan.cget("text"))
+        self.assertIn("unsaved edits", app.profile_status.cget("text"))
+        self.assertEqual(self.state(app, "listmode"), "normal", self.reason(app, "listmode"))
+        # FR-5: an unpaired skew LUT is a prerequisite issue naming the field; Generate stays disabled.
+        self.settle_edit(app, app.vars["skew_lut_file"], str(other))
+        self.assertEqual(self.state(app, "listmode"), "disabled")
+        self.assertIn("Walk LUT (timing)", self.reason(app, "listmode"))
+        self.assertIn("was fitted with skew LUT", self.reason(app, "listmode"))
+        self.settle_edit(app, app.vars["skew_lut_file"], str(skew))
+        # FR-1/FR-2: save, reload and clear; unset fields are not written (Manager <= 1.1.1 rejects them).
+        self.settle_edit(app, app.timing_policy, "drop")
+        self.assertTrue(app.save_profile())
+        written = yaml.safe_load(self.profile_path.read_text(encoding="utf-8"))
+        self.assertEqual((written["skew_lut_file"], written["walk_lut_file"], written["lm_timing_uncorrected"]),
+                         (str(skew), str(walk), "drop"))
+        app.vars["walk_lut_file"].set("")
+        self.settle_edit(app, app.timing_policy, "keep")
+        self.assertTrue(app.reload_profile())
+        self.settled(app)
+        self.assertEqual((app.vars["walk_lut_file"].get(), app.timing_policy.get()), (str(walk), "drop"))
+        app.vars["skew_lut_file"].set("")
+        app.vars["walk_lut_file"].set("")
+        self.settle_edit(app, app.timing_policy, "keep")
+        self.assertEqual([radio.cget("state") for radio in app.timing_radios], ["disabled", "disabled"])
+        self.assertTrue(app.save_profile())
+        written = yaml.safe_load(self.profile_path.read_text(encoding="utf-8"))
+        self.assertFalse({"skew_lut_file", "walk_lut_file", "lm_timing_uncorrected"} & set(written))
+        # FR-4: a corrected run reports its counts; the request carries the tables.
+        app.vars["skew_lut_file"].set(str(skew))
+        self.settle_edit(app, app.vars["walk_lut_file"], str(walk))
+        text = self.finish(app, "listmode", app.lm_status, 600)
+        self.assertTrue(text.startswith("LM generation succeeded"), text)
+        request = self.requests(self.run_root(text))["listmode"]
+        self.assertEqual((request["files"]["skew_lut"], request["files"]["walk_lut"],
+                          request["options"]["timing_uncorrected"]), (str(skew), str(walk), "keep"))
+        self.assertRegex(text, r"Timing correction \(skew \+ walk LUTs\): [\d,]+ events corrected, [\d,]+ without "
+                               r"a correction kept with raw dt")
         self.assertEqual(app.guard.violations, [])
 
     @pytest.mark.slow  # ~13 s

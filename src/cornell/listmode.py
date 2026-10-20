@@ -360,6 +360,59 @@ def walk_inputs(ctx, sides):
     return out
 
 
+class TimingTableError(InputError):
+    """A skew or walk LUT refused for a listmode run; ``field`` names the table: "skew_lut" or "walk_lut"."""
+
+    def __init__(self, field, message):
+        super().__init__(message)
+        self.field = field
+
+
+def calibration_entry(calibration):
+    """A loaded calibration's identity as the walk LUT records it."""
+    return {"path": str(calibration.path), "sha256": calibration.sha256, "layout": calibration.layout,
+            "num_regions": calibration.num_regions}
+
+
+def check_timing_tables(mapping, calibration, cog_limits, doi_limits, skew_lut, walk_lut=None):
+    """Spec 009 FR-6 refusals of a skew LUT and optional walk LUT for listmode with ``mapping`` and these files.
+
+    ``calibration``: ``calibration_entry``; without SHA-256 (spec 010 FR-5: a pipeline's calibration before it
+    exists) only its layout and region count are checked. Returns (dense delays, skew SHA-256, applied channels,
+    walk LUT or None, walk file check); raises ``TimingTableError``."""
+    from src.cornell.skew import walk as tw
+    from src.cornell.skew.lut import CanonicalLut, LutError
+    try:
+        skew = CanonicalLut.read(skew_lut)
+        sha = hashlib.sha256(Path(skew_lut).read_bytes()).hexdigest()
+    except (LutError, OSError, KeyError) as exc:
+        raise TimingTableError("skew_lut", str(exc)) from exc
+    if (skew.input_correction or {}).get("state") != "uncorrected":
+        raise TimingTableError("skew_lut", "the skew LUT was solved from natively corrected data; listmode applies "
+                                           "uncorrected-data LUTs only")
+    maps = CalibrationMaps.from_mapping(mapping)
+    rows = skew.rows[skew.rows["apply"]]
+    channels = rows["time_channel"].astype(np.int64)
+    inside = (channels >= 0) & (channels < maps.max_ch)
+    foreign = channels[~inside | ~maps.time_mask[np.where(inside, channels, 0)]]
+    if len(foreign):
+        raise TimingTableError("skew_lut", f"skew LUT channels {foreign[:5].tolist()} are not TIME channels of "
+                                           f"{mapping.path.name}: the LUT belongs to another map")
+    delays = np.full(maps.max_ch, np.nan)
+    delays[channels] = rows["delay_ps"]
+    table, checked = None, {}
+    try:
+        if walk_lut is not None:
+            table = tw.WalkLut.read(walk_lut)
+            files = {name: {"path": str(item.path), "sha256": item.sha256}
+                     for name, item in (("cog_limits", cog_limits), ("doi_limits", doi_limits))}
+            checked = tw.check_files(table, {**files, "calibration": calibration})
+        tw.check_pairing(skew, sha, table)
+    except (tw.WalkError, OSError, KeyError) as exc:
+        raise TimingTableError("walk_lut", str(exc)) from exc
+    return delays, sha, int(len(channels)), table, checked
+
+
 @dataclass(frozen=True)
 class TimingCorrection:
     """Spec 009 FR-6: frozen skew LUT (dense ps by TIME channel, NaN where none applies) and optional walk LUT."""
@@ -370,36 +423,15 @@ class TimingCorrection:
 
     @classmethod
     def load(cls, config, calibration, cog_limits, doi_limits, skew_lut, walk_lut=None, policy="keep"):
-        from src.cornell.skew import walk as tw
-        from src.cornell.skew.lut import CanonicalLut, LutError
         if policy not in TIMING_POLICIES:
             raise InputError(f"uncorrected-timing policy must be one of {TIMING_POLICIES}")
         try:
-            skew = CanonicalLut.read(skew_lut)
-            if (skew.input_correction or {}).get("state") != "uncorrected":
-                raise InputError("the skew LUT was solved from natively corrected data; listmode applies "
-                                 "uncorrected-data LUTs only")
-            maps = CalibrationMaps.from_mapping(config.mapping)
-            rows = skew.rows[skew.rows["apply"]]
-            channels = rows["time_channel"].astype(np.int64)
-            inside = (channels >= 0) & (channels < maps.max_ch)
-            foreign = channels[~inside | ~maps.time_mask[np.where(inside, channels, 0)]]
-            if len(foreign):
-                raise InputError(f"skew LUT channels {foreign[:5].tolist()} are not TIME channels of "
-                                 f"{config.mapping.path.name}: the LUT belongs to another map")
-            delays = np.full(maps.max_ch, np.nan)
-            delays[channels] = rows["delay_ps"]
-            sha = hashlib.sha256(Path(skew_lut).read_bytes()).hexdigest()
-            table, checked = None, {}
-            if walk_lut is not None:
-                table = tw.WalkLut.read(walk_lut)
-                checked = tw.check_files(table, tw.WalkContext.build(config.mapping, calibration, cog_limits,
-                                                                     doi_limits))
-            tw.check_pairing(skew, sha, table)
-        except (LutError, tw.WalkError, OSError, KeyError) as exc:
+            delays, sha, applied, table, checked = check_timing_tables(
+                config.mapping, calibration_entry(calibration), cog_limits, doi_limits, skew_lut, walk_lut)
+        except TimingTableError as exc:
             raise InputError(f"timing correction: {exc}") from exc
         record = {"skew_lut": {"path": str(Path(skew_lut).resolve()), "sha256": sha,
-                               "applied_channels": int(len(channels))},
+                               "applied_channels": applied},
                   "walk_lut": None if table is None else {"path": str(Path(walk_lut).resolve()),
                                                           "sha256": table.sha256,
                                                           "fit_kind": table.manifest.get("fit_kind"), **checked},
