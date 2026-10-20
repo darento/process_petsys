@@ -1,6 +1,6 @@
 # Plan — Timing LUTs in the PETsys Manager GUI
 
-Status: approved plan for [spec 010](spec.md), 2026-10-20. [Ordered tasks](tasks.md).
+Status: approved plan for [spec 010](spec.md), 2026-10-20; shipped 2026-10-20 (T6); deviations recorded in [tasks](tasks.md). [Ordered tasks](tasks.md).
 
 ## Recommendation
 

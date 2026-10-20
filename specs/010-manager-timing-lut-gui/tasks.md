@@ -1,6 +1,6 @@
 # Tasks — Timing LUTs in the PETsys Manager GUI
 
-Status: in progress, 2026-10-20. [Approved spec](spec.md), [plan](plan.md).
+Status: done, 2026-10-20 (spec shipped). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `010-FR-n` and names its check before coding.
@@ -55,12 +55,17 @@ Status: in progress, 2026-10-20. [Approved spec](spec.md), [plan](plan.md).
     - `python -m py_compile exe_programs/petsys_manager_gui.py` -> ok.
     - Changed test files, serial duration check: `python -m pytest tests/test_manager_timing_luts.py tests/test_manager_gui_processing.py -m "not real_data" -n 0 --slow-limit 5` -> **20 passed**.
     - `tests/test_manager_gui_shell.py`: in the full run (T6).
-- [ ] **T6 — Validation and release** (FR-6).
+- [x] **T6 — Validation and release** (FR-6).
   - `__version__` 1.3.0; CHANGELOG entry; full non-real suite; spec status.
   - **Manual (owner, Cornell PC):** set the LUTs in the LM tab, save, reload; LM on a representative Cornell LDAT with and without tables; check plan line, counts, job record.
   - **Done (2026-10-20):** `__version__` 1.3.0; CHANGELOG 1.3.0 entry.
   - **Verified (Windows):** full non-real suite `python -m pytest -m "not real_data"` -> **1 failed, 1339 passed, 24 skipped, 4 xfailed**. The failure, `tests/test_ldat_processing.py::test_cancel_returns_control_within_2_s_and_keeps_the_previous_dataset` (LDAT Inspector; no changed module), passes alone (`-n 0` -> **1 passed**): parallel-load timing.
-  - **Open:**
-    - `-m real_data`: not run. Listmode numbers are unchanged; the spec 009 `real_data` listmode test still covers the correction.
-    - Linux: `gui` tests and the full suite on the Cornell PC (desktop session) before deploying 1.3.0 there.
-    - The owner's interactive review above. The spec ships after it.
+  - **Not run:** `-m real_data`. Listmode numbers are unchanged; the spec 009 `real_data` listmode test still covers the correction.
+  - **Verified (Linux, Cornell PC, desktop session, 2026-10-20):** `python -m pytest -m "not real_data"` at `a141124` -> **1364 passed, 4 xfailed** (1368 items, none skipped: `gui` tests ran). A first run failed 138 LDAT tests because the checkout had `configs/imas_1DAQ.yaml` deleted; restored for this run, and fixed separately (bug-ldat-config-outside-tests: the IMAS fixture reads `tests/data/configs/imas_1DAQ.yaml`).
+  - **Operator review (owner, Cornell PC, Manager 1.3.0 at `c76bbff`, 2026-10-20): PASS.**
+    - **Files:** skew LUT `time_delays_r7_walk1.csv` (`3575e05a`) and walk LUT `walk_lut_phantom_all.json` (`5b7d4728`) with their manifests; COG/DOI limits `a5108e34` / `c5e712bb`; per-slab r7 `.encal` `3a1b86b2`. Processing YAML `configs/cornell_full_system.yaml` (map `maps/cornell_map_full_system.yaml`).
+    - **Input:** `NEMA_SR_10142026_X0Y-6Z0_coincCompact.ldat` (`73ea88b6`, uncorrected conversion, not used by any walk fit). The `norm_10082026_r*` LDATs were not used: they are natively corrected.
+    - **FR-1/FR-2/FR-3:** rows in the main LM section; radios disabled without a skew LUT; plan line naming both files and the policy; save, close, reopen restored the fields and "Keep".
+    - **FR-5:** with `encal_files/20260312_TwoNa22_120s_coincFixed_position_5regions.encal` the only prerequisite issue was "Walk LUT (timing): listmode calibration position with 5 region(s) differs in layout from the walk LUT's (per_slab, 1 region(s))", Generate disabled; with the r7 per-slab `.encal`, prerequisites met.
+    - **FR-4, corrected run** (`/mnt/nvme/LMs/NEMA_SR_10142026_X0Y-6Z0_lm-P1_2026-10-20_0443`, 2 min 12 s): 500,449 LM records; 498,636 corrected + 1,813 kept with raw dt (sum = records written); walk clamps charge 2, keV 35; no calibration warning. Job record: skew `3575e05a`, walk `5b7d4728`, `keep`, `calibration_differs_from_fit` false.
+    - **Uncorrected run** (`..._0447`, 2 min 05 s): 500,449 LM records, "Timing correction: none (raw dt)", job record without `timing_correction`.

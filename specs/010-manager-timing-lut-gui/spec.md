@@ -1,6 +1,6 @@
 # Spec 010 — Timing LUTs in the PETsys Manager GUI
 
-Status: `in progress` (approved 2026-10-20)
+Status: `shipped` (2026-10-20; T6 validation on Windows and the Cornell PC, [known limitations](#known-limitations-at-closing); PETsys Manager 1.3.0)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 009](../009-cornell-timing-walk/spec.md) FR-6 (listmode applies a skew LUT and a walk LUT to `dt`; profile keys `skew_lut_file`, `walk_lut_file`, `lm_timing_uncorrected`), which shipped with no GUI widget (PETsys Manager 1.2.0).
 
@@ -59,6 +59,12 @@ Let the operator select, see and save the listmode timing correction in the PETs
   - LM output bytes with and without tables equal the spec 009 tests' (unchanged code path).
 - **Suites:** affected Manager GUI, settings, workflow, CLI and listmode tests; GUI module compile check; full non-real suite at Validation.
 - **Operator review (Cornell PC, interactive):** set the LUTs in the LM tab, save, reload; run LM on a representative Cornell LDAT with and without tables; check the plan line, the counts and the job record.
+
+## Known limitations at closing
+
+- **Input correction state is not checked:** the LUTs were solved on LDAT converted without PETsys's native time-offset table. Listmode cannot tell a natively corrected LDAT from its contents, so the operator must apply the LUTs to uncorrected conversions only (`_conv_uncorr`). The Cornell `norm_10082026_r*` LDATs are natively corrected.
+- **Pipeline layout check only:** before START, a pipeline's calibration is checked by layout and region count. Whether it differs from the walk fit's calibration is reported after the LM stage.
+- **Production calibrations:** as in spec 009, the walk LUT accepts only per-slab calibrations, until a walk LUT is fitted with a region layout.
 
 ## Out of scope
 
