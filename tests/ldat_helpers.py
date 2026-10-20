@@ -4,8 +4,9 @@ Copied from the LDAT scripts: ``fixture_files``/``write_pairs`` (``ldat_inspecto
 ``CONFIGS``/``RECOVERY_CASES``/``fixture_pairs`` and the side/LDAT writers (``ldat_scale_check``),
 ``build``, ``EXPECTED_ROW``, ``SELECTION``, ``metrics_dataset`` and ``time_channels_by_position``
 (``ldat_views_check``), the slow reader, workbench and close-child body (``ldat_processing_check``).
-``Checks`` records a views section's checks for one test each. Cornell fixtures use the tracked
-January config (spec 007 Clarify, T18). GUI helpers import Tk lazily, so the module imports without
+``Checks`` records a views section's checks for one test each. Fixtures use tracked configs under
+``tests/data/configs``: the Cornell January config (spec 007 Clarify, T18) and a verbatim copy of
+``configs/imas_1DAQ.yaml`` (bug-ldat-config-outside-tests). GUI helpers import Tk lazily, so the module imports without
 a display.
 
 Import as ``from ldat_helpers import ...``; ``pyproject.toml`` puts ``tests/`` on the path.
@@ -25,7 +26,7 @@ from src.ldat_inspector.engine import (FileResult, Selection, Settings, SideTabl
                                        unpopulated_minimodules)
 from src.mapping_generator import ChannelType, map_factory
 
-CONFIGS = {"IMAS": REPO / "configs" / "imas_1DAQ.yaml",
+CONFIGS = {"IMAS": DATA / "configs" / "imas_1DAQ.yaml",       # verbatim copy of configs/imas_1DAQ.yaml
            "CORNELL": DATA / "configs" / "cornell_january.yaml"}
 
 

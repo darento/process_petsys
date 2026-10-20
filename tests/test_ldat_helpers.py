@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from helpers import REPO
+from helpers import DATA, REPO
 from ldat_helpers import CONFIGS, RECOVERY_CASES, Checks, build, fixture_files, side, write_ldat, write_pairs
 from src.ldat_inspector.engine import Settings, load_setup
 from src.read_compact import read_binary_file
@@ -20,6 +20,14 @@ def tracked(path):
     relative = path.resolve().relative_to(REPO).as_posix()
     result = subprocess.run(["git", "ls-files", "--error-unmatch", relative], cwd=REPO, capture_output=True)
     return result.returncode == 0
+
+
+@pytest.mark.fr("bug-ldat-config-outside-tests")
+@pytest.mark.parametrize("system", SYSTEMS)
+def test_fixture_configs_are_test_data(system):
+    """Fixture configs are tracked copies under tests/data/configs, never a machine's working configs/ file
+    (the Cornell PC deleted configs/imas_1DAQ.yaml, failing 138 LDAT tests, 2026-10-20)."""
+    assert CONFIGS[system].parent == DATA / "configs"
 
 
 def test_imports_without_tk():
