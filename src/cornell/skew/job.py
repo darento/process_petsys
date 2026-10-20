@@ -74,7 +74,7 @@ _REQUIRED = {"schema", "config", "encal", "reference_run", "down_regions", "runs
 _OPTIONAL = {"workers": 1, "seed": 0, "guard_ps": 1_000_000, "partitions": 16, "energy_peak_tolerance": 0.02,
              "disk_margin": 1.25, "min_peak_entries": 200, "per_run_solves": False, "reproducibility_floor": False,
              "outlier_threshold": 5.0, "pattern_outlier_ps": tpl.DEFAULT_THRESHOLD_PS, "native_source_lut": None,
-             "corrected_prefix_margin": 0.02}
+             "corrected_prefix_margin": 0.02, "walk_lut": None, "listmode": None}
 _RUN_KEYS = {"name", "directory", "prefix", "energy_calibration_prefix"}
 _RUN_OPTIONAL = {"encal", "ledger", "conversion"}
 # pair/channel bins of |native offset| for the second-pass report, ps
@@ -123,6 +123,8 @@ class Job:
     pattern_outlier_ps: float
     native_source_lut: Path | None = None
     corrected_prefix_margin: float = 0.02
+    walk_lut: Path | None = None        # spec 009 FR-4: walk LUT applied before the pair fits
+    listmode: dict | None = None        # its listmode calibration / cog_limits / doi_limits
 
 
 def load_job(path):
@@ -185,6 +187,13 @@ def load_job(path):
     regions = tuple(tuple(int(v) for v in region) for region in spec["down_regions"])
     if any(len(region) != 2 for region in regions):
         raise JobError("down regions are [SM, MM] pairs")
+    if (options["walk_lut"] is None) != (options["listmode"] is None):
+        raise JobError("walk_lut and listmode {calibration, cog_limits, doi_limits} go together")
+    listmode = options["listmode"]
+    if listmode is not None:
+        if not isinstance(listmode, dict) or set(listmode) != {"calibration", "cog_limits", "doi_limits"}:
+            raise JobError("listmode: {calibration, cog_limits, doi_limits} paths required")
+        listmode = {key: local(value) for key, value in listmode.items()}
     config = Path(spec["config"])
     return Job(path, hashlib.sha256(raw).hexdigest(), config if config.is_absolute() else ROOT / config,
                local(spec["encal"]), spec["reference_run"], regions, tuple(runs),
@@ -195,7 +204,8 @@ def load_job(path):
                bool(options["reproducibility_floor"]), float(options["outlier_threshold"]),
                float(options["pattern_outlier_ps"]),
                None if options["native_source_lut"] is None else local(options["native_source_lut"]),
-               float(options["corrected_prefix_margin"]))
+               float(options["corrected_prefix_margin"]),
+               None if options["walk_lut"] is None else local(options["walk_lut"]), listmode)
 
 
 def peak_memory():
@@ -502,7 +512,7 @@ def _disk_preflight(job, run, inputs, cache_dir):
     return {"estimated_bytes": int(need), "free_bytes": int(free)}
 
 
-def _prepare_run(job, run, inputs, corrected, info, lookup, hypothesis, log):
+def _prepare_run(job, run, inputs, corrected, info, lookup, hypothesis, log, walk=None):
     """Inventory, frozen roles, feature cache and observation set of one run."""
     run_dir = job.work / run.name
     clock = time.perf_counter()
@@ -540,8 +550,11 @@ def _prepare_run(job, run, inputs, corrected, info, lookup, hypothesis, log):
     info["stages"]["feature_cache_seconds"] = time.perf_counter() - clock
     features.require_complete()
     clock = time.perf_counter()
-    observations = tc.build_observations(features, hypothesis, run_dir / f"observations{tag}",
-                                         partitions=job.partitions)
+    walk_tag = "" if walk is None else f"-walk{walk['lut'].sha256[:12]}"
+    observations = tc.build_observations(features, hypothesis, run_dir / f"observations{tag}{walk_tag}",
+                                         partitions=job.partitions, walk=walk)
+    if walk is not None:
+        info["walk"] = observations.manifest["walk"]
     info["stages"]["observations_seconds"] = time.perf_counter() - clock
     info["first_failure"] = observations.manifest["first_failure"]
     info["geometry"] = observations.manifest["geometry"]
@@ -606,12 +619,27 @@ def run_job(job, *, log=_print):
         _, modules, _, _ = map_factory(str(ROOT / setup.provenance["map"]))
         lookup = td.channel_lookup(modules, job.down_regions)
         hypothesis = GeometryHypothesis.selected(job.config, setup)
+        walk = None
+        if job.walk_lut is not None:
+            if corrected:
+                raise JobError("walk_lut applies to uncorrected runs only")
+            from src.cornell.skew import walk as tw
+            try:
+                table = tw.WalkLut.read(job.walk_lut)
+                context = tw.WalkContext.from_files(job.config, job.listmode["calibration"],
+                                                    job.listmode["cog_limits"], job.listmode["doi_limits"])
+                calibration = tw.check_files(table, context)
+            except (ValueError, OSError) as error:
+                raise JobError(f"walk LUT {job.walk_lut}: {error}") from error
+            walk = {"lut": table, "context": context}
+            report["walk"] = {"walk_lut": str(job.walk_lut), "walk_lut_sha256": table.sha256,
+                              "listmode_files": context.files, **calibration}
         sets = {}
         for run in job.runs:
             report["runs"][run.name] = {"directory": str(run.directory), "stages": {}}
             try:
                 sets[run.name] = _prepare_run(job, run, inputs[run.name], corrected, report["runs"][run.name],
-                                              lookup, hypothesis, log)
+                                              lookup, hypothesis, log, walk)
             except (ValueError, OSError) as error:
                 if isinstance(error, JobError):
                     raise
@@ -694,6 +722,8 @@ def run_job(job, *, log=_print):
                           name: hashlib.sha256(json.dumps(s.manifest["fingerprint"], sort_keys=True).encode()).hexdigest()
                           for name, s in sets.items()},
                       "cross_run_outliers": report.get("cross_run_outliers"),
+                      **({} if walk is None else {"walk_lut": str(job.walk_lut),
+                                                  "walk_lut_sha256": walk["lut"].sha256}),
                       "asic_pattern_outliers": {"threshold_ps": job.pattern_outlier_ps, "channels": pattern_outliers},
                       "status": ("residual of natively corrected data: never exported natively nor applied to "
                                  "uncorrected data; use the composed LUT" if corrected

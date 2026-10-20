@@ -1,6 +1,6 @@
 # Spec 009 — Cornell time-walk correction
 
-Status: `approved` (2026-10-19; owner approved after clarification; [plan](plan.md), [tasks](tasks.md))
+Status: `shipped` (2026-10-20; T9 validation on Windows, [known limitations](#known-limitations-at-closing); PETsys Manager 1.2.0)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (per-channel skew LUT, point-source CTR). Evidence (untracked): [docs/research/cornell-timing-walk.md](../../docs/research/cornell-timing-walk.md).
 
@@ -60,6 +60,9 @@ Reduce the Cornell system CTR beyond the per-channel skew LUT by correcting each
 - **FR-1 — Walk inputs.**
   - One tracked function computes the four walk inputs per side. The walk fit, the skew job, the CTR and listmode all use it.
   - DOI and keV use listmode's definitions and its calibration and DOI-limits files.
+  - **Hits with charge >= 0 only (found at T1, 2026-10-20):** the skew ingest drops negative QDC charges (pedestal noise) before selection, while listmode's reader keeps them. The walk inputs are therefore computed by one function, `skew.walk.inputs`, from the selected minimodule's hits with charge >= 0 in both pipelines.
+    - Listmode's written DOI and keV keep the reference hits and are unchanged.
+    - On the X0Y0Z0 prefix, the written DOI differs from the walk DOI on 0.6 % of events, by up to 2.4 mm.
   - Missing inputs (no TIME hit, zero sums, no calibration or DOI limit for the key) are counted rejections, never zero corrections.
 - **FR-2 — Walk LUT contract.** Versioned schema containing:
   - bin edges, offsets in ps, events per bin;
@@ -88,11 +91,21 @@ Reduce the Cornell system CTR beyond the per-channel skew LUT by correcting each
   - `src/cornell/listmode.py` optionally applies a skew LUT and a walk LUT to `dt`, in ps, rounded before the int16 write.
   - Table paths come from Manager profile keys (`skew_lut`, `walk_lut`) and the listmode CLI/job.
   - Provenance records both SHA-256 values and the counts (clamped per input, missing inputs).
-  - Tables whose map, config, calibration or DOI-limits provenance does not match the listmode run are refused.
+  - Tables whose map, COG limits or DOI limits do not match the listmode run are refused.
+  - **Calibration (owner decision 2026-10-20, superseding "listmode refuses another calibration"):** production listmode converts keV with each run's own calibration. Any calibration with the same layout and region count as the one the walk LUT was fitted with is accepted. Both SHA-256 values are recorded and the run is flagged `calibration_differs_from_fit`. A different layout or region count is refused.
+  - **Owner decision (2026-10-19, at T7):** events without a correction are handled by an explicit policy:
+    - **Which events:** either timestamped TIME channel has no applied skew delay, or a walk input is missing.
+    - **`keep`** (default): written with their uncorrected `dt` and counted.
+    - **`drop`**: rejected and counted.
+    - The policy comes from profile `lm_timing_uncorrected` and request option `timing_uncorrected`.
+    - The owner also mentioned marking such events with a "characteristic" `dt`. That is not implemented: a sentinel `dt` would be read as TOF unless reconstruction knows it (reconstruction is out of scope).
   - Without tables, the output is byte-identical to the current writer. With tables, the corrected `dt` matches the CTR code's corrected `dt` on shared events.
 - **FR-7 — Phantom walk fit (last task).**
   - Fit the walk LUT from normalization-phantom data, with no known source.
   - Accepted only if it reproduces the point-source tables within a declared tolerance on populated bins, and gives the same held-out point-source CTR within its uncertainty. Otherwise it is recorded as a limitation.
+  - **Owner decision (2026-10-20, after T8):** accepted on the CTR criterion.
+    - The r7 phantom walk gives 393.9 ± 1.7 / 444.9 ± 0.6 ps on X0Y-1/-6/-10. The point-source walk gives 394.1 ± 2.3 / 444.9 ± 0.6 ps.
+    - The declared table tolerance is **20 ps rms** per side on point-source events; measured 13.7 ps rms (p95 26 ps). The tables have different quantile edges, so a per-bin comparison is not used.
 - **FR-8 — Diagnostics.**
   - PNGs of the fitted curves and the 2D table with bin counts, residual-vs-input profiles before and after, and per-position CTR before and after.
   - These are diagnostics, not validation evidence.
@@ -111,6 +124,15 @@ Reduce the Cornell system CTR beyond the per-channel skew LUT by correcting each
   - With tables, the corrected `dt` matches the CTR code on shared events.
 - **Phantom fit:** FR-7 passes or is recorded as a limitation.
 - **Suites:** the required repository suites run; missing acquisitions are explicit skips.
+
+## Known limitations at closing
+
+- **Same-day validation only:** X0Y-1/-6/-10Z0 were acquired on the same day as the X0Y0Z0 fit source. A point-source run from another day (stability) is pending.
+- **One r7 job, one point-source set:** the round trip used the r7-only job, as in spec 008 T10.
+- **The DOI walk input** excludes negative-charge hits. On 0.6 % of events it differs from listmode's written DOI, by up to 2.4 mm.
+- **Phantom table vs point-source table:** 13.7 ps rms per side (owner-accepted tolerance 20 ps). `max_events` strides over train rows before geometry, so phantom fits must set it above the train row count (r7: 116M rows, 1.85 % accepted).
+- **Production calibrations:** the walk LUT was fitted with the per-slab r7 calibration. Production listmode with a region-layout calibration is refused until a walk LUT is fitted with that layout.
+- **Manager 1.2.0** is not yet run on the Cornell PC.
 
 ## Out of scope
 

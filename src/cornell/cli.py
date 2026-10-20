@@ -67,10 +67,11 @@ _SPEC = {
     },
     "listmode": {
         "files": {"calibration": "file", "calibration_sidecar": "file?", "cog_limits": "file",
-                  "doi_limits": "file", "pair_map": "file", "region_map": "file"},
+                  "doi_limits": "file", "pair_map": "file", "region_map": "file", "skew_lut": "file?",
+                  "walk_lut": "file?"},
         "options": {"num_regions": "int", "region_boundaries": "numbers?", "metadata": "metadata",
                     "batch_records": "int", "debug": "bool", "resume": "bool", "hit_limit": "int?",
-                    "lm_seed": "seed?", "workers": "int", "in_place": "bool"},
+                    "lm_seed": "seed?", "workers": "int", "in_place": "bool", "timing_uncorrected": "timing_policy"},
         "outputs": {"directory": "job_dir"},
     },
     "qc": {
@@ -179,6 +180,9 @@ def _value(kind, value, label):
     elif kind == "limit_mode":
         if value not in ("reference", "target"):
             raise RequestError(f"{label} must be 'reference' or 'target'")
+    elif kind == "timing_policy":
+        if value not in ("keep", "drop"):
+            raise RequestError(f"{label} must be 'keep' or 'drop'")
     elif kind == "metadata":
         names = [item.name for item in fields(LMMetadata)]
         _keys(value, names, label)
@@ -456,6 +460,10 @@ def run_listmode(request, events, cancelled):
                                    metadata_path=files["calibration_sidecar"])
     cog = load_limits(files["cog_limits"], mapping, kind="cog")
     doi = load_limits(files["doi_limits"], mapping, kind="doi")
+    if files["walk_lut"] is not None and files["skew_lut"] is None:
+        raise RequestError("files.walk_lut needs files.skew_lut: the walk LUT is fitted on skew-corrected timing")
+    timing = None if files["skew_lut"] is None else lm.TimingCorrection.load(
+        config, calibration, cog, doi, files["skew_lut"], files["walk_lut"], options["timing_uncorrected"])
     paths = [str(d.path) for d in descriptors]
     events.track_bytes(paths)
     result = lm.generate_listmode(
@@ -463,7 +471,7 @@ def run_listmode(request, events, cancelled):
         lm.load_region_map(files["region_map"], mapping), options["metadata"], request.outputs["directory"],
         resume=options["resume"], debug=options["debug"], batch_records=options["batch_records"],
         hit_limit=options["hit_limit"], lm_seed=options["lm_seed"], workers=options["workers"],
-        in_place=options["in_place"], cancelled=cancelled,
+        in_place=options["in_place"], cancelled=cancelled, timing=timing,
         progress=lambda index, path, records, written, **extra: events.progress(
             index, len(paths), path, records, records_written=written, phase="read", phases=["read"], **extra))
     if cancelled():

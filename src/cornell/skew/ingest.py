@@ -284,6 +284,9 @@ _MU_MISSING, _MU_VALID, _MU_INVALID = 0, 1, 2
 FEATURE_INT = ("record", "time_channel_1", "time_channel_2", "sm_1", "mm_1", "sm_2", "mm_2",
                "slab_1", "slab_2", "dt_ps", "module_tie")
 FEATURE_FLOAT = ("energy_kev_1", "energy_kev_2", "x_1", "y_1", "x_2", "y_2")
+# spec 009 FR-1 raw walk ingredients per side: timestamped TIME-hit charge, summed TIME charge,
+# summed ENERGY charge (the keV numerator) and listmode's DOI ratio (ENERGY sum / maximum), a.u.
+WALK_FEATURES = ("q_top_1", "q_time_1", "e_raw_1", "doi_ratio_1", "q_top_2", "q_time_2", "e_raw_2", "doi_ratio_2")
 _PRE_GEOMETRY = REJECTIONS[:9]
 
 
@@ -478,9 +481,24 @@ def _centroid(hits, m, energy, channel, kind, coord_x, coord_y):
 
 
 @numba.njit(cache=True)
+def _walk_ingredients(hits, m, energy, channel, kind, top):
+    """Spec 009 FR-1 raw walk ingredients of one side's selected minimodule: timestamped TIME-hit
+    charge, summed TIME charge and listmode's DOI ratio (ENERGY sum / ENERGY maximum, 0 without)."""
+    q_time = e_sum = e_max = 0.0
+    for j in range(m):
+        i = hits[j]
+        if kind[channel[i]] == 1:
+            q_time += energy[i]
+        else:
+            e_sum += energy[i]
+            e_max = max(e_max, np.float64(energy[i]))
+    return np.float64(energy[top]), q_time, e_sum / e_max if e_max != 0 else 0.0
+
+
+@numba.njit(cache=True)
 def _select(n1, n2, first, timestamp, energy, channel, kind, sm, mm, coord_x, coord_y, position,
             time_index, mu, mu_state, min_ch, low, high, window, file_index, first_record, seed_mix,
-            codes_map, codes, out_i, out_f):
+            codes_map, codes, out_i, out_f, out_w):
     kept0, kept1 = np.empty(512, np.int64), np.empty(512, np.int64)
     sel0, sel1 = np.empty(512, np.int64), np.empty(512, np.int64)
     keys, module_energy = np.empty(512, np.int64), np.empty(512)
@@ -549,6 +567,10 @@ def _select(n1, n2, first, timestamp, energy, channel, kind, sm, mm, coord_x, co
         out_f[n_out, 3] = y0
         out_f[n_out, 4] = x1
         out_f[n_out, 5] = y1
+        q0, t0, r0 = _walk_ingredients(sel0, s0, energy, channel, kind, top0)
+        q1, t1, r1 = _walk_ingredients(sel1, s1, energy, channel, kind, top1)
+        out_w[n_out, 0], out_w[n_out, 1], out_w[n_out, 2], out_w[n_out, 3] = q0, t0, e0, r0
+        out_w[n_out, 4], out_w[n_out, 5], out_w[n_out, 6], out_w[n_out, 7] = q1, t1, e1, r1
         n_out += 1
     return n_out
 
@@ -560,10 +582,15 @@ class FeatureBatch:
     codes: np.ndarray
     ints: np.ndarray
     floats: np.ndarray
+    walk: np.ndarray | None = None      # WALK_FEATURES columns (spec 009), None where not computed
 
     def column(self, name):
         if name in FEATURE_INT:
             return self.ints[:, FEATURE_INT.index(name)]
+        if name in WALK_FEATURES:
+            if self.walk is None:
+                raise KeyError(f"{name}: walk ingredients were not computed for these features")
+            return self.walk[:, WALK_FEATURES.index(name)]
         return self.floats[:, FEATURE_FLOAT.index(name)]
 
 
@@ -579,6 +606,7 @@ def select_batch(batch, lookup, *, file_index, seed=0):
     codes = np.empty(count, np.int8)
     ints = np.empty((count, len(FEATURE_INT)), np.int64)
     floats = np.empty((count, len(FEATURE_FLOAT)))
+    walk = np.empty((count, len(WALK_FEATURES)))
     codes_map = np.array([_CODE[label] for label in _PRE_GEOMETRY], np.int8)
     low, high = lookup.energy_range
     seed_mix = np.uint64(_splitmix64(seed & 0xFFFFFFFFFFFFFFFF))
@@ -586,8 +614,8 @@ def select_batch(batch, lookup, *, file_index, seed=0):
                 lookup.kind, lookup.sm, lookup.mm, lookup.coord_x, lookup.coord_y, lookup.position,
                 lookup.time_index, lookup.mu, lookup.mu_state, lookup.min_ch, float(low), float(high),
                 LEGACY_COINCIDENCE_WINDOW_PS, file_index, batch.first_record, seed_mix, codes_map,
-                codes, ints, floats)
-    return FeatureBatch(batch.first_record, codes, ints[:n].copy(), floats[:n].copy())
+                codes, ints, floats, walk)
+    return FeatureBatch(batch.first_record, codes, ints[:n].copy(), floats[:n].copy(), walk[:n].copy())
 
 
 def compiled_batches(path, lookup, *, file_index, max_records=None, seed=0, block_bytes=None,
@@ -709,7 +737,7 @@ def production_batches(path, lookup, partition, *, max_records=None, seed=0, blo
         if excluded.any():
             keep = excluded[features.column("record") - batch.first_record] == 0
             features = FeatureBatch(features.first_record, np.where(excluded != 0, excluded, features.codes),
-                                    features.ints[keep], features.floats[keep])
+                                    features.ints[keep], features.floats[keep], features.walk[keep])
         yield features
 
 

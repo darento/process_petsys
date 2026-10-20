@@ -87,8 +87,10 @@ GAUSSIAN_FWTM_TO_FWHM = math.sqrt(math.log(10) / math.log(2))  # 1.823
 MIN_FIT_EVENTS = 100
 TOF_EDGES_PS = np.arange(-2000.0, 2000.0 + 1, 100.0)
 MIN_TOF_BIN_EVENTS = 100
-STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied delay", "LOR outside distance",
-          "outside window", "in window")
+STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied delay", "walk input missing",
+          "LOR outside distance", "outside window", "in window")
+# spec 009 FR-5: optional walk LUT (with the listmode files its inputs come from) and earlier reports to tabulate
+WALK_OPTIONAL = {"walk_lut": None, "walk_lut_sha256": None, "listmode": None, "previous_reports": []}
 NOT_CTR = "shell (normalization phantom) timing width is model dependent and is not CTR"
 
 
@@ -125,6 +127,7 @@ class CtrSpec:
     depth_variants_mm: tuple
     max_records: int | None
     localization_events: int = 500_000
+    extra: dict | None = None       # keys of a file built on this one (spec 009 walk fit), validated there
 
     @property
     def edges_ps(self):
@@ -156,15 +159,22 @@ def _positive(value, label):
     return float(value)
 
 
-def load_ctr(path):
-    """Validated CTR file; paths are relative to the file (config: absolute or repository)."""
+def load_ctr(path, *, schema=SCHEMA, extra=None):
+    """Validated CTR file; paths are relative to the file (config: absolute or repository).
+
+    ``schema``/``extra`` let a file built on the CTR file (spec 009 walk fit) reuse it: ``extra`` maps its
+    own keys to defaults (``...`` = required); their raw values land in ``CtrSpec.extra``.
+    """
     path = Path(path)
     raw = path.read_bytes()
     spec = json.loads(raw)
-    if not isinstance(spec, dict) or spec.get("schema") != SCHEMA:
-        raise CtrError(f"CTR file schema must be {SCHEMA!r}")
-    if not _REQUIRED <= set(spec) <= _REQUIRED | set(_OPTIONAL):
-        raise CtrError(f"CTR file keys: required {sorted(_REQUIRED)}, optional {sorted(_OPTIONAL)}")
+    extra = (WALK_OPTIONAL if schema == SCHEMA else {}) if extra is None else extra
+    if not isinstance(spec, dict) or spec.get("schema") != schema:
+        raise CtrError(f"file schema must be {schema!r}")
+    required = _REQUIRED | {key for key, default in extra.items() if default is ...}
+    optional = set(_OPTIONAL) | set(extra)
+    if not required <= set(spec) <= required | optional:
+        raise CtrError(f"file keys: required {sorted(required)}, optional {sorted(optional - required)}")
     options = {key: spec.get(key, default) for key, default in _OPTIONAL.items()}
     base = path.resolve().parent
 
@@ -214,7 +224,8 @@ def load_ctr(path):
                    local(spec["encal"]), local(spec["lut"]), str(spec["lut_sha256"]).lower(), local(spec["output"]),
                    tuple(acquisitions), _positive(options["lor_distance_mm"], "lor_distance_mm"),
                    tuple(_positive(d, "sensitivity_lor_mm") for d in options["sensitivity_lor_mm"]), window, width,
-                   bootstrap, options["seed"], depths, limit, events)
+                   bootstrap, options["seed"], depths, limit, events,
+                   {key: spec.get(key, default) for key, default in extra.items()})
 
 
 def frozen_inputs(spec):
@@ -481,7 +492,9 @@ class Accumulator:
         self.channel_seen = np.zeros(m, bool)
         self.pair_seen = np.zeros((m, m), bool)
 
-    def add(self, index, features, geometries):
+    def add(self, index, features, geometries, walk_dt=None, keep=None):
+        """``keep``: events with walk inputs (both accumulators of a walk run hold the same events);
+        ``walk_dt``: W(side 1) - W(side 2) subtracted from the corrected ``t_1 - t_2`` (spec 009)."""
         spec, acquisition = self.spec, self.spec.acquisitions[index]
         stages = self.stages[index]
         codes, found = np.unique(features.codes, return_counts=True)
@@ -494,10 +507,15 @@ class Accumulator:
             return
         k1, k2 = self.delays.index(features.column("time_channel_1")), self.delays.index(features.column("time_channel_2"))
         applied = (k1 >= 0) & (k2 >= 0)
+        has_delay = applied
+        if keep is not None:
+            applied = applied & keep
         delays = self.delays.delays_ps
         # integers first: (t_1 - t_2) is exact, then - b_1 + b_2
         corrected = np.where(applied, features.column("dt_ps").astype(np.float64)
                              - delays[np.maximum(k1, 0)] + delays[np.maximum(k2, 0)], np.nan)
+        if walk_dt is not None:
+            corrected = corrected - np.where(applied, walk_dt, 0.0)
         bins = len(self.edges) - 1
         sigma = np.array(acquisition.source_sigma_mm)
         for v, variant in enumerate(self.variants):
@@ -515,7 +533,8 @@ class Accumulator:
             if v:
                 continue
             stages["invalid endpoint"] += int(np.count_nonzero(~valid))
-            stages["no applied delay"] += int(np.count_nonzero(valid & ~applied))
+            stages["no applied delay"] += int(np.count_nonzero(valid & ~has_delay))
+            stages["walk input missing"] += int(np.count_nonzero(valid & has_delay & ~applied))
             stages["LOR outside distance"] += int(np.count_nonzero(valid & applied & ~near))
             stages["outside window"] += int(np.count_nonzero(~inside))
             stages["in window"] += int(np.count_nonzero(inside))
@@ -642,13 +661,20 @@ def run_ctr(spec, *, log=print):
         else:
             entry["source"] = {"method": "declared", "position_mm": list(acquisition.source_mm)}
         sources.append(entry["source"]["position_mm"])
+    walk_info = _walk(spec, lut)
     accumulator = Accumulator(spec, delays, sources)
+    plain = Accumulator(spec, delays, sources) if walk_info else None
     for index, acquisition in enumerate(spec.acquisitions):
         t0 = time.perf_counter()
         for features in compiled_batches(acquisition.ldat, lookup, file_index=index, max_records=spec.max_records,
                                          seed=spec.seed):
             geometries = [apply_geometry(features, h) for h in hypotheses]
-            accumulator.add(index, features, geometries)
+            if walk_info is None:
+                accumulator.add(index, features, geometries)
+                continue
+            walk_dt, keep = _walk_dt(walk_info, features, index) if len(features.ints) else (None, None)
+            accumulator.add(index, features, geometries, walk_dt=walk_dt, keep=keep)
+            plain.add(index, features, geometries, keep=keep)
         stages = accumulator.stages[index]
         log(f"{acquisition.name}: {stages['records']:,} records, {stages['in window']:,} in window "
             f"({time.perf_counter() - t0:.1f} s)")
@@ -678,15 +704,104 @@ def run_ctr(spec, *, log=print):
         "coverage": {"applied_channels": applied, "applied_channels_seen": int(accumulator.channel_seen.sum()),
                      "applied_channel_pairs_seen": int(accumulator.pair_seen.sum())},
         "results": results,
+        **({} if walk_info is None else {
+            "walk": {"walk_lut": str(walk_info["path"]), "walk_lut_sha256": walk_info["lut"].sha256,
+                     "fit_kind": walk_info["lut"].manifest.get("fit_kind"),
+                     "fitted_with_skew_lut_sha256": walk_info["lut"].manifest.get("skew_lut_sha256"),
+                     "listmode_files": walk_info["context"].files, "clamped": walk_info["clamped"],
+                     **walk_info["calibration"],
+                     "note": "results are with walk; results_without_walk hold the same events without it"},
+            "results_without_walk": summarize(plain)}),
         "interpretation": "system CTR at these cuts (includes residual offset errors and endpoint blur); "
                           f"not an intrinsic detector CTR; {NOT_CTR}",
         "seconds": round(time.perf_counter() - started, 1),
     }
+    if spec.extra and spec.extra.get("previous_reports"):
+        report["round_trip"] = _round_trip(spec, report)
     spec.output.parent.mkdir(parents=True, exist_ok=True)
     spec.output.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
     _write_histograms(spec, accumulator)
     _plot(spec, accumulator, results, inputs["energy_range_kev"])
     return report
+
+
+def _walk(spec, lut):
+    """Spec 009 FR-5: the walk LUT, its pairing with the skew LUT and the listmode files, or None."""
+    extra = spec.extra or {}
+    named = [extra.get(k) is not None for k in ("walk_lut", "walk_lut_sha256", "listmode")]
+    skew_walk = (lut.manifest.get("provenance") or {}).get("walk_lut_sha256")
+    if not any(named):
+        if skew_walk:
+            raise CtrError(f"the skew LUT was solved with walk LUT {skew_walk[:12]}...: name a walk LUT paired with it")
+        return None
+    if not all(named):
+        raise CtrError("walk_lut, walk_lut_sha256 and listmode {calibration, cog_limits, doi_limits} go together")
+    from src.cornell.skew import walk
+    base = spec.path.resolve().parent
+
+    def local(value):
+        value = Path(value)
+        return value if value.is_absolute() else base / value
+
+    path = local(extra["walk_lut"])
+    files = extra["listmode"]
+    if not isinstance(files, dict) or set(files) != {"calibration", "cog_limits", "doi_limits"}:
+        raise CtrError("listmode: {calibration, cog_limits, doi_limits} paths required")
+    try:
+        table = walk.WalkLut.read(path)
+        context = walk.WalkContext.from_files(spec.config, *(local(files[k]) for k in ("calibration", "cog_limits",
+                                                                                        "doi_limits")))
+        walk.check_pairing(lut, _sha256(spec.lut), table)
+        calibration = walk.check_files(table, context)
+    except walk.WalkError as error:
+        raise CtrError(str(error)) from None
+    if table.sha256 != str(extra["walk_lut_sha256"]).lower():
+        raise CtrError(f"walk LUT table SHA-256 {table.sha256} is not the frozen {extra['walk_lut_sha256']}")
+    clamped = [dict.fromkeys(walk.INPUTS, 0) | {"walk input missing": 0} for _ in spec.acquisitions]
+    return {"path": path, "lut": table, "context": context, "clamped": clamped, "module": walk,
+            "calibration": calibration}
+
+
+def _walk_dt(info, features, index):
+    """W(side 1) - W(side 2) and the events with every walk input on both sides; clamps counted."""
+    walk = info["module"]
+    values, status1, status2 = walk.feature_inputs(info["context"], features)
+    keep = (status1 == 0) & (status2 == 0)
+    side1 = {n: values[f"{n}_1"] for n in walk.INPUTS}
+    side2 = {n: values[f"{n}_2"] for n in walk.INPUTS}
+    difference, out1, out2 = walk.walk_difference(info["lut"], side1, side2)
+    counts = info["clamped"][index]
+    counts["walk input missing"] += int(np.count_nonzero(~keep))
+    for name in walk.INPUTS:
+        counts[name] += int(np.count_nonzero(keep & out1[name])) + int(np.count_nonzero(keep & out2[name]))
+    return np.where(keep, difference, 0.0), keep
+
+
+def _round_trip(spec, report):
+    """Pooled and per-position numbers of the listed earlier CTR reports and of this one (spec 009 FR-5)."""
+    def numbers(results):
+        fit = results["fit"]
+        unc = results.get("uncertainty") or {}
+        return {"model_free_fwhm_ps": fit.get("model_free_fwhm_ps"), "fwhm_ps": fit.get("fwhm_ps"),
+                "model_free_fwtm_ps": fit.get("model_free_fwtm_ps"), "events": fit.get("events"),
+                "model_free_fwhm_total_ps": (unc.get("model_free_fwhm_ps") or {}).get("total"),
+                "fwhm_total_ps": (unc.get("fwhm_ps") or {}).get("total")}
+
+    def row(label, data, sha):
+        walk_info = data.get("walk") or {}
+        return {"report": label, "report_sha256": sha, "skew_lut_sha256": data["frozen_inputs"]["lut_sha256"],
+                "walk_lut_sha256": walk_info.get("walk_lut_sha256"),
+                "energy_window_kev": data["cuts"]["energy_window_kev"],
+                "results": {scope: numbers(entry) for scope, entry in data["results"].items()
+                            if entry.get("fit", {}).get("status") == "fitted"}}
+
+    base = spec.path.resolve().parent
+    rows = []
+    for name in spec.extra["previous_reports"]:
+        path = Path(name) if Path(name).is_absolute() else base / name
+        rows.append(row(str(path), json.loads(path.read_text(encoding="utf-8")), _sha256(path)))
+    rows.append(row("this report", report, None))
+    return rows
 
 
 def _write_histograms(spec, accumulator):
@@ -728,8 +843,9 @@ def _plot(spec, accumulator, results, energy_window_kev):
         ax.set_xlabel("corrected t1 - t2 minus geometric TOF (ps)")
         ax.set_ylabel(f"events / {spec.bin_ps:g} ps")
         ax.legend(fontsize=8)
-    figure.suptitle(f"Point-source CTR, LUT {spec.lut.name}, energy {energy_window_kev[0]:g}-{energy_window_kev[1]:g} keV, "
-                    f"LOR <= {spec.lor_distance_mm:g} mm")
+    walk_name = (spec.extra or {}).get("walk_lut")
+    figure.suptitle(f"Point-source CTR, LUT {spec.lut.name}" + (f" + walk {Path(walk_name).name}" if walk_name else "")
+                    + f", energy {energy_window_kev[0]:g}-{energy_window_kev[1]:g} keV, LOR <= {spec.lor_distance_mm:g} mm")
     figure.tight_layout()
     figure.savefig(spec.output.with_suffix(".png"), dpi=120)
     plt.close(figure)
@@ -758,4 +874,9 @@ def main(argv=None):
           + (f" +- {total:.1f}" if total is not None else "") + f" ps; {fit['events']:.0f} events, energy window "
           f"{report['cuts']['energy_window_kev']} keV"
           + ("" if report["cuts"]["identical_to_lut_job"] else " (differs from the LUT job)"))
+    if "results_without_walk" in report:
+        without = report["results_without_walk"]["pooled"]["fit"]
+        print(f"with walk LUT {report['walk']['walk_lut']}; same events without walk: model-free FWHM "
+              + (f"{without['model_free_fwhm_ps']:.1f}" if without.get("model_free_fwhm_ps") is not None else "n/a")
+              + f" ps, Gaussian FWHM {without['fwhm_ps']:.1f} ps")
     return 0

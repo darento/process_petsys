@@ -82,6 +82,12 @@ REJECTIONS = ("min_channels", "minimodule_channels", "unresolved_slab", "no_posi
               "missing_calibration", "energy_window", "missing_doi_limits", "y_out_of_range",
               "doi_out_of_range", "unmapped_region", "no_pair", "missing_timestamp")
 OBSERVATIONS = ("dt_wrapped_int16", "pixel_outside_grid")
+# spec 009 FR-6: optional skew + walk correction of dt. An event without a skew delay for either timestamped TIME
+# channel, or without every walk input, is kept with its uncorrected dt ("keep", counted) or rejected ("drop").
+TIMING_POLICIES = ("keep", "drop")
+TIMING_REJECTION = "no_timing_correction"
+TIMING_OBSERVATIONS = ("timing_corrected", "timing_uncorrected_kept", "walk_clamped_charge", "walk_clamped_share",
+                       "walk_clamped_doi_mm", "walk_clamped_kev")
 SUPPLIED_HEADER_FIELDS = ("acqTime", "isotope", "detectorSizeX", "detectorSizeY", "measurementTime",
                           "moduleNumber", "ringNumber", "ringDistance", "detectorPixelSizeX",
                           "detectorPixelSizeY", "detectorPixelsX", "detectorPixelsY")
@@ -289,6 +295,135 @@ def _limit_array(limits, max_ch):
     return left, right
 
 
+def calibration_array(calibration, max_ch):
+    """Reference ``(time_ch, slab, region)`` mu array; 0 where no factor (per-slab: one region)."""
+    cal_map = np.zeros((max_ch, MAX_SLABS, calibration.num_regions), dtype=np.float32)
+    for key, (mu, _) in calibration.values.items():
+        t, s, r = key if len(key) == 3 else (*key, 0)
+        if t < max_ch and s < MAX_SLABS and r < calibration.num_regions:
+            cal_map[t, s, r] = mu
+    return cal_map
+
+
+def map_doi_mm(doi_ratio, doi_left, doi_right):
+    """Reference linear DOI mapping of the light-sharing ratio onto the crystal thickness (mm)."""
+    return (doi_ratio - doi_right) * (CRYSTAL_THICKNESS / (doi_left - doi_right + 1e-9))
+
+
+def walk_ingredients(hits, maps, target_mm_ids):
+    """Spec 009 FR-1 raw walk ingredients of the target minimodule's hits with charge >= 0, the hits the skew
+    ingest keeps (negative QDC charges are pedestal noise); the written DOI/keV keep the reference hits.
+
+    channel/q_top: the max-energy TIME hit, the timestamped one (first maximum; -1 without); q_time: summed TIME
+    charge; e_raw: summed ENERGY charge; doi_ratio: ENERGY sum / maximum (0 without); y_cog: ENERGY centroid with
+    (E + 1e-5)^2 weights (the selection's).
+    """
+    channel_ids, energy = hits["channelID"], hits["energy"].astype(np.float64)
+    valid = (channel_ids != -1) & (energy >= 0)
+    safe = np.where(valid, channel_ids, 0)
+    valid &= maps.minimodules[safe] == target_mm_ids[:, None]
+    time, kind_energy = valid & maps.time_mask[safe], valid & maps.energy_mask[safe]
+    rows = np.arange(len(hits))
+    masked = np.where(time, energy, -1.0)
+    index = np.argmax(masked, axis=1)
+    top = masked[rows, index]
+    found = top >= 0
+    e_raw = np.where(kind_energy, energy, 0.0).sum(axis=1)
+    e_max = np.where(kind_energy, energy, 0.0).max(axis=1, initial=0.0)
+    weights = np.where(kind_energy, (energy + 0.00001) ** 2, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        y_cog = (weights * maps.local[1][safe]).sum(axis=1) / weights.sum(axis=1)
+        doi_ratio = np.where(e_max != 0, e_raw / e_max, 0.0)
+    return {"channel": np.where(found, channel_ids[rows, index], -1), "q_top": np.where(found, top, -1.0),
+            "q_time": np.where(found, np.where(time, energy, 0.0).sum(axis=1), -1.0), "e_raw": e_raw,
+            "doi_ratio": doi_ratio, "y_cog": y_cog}
+
+
+def walk_context(ctx):
+    """``skew.walk.WalkContext`` of listmode's own calibration and COG/DOI limit arrays."""
+    from src.cornell.skew.walk import WalkContext
+    return WalkContext(ctx.cal_map, ctx.num_regions, ctx.boundaries, ctx.cog_left, ctx.cog_right, ctx.doi_left,
+                       ctx.doi_right, {})
+
+
+def walk_inputs(ctx, sides):
+    """Per side ({charge, share, doi_mm, kev}, status, timestamped TIME channel) through ``skew.walk.inputs``;
+    ``sides``: per side (hits, target minimodules, listmode slab)."""
+    from src.cornell.skew import walk as tw
+    context = walk_context(ctx)
+    out = []
+    for hits, target, slab in sides:
+        raw = walk_ingredients(hits, ctx.maps, target)
+        values, status = tw.inputs(context, raw["channel"], slab, raw["q_top"], raw["q_time"], raw["e_raw"],
+                                   raw["doi_ratio"], raw["y_cog"])
+        out.append((values, status, raw["channel"]))
+    return out
+
+
+@dataclass(frozen=True)
+class TimingCorrection:
+    """Spec 009 FR-6: frozen skew LUT (dense ps by TIME channel, NaN where none applies) and optional walk LUT."""
+    delays: np.ndarray
+    walk: object
+    policy: str
+    record: dict
+
+    @classmethod
+    def load(cls, config, calibration, cog_limits, doi_limits, skew_lut, walk_lut=None, policy="keep"):
+        from src.cornell.skew import walk as tw
+        from src.cornell.skew.lut import CanonicalLut, LutError
+        if policy not in TIMING_POLICIES:
+            raise InputError(f"uncorrected-timing policy must be one of {TIMING_POLICIES}")
+        try:
+            skew = CanonicalLut.read(skew_lut)
+            if (skew.input_correction or {}).get("state") != "uncorrected":
+                raise InputError("the skew LUT was solved from natively corrected data; listmode applies "
+                                 "uncorrected-data LUTs only")
+            maps = CalibrationMaps.from_mapping(config.mapping)
+            rows = skew.rows[skew.rows["apply"]]
+            channels = rows["time_channel"].astype(np.int64)
+            inside = (channels >= 0) & (channels < maps.max_ch)
+            foreign = channels[~inside | ~maps.time_mask[np.where(inside, channels, 0)]]
+            if len(foreign):
+                raise InputError(f"skew LUT channels {foreign[:5].tolist()} are not TIME channels of "
+                                 f"{config.mapping.path.name}: the LUT belongs to another map")
+            delays = np.full(maps.max_ch, np.nan)
+            delays[channels] = rows["delay_ps"]
+            sha = hashlib.sha256(Path(skew_lut).read_bytes()).hexdigest()
+            table, checked = None, {}
+            if walk_lut is not None:
+                table = tw.WalkLut.read(walk_lut)
+                checked = tw.check_files(table, tw.WalkContext.build(config.mapping, calibration, cog_limits,
+                                                                     doi_limits))
+            tw.check_pairing(skew, sha, table)
+        except (LutError, tw.WalkError, OSError, KeyError) as exc:
+            raise InputError(f"timing correction: {exc}") from exc
+        record = {"skew_lut": {"path": str(Path(skew_lut).resolve()), "sha256": sha,
+                               "applied_channels": int(len(channels))},
+                  "walk_lut": None if table is None else {"path": str(Path(walk_lut).resolve()),
+                                                          "sha256": table.sha256,
+                                                          "fit_kind": table.manifest.get("fit_kind"), **checked},
+                  "uncorrected_events": policy,
+                  "convention": "dt = (t1 - b1 - W1) - (t2 - b2 - W2) in ps, rounded before the int16 write"}
+        return cls(delays, table, policy, record)
+
+    def apply(self, dt_values, sides, observations):
+        """Corrected dt (int32) and the corrected-event mask; ``sides``: ``walk_inputs`` per side."""
+        total = np.zeros(len(dt_values))
+        for sign, (values, status, channel) in zip((1.0, -1.0), sides):
+            delay = np.where(channel >= 0, self.delays[np.maximum(channel, 0)], np.nan)
+            total += sign * delay
+            if self.walk is not None:
+                walk, outside = self.walk.correction(values)
+                total += sign * np.where(status == 0, walk, np.nan)
+                for name, flags in outside.items():
+                    observations[f"walk_clamped_{name}"] += int(np.count_nonzero(flags & (status == 0)))
+        ok = np.isfinite(total)
+        corrected = np.where(ok, np.rint(dt_values - np.where(ok, total, 0.0)), dt_values).astype(np.int32)
+        observations["timing_corrected"] += int(np.count_nonzero(ok))
+        return corrected, ok
+
+
 def _has_factor(cal_map, time_chs, slabs, regions):
     inside = ((time_chs >= 0) & (time_chs < cal_map.shape[0]) & (slabs >= 0) & (slabs < cal_map.shape[1])
               & (regions >= 0) & (regions < cal_map.shape[2]))
@@ -318,17 +453,14 @@ class ListmodeContext:
     pair_arr: np.ndarray
     xpixels: np.ndarray
     ypixels: np.ndarray
+    timing: TimingCorrection | None = None      # spec 009 FR-6; None writes the raw dt (unchanged bytes)
 
     @classmethod
-    def build(cls, config, calibration, cog_limits, doi_limits, pairs, regions, metadata):
+    def build(cls, config, calibration, cog_limits, doi_limits, pairs, regions, metadata, timing=None):
         maps = CalibrationMaps.from_mapping(config.mapping)
         max_ch = maps.max_ch
         num_regions = calibration.num_regions   # 1 for a per-slab calibration: one factor per slab
-        cal_map = np.zeros((max_ch, MAX_SLABS, num_regions), dtype=np.float32)
-        for key, (mu, _) in calibration.values.items():
-            t, s, r = key if len(key) == 3 else (*key, 0)
-            if t < max_ch and s < MAX_SLABS and r < num_regions:
-                cal_map[t, s, r] = mu
+        cal_map = calibration_array(calibration, max_ch)
         cog_left, cog_right = _limit_array(cog_limits, max_ch)
         dec = {key: value for key, value in cog_limits.values.items()}
         y_min, y_max = create_dec_lookup_arrays(dec, max_ch, max_slab=MAX_SLABS)
@@ -346,7 +478,7 @@ class ListmodeContext:
         window = config.values["energy_range"]
         return cls(maps, int(config.values["min_ch"]), float(window[0]), float(window[1]), num_regions,
                    create_region_boundaries(num_regions), cog_left, cog_right, y_min, y_max, doi_left,
-                   doi_right, cal_map, region_arr, offset_x, offset_y, pair_arr, xpixels, ypixels)
+                   doi_right, cal_map, region_arr, offset_x, offset_y, pair_arr, xpixels, ypixels, timing)
 
 
 class DebugSummary:
@@ -399,8 +531,12 @@ def _count(counter, name, mask):
     counter[name] += int(np.count_nonzero(mask))
 
 
-def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None):
-    """Reference ``cog_lm_loop_vectorized`` body for one reader batch. Returns record array."""
+def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None, capture=None):
+    """Reference ``cog_lm_loop_vectorized`` body for one reader batch. Returns record array.
+
+    ``capture`` (a list) receives, per batch with written records, the chunk rows and per-side walk
+    inputs of the written records before the pair swap (spec 009 FR-1); output is unchanged.
+    """
     maps = ctx.maps
     energy_mask, time_mask, sm_mM_map_arr, local_map_arrays = (maps.energy_mask, maps.time_mask,
                                                                maps.minimodules, maps.local)
@@ -482,6 +618,7 @@ def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None):
         return empty
 
     keep = remaining_filters_pass
+    rows = np.flatnonzero(both_pass_mm)[keep]
     hits1 = filtered_side1["hits"][keep]
     hits2 = filtered_side2["hits"][keep]
     final_side1 = {"header": filtered_side1["header"][keep], "hits": hits1}
@@ -526,13 +663,16 @@ def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None):
     doi1, doi2 = doi1[keep], doi2[keep]
     final_energy_kev1, final_energy_kev2 = final_energy_kev1[keep], final_energy_kev2[keep]
     hits1, hits2 = hits1[keep], hits2[keep]
+    rows = rows[keep]
+    final_slab1, final_slab2 = final_slab1[keep], final_slab2[keep]
+    final_time_ch1, final_time_ch2 = final_time_ch1[keep], final_time_ch2[keep]
 
     mm1_row = (final_max_mm1 % 1000) // 4
     mm2_row = (final_max_mm2 % 1000) // 4
     y1_decompressed = (y_centroid1 - y1_min) * (Y_OFFSET / (y1_max - y1_min + 1e-9))
     y2_decompressed = (y_centroid2 - y2_min) * (Y_OFFSET / (y2_max - y2_min + 1e-9))
-    doi1 = (doi1 - doi_right1) * (CRYSTAL_THICKNESS / (doi_left1 - doi_right1 + 1e-9))
-    doi2 = (doi2 - doi_right2) * (CRYSTAL_THICKNESS / (doi_left2 - doi_right2 + 1e-9))
+    doi1 = map_doi_mm(doi1, doi_left1, doi_right1)
+    doi2 = map_doi_mm(doi2, doi_left2, doi_right2)
     valid_y = (y1_decompressed >= 0) & (y1_decompressed <= Y_OFFSET) & (y2_decompressed >= 0) & (y2_decompressed <= Y_OFFSET)
     valid_z = (doi1 >= 0) & (doi1 <= CRYSTAL_THICKNESS) & (doi2 >= 0) & (doi2 <= CRYSTAL_THICKNESS)
     _count(rejected, "y_out_of_range", ~valid_y)
@@ -547,6 +687,9 @@ def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None):
     final_x1, final_x2 = final_x1[keep], final_x2[keep]
     final_energy_kev1, final_energy_kev2 = final_energy_kev1[keep], final_energy_kev2[keep]
     hits1, hits2 = hits1[keep], hits2[keep]
+    rows = rows[keep]
+    final_slab1, final_slab2 = final_slab1[keep], final_slab2[keep]
+    final_time_ch1, final_time_ch2 = final_time_ch1[keep], final_time_ch2[keep]
 
     y1_final = y1_decompressed + (3 - mm1_row) * Y_OFFSET
     y2_final = y2_decompressed + (3 - mm2_row) * Y_OFFSET
@@ -575,8 +718,11 @@ def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None):
     final_energy_kev1, final_energy_kev2 = final_energy_kev1[keep], final_energy_kev2[keep]
     hits1, hits2 = hits1[keep], hits2[keep]
     final_max_mm1, final_max_mm2 = final_max_mm1[keep], final_max_mm2[keep]
+    rows = rows[keep]
+    final_slab1, final_slab2 = final_slab1[keep], final_slab2[keep]
+    final_time_ch1, final_time_ch2 = final_time_ch1[keep], final_time_ch2[keep]
 
-    timestamps1 = get_timestamp_of_max_energy_hit_vectorized(hits1, sm_mM_map_arr, time_mask, final_max_mm1)
+    timestamps1 =get_timestamp_of_max_energy_hit_vectorized(hits1, sm_mM_map_arr, time_mask, final_max_mm1)
     timestamps2 = get_timestamp_of_max_energy_hit_vectorized(hits2, sm_mM_map_arr, time_mask, final_max_mm2)
     valid_time_mask = (timestamps1 != -1) & (timestamps2 != -1)
     _count(rejected, "missing_timestamp", ~valid_time_mask)
@@ -592,6 +738,35 @@ def process_batch(chunk, ctx, rejected, observations, slab_flags, debug=None):
     doi1, doi2 = doi1[keep], doi2[keep]
     final_energy_kev1, final_energy_kev2 = final_energy_kev1[keep], final_energy_kev2[keep]
     final_max_mm1, final_max_mm2 = final_max_mm1[keep], final_max_mm2[keep]
+    sides = None
+    if capture is not None or ctx.timing is not None:
+        sides = walk_inputs(ctx, ((hits1[keep], final_max_mm1, final_slab1[keep]),
+                                  (hits2[keep], final_max_mm2, final_slab2[keep])))
+    if capture is not None:
+        walk = {"rows": rows[keep], "dt_ps": dt_values}
+        for s, ((values, status, channel), tch, slab) in enumerate(
+                zip(sides, (final_time_ch1, final_time_ch2), (final_slab1, final_slab2)), 1):
+            walk.update({f"time_channel_{s}": tch[keep], f"slab_{s}": slab[keep], f"status_{s}": status,
+                         f"timestamp_channel_{s}": channel, **{f"{k}_{s}": v for k, v in values.items()}})
+        capture.append(walk)
+    if ctx.timing is not None:
+        dt_values, ok = ctx.timing.apply(dt_values, sides, observations)
+        if ctx.timing.policy == "keep":
+            observations["timing_uncorrected_kept"] += int(np.count_nonzero(~ok))
+        else:
+            _count(rejected, TIMING_REJECTION, ~ok)
+            if capture is not None:
+                capture[-1] = {key: value[ok] for key, value in capture[-1].items()}
+            timestamps, dt_values, pairs, swap_mask = timestamps[ok], dt_values[ok], pairs[ok], swap_mask[ok]
+            region1, region2 = region1[ok], region2[ok]
+            x1_final, y1_final, x2_final, y2_final = x1_final[ok], y1_final[ok], x2_final[ok], y2_final[ok]
+            doi1, doi2 = doi1[ok], doi2[ok]
+            final_energy_kev1, final_energy_kev2 = final_energy_kev1[ok], final_energy_kev2[ok]
+            final_max_mm1, final_max_mm2 = final_max_mm1[ok], final_max_mm2[ok]
+            if not len(timestamps):
+                return empty
+        if capture is not None:
+            capture[-1]["dt_corrected_ps"] = dt_values
 
     n_write = len(timestamps)
     pixels_x1 = np.searchsorted(ctx.xpixels, x1_final, side="right") - 1
@@ -754,7 +929,7 @@ def _check_request(descriptors, config, calibration, cog_limits, doi_limits, pai
 
 
 def job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
-               batch_records, debug, hit_limit=None):
+               batch_records, debug, hit_limit=None, timing=None):
     """Everything that determines the LM bytes; resume requires an identical record."""
     inputs = []
     for d in descriptors:
@@ -787,6 +962,8 @@ def job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, 
     if hit_limit is not None:      # only compact jobs: fixed job records stay as before
         job["compact_decoding"] = {"hit_limit": hit_limit,
                                    "layout": "fixed coincidence of hit_limit slots, empty slots channel -1"}
+    if timing is not None:         # only corrected jobs: uncorrected job records stay as before
+        job["timing_correction"] = timing.record
     return job
 
 
@@ -965,8 +1142,9 @@ def _process_file(descriptor, ctx, mapping, segments, job_sha256, job_input, *, 
     name = segment_name(descriptor.path)
     token = uuid4().hex
     segment = segments / f"{name}-{token}.part"
-    rejected = dict.fromkeys(REJECTIONS, 0)
-    observations = dict.fromkeys(OBSERVATIONS, 0)
+    timing = ctx.timing
+    rejected = dict.fromkeys(REJECTIONS + ((TIMING_REJECTION,) if timing and timing.policy == "drop" else ()), 0)
+    observations = dict.fromkeys(OBSERVATIONS + (TIMING_OBSERVATIONS if timing else ()), 0)
     slab_flags = {}
     file_debug = DebugSummary() if debug else None
     digest = hashlib.sha256()
@@ -1114,7 +1292,8 @@ def sidecar(output, sha256, records, files, job, header_fields, *, resumed, igno
 
 def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
                       destination, *, resume=False, debug=False, batch_records=DEFAULT_BATCH_RECORDS,
-                      cancelled=None, progress=None, hit_limit=None, lm_seed=None, workers=1, in_place=False):
+                      cancelled=None, progress=None, hit_limit=None, lm_seed=None, workers=1, in_place=False,
+                      timing=None):
     """Validate, stream one segment per input, merge with the supplied header and write provenance.
 
     ``hit_limit``: the conversion hit limit, required for compact input only (FR-22).
@@ -1123,6 +1302,7 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
     keeps the reference's one stream continuing across files (one worker only). ``workers`` > 1 processes
     files in spawned worker processes (``src.cornell.parallel``); segments are merged in the same order.
     ``in_place`` (T29): write into the caller's existing ``destination`` instead of creating it.
+    ``timing`` (spec 009 FR-6): a ``TimingCorrection`` applied to dt; None keeps the raw dt.
     """
     descriptors = _check_request(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions,
                                  metadata, batch_records, hit_limit)
@@ -1132,9 +1312,9 @@ def generate_listmode(descriptors, config, calibration, cog_limits, doi_limits, 
         raise InputError("workers must be a positive integer (resolve 0 = automatic before LM)")
     if workers > 1 and lm_seed is None:
         raise InputError("Parallel LM needs lm_seed: one random stream per file, independent of the workers")
-    ctx = ListmodeContext.build(config, calibration, cog_limits, doi_limits, pairs, regions, metadata)
+    ctx = ListmodeContext.build(config, calibration, cog_limits, doi_limits, pairs, regions, metadata, timing)
     job = job_record(descriptors, config, calibration, cog_limits, doi_limits, pairs, regions, metadata,
-                     batch_records, debug, hit_limit)
+                     batch_records, debug, hit_limit, timing)
     seeds = None if lm_seed is None else [file_seed(lm_seed, index) for index in range(len(descriptors))]
     if lm_seed is not None:            # part of the job digest: resume reuses only segments of the same seed
         job["random_streams"] = {"lm_seed": lm_seed, "file_seeds": seeds}

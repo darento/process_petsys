@@ -102,6 +102,29 @@ class SettingsChecks(SettingsFixtures, PrivateOutput, unittest.TestCase):
         self.assertIn("pair_map_file", [issue.field for issue in report.issues])
         self.assertIn("lm_metadata.timestamp_unit", [issue.field for issue in report.issues])
 
+    @pytest.mark.fr("009-FR-6")
+    def test_lut_keys_optional_and_checked(self):
+        self.assertReady(self.check_action(Action.LISTMODE))                     # no timing keys: as before
+        for profile, field in ((replace(self.profile, skew_lut_file="missing.csv"), "skew_lut_file"),
+                               (replace(self.profile, walk_lut_file="missing.json"), "skew_lut_file")):
+            report = self.check_action(Action.LISTMODE, profile=profile)
+            self.assertFalse(report.ready)
+            self.assertIn(field, [issue.field for issue in report.issues])
+        for name in ("lut.csv", "walk.json"):
+            (self.root / name).write_text("x", encoding="utf-8")
+        both = replace(self.profile, skew_lut_file="lut.csv", walk_lut_file="walk.json", lm_timing_uncorrected="drop")
+        self.assertReady(self.check_action(Action.LISTMODE, profile=both))
+        self.assertReady(self.check_action(Action.ACQUIRE, profile=replace(self.profile, skew_lut_file="missing.csv")))
+        with self.assertRaises(ProfileError):
+            replace(self.profile, lm_timing_uncorrected="zero")
+        # written only when set: Manager <= 1.1.1 rejects unknown profile fields
+        plain_path, timed_path = self.root / "plain.yaml", self.root / "timed.yaml"
+        save_profile(self.profile, plain_path)
+        save_profile(both, timed_path)
+        self.assertFalse({"skew_lut_file", "walk_lut_file", "lm_timing_uncorrected"}
+                         & set(yaml.safe_load(plain_path.read_text(encoding="utf-8"))))
+        self.assertEqual(load_profile(timed_path), both)
+
     def test_missing_tools_do_not_block_internal_analysis(self):
         profile = replace(self.profile, petsys_folder="missing-tools", ini_file="missing.ini")
         self.assertReady(self.check_action(Action.CALIBRATE, profile=profile))

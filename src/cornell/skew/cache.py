@@ -35,12 +35,15 @@ import yaml
 from src.cornell.skew import geometry as skew_geometry, ingest
 from src import ldat_stream
 
-SCHEMA_VERSION = 2  # 2: sources hashed under src/cornell/skew/ (T10); version-1 caches are refused
+# 2: sources hashed under src/cornell/skew/ (T10); 3: walk ingredients per side (spec 009 FR-4). Older caches
+# are refused (their fingerprint differs), never reused.
+SCHEMA_VERSION = 3
 FEATURE_DTYPE = np.dtype([
     ("file", "<i2"), ("record", "<i8"), ("time_channel_1", "<i4"), ("time_channel_2", "<i4"),
     ("sm_1", "<i2"), ("mm_1", "<i2"), ("sm_2", "<i2"), ("mm_2", "<i2"), ("slab_1", "i1"), ("slab_2", "i1"),
     ("module_tie", "i1"), ("dt_ps", "<i8"), ("energy_kev_1", "<f4"), ("energy_kev_2", "<f4"),
-    ("x_1", "<f8"), ("y_1", "<f8"), ("x_2", "<f8"), ("y_2", "<f8")])
+    ("x_1", "<f8"), ("y_1", "<f8"), ("x_2", "<f8"), ("y_2", "<f8")]
+    + [(name, "<f4") for name in ingest.WALK_FEATURES])
 OBSERVATION_DTYPE = np.dtype([
     ("file", "<i2"), ("record", "<i8"), ("role", "i1"), ("swapped", "i1"),
     ("channel_i", "<i4"), ("channel_j", "<i4"), ("dt_ps", "<i8"),
@@ -91,9 +94,29 @@ def feature_rows(features, file_index):
     rows["file"] = file_index
     for name in ingest.FEATURE_INT:
         rows[name] = features.column(name)
-    for name in ingest.FEATURE_FLOAT:
+    for name in ingest.FEATURE_FLOAT + ingest.WALK_FEATURES:
         rows[name] = features.column(name)
     return rows
+
+
+def walk_rows(rows, walk):
+    """Spec 009 FR-4: rows with every walk input on both sides, their ``dt_ps`` corrected by
+    round(W(side 1) - W(side 2)); and the counts (missing inputs, clamped per input)."""
+    from src.cornell.skew import walk as tw
+    values, statuses = {}, []
+    for s in (1, 2):
+        side, status = tw.inputs(walk["context"], rows[f"time_channel_{s}"], rows[f"slab_{s}"], rows[f"q_top_{s}"],
+                                 rows[f"q_time_{s}"], rows[f"e_raw_{s}"], rows[f"doi_ratio_{s}"], rows[f"y_{s}"])
+        values[s] = side
+        statuses.append(status)
+    keep = (statuses[0] == 0) & (statuses[1] == 0)
+    difference, out1, out2 = tw.walk_difference(walk["lut"], values[1], values[2])
+    rows = rows[keep].copy()
+    rows["dt_ps"] -= np.rint(difference[keep]).astype(np.int64)
+    counts = {"walk input missing": int(np.count_nonzero(~keep))}
+    for name in tw.INPUTS:
+        counts[f"clamped {name}"] = int(np.count_nonzero(keep & out1[name])) + int(np.count_nonzero(keep & out2[name]))
+    return rows, counts
 
 
 def _prepare(directory, manifest):
@@ -304,8 +327,11 @@ def _merge_counts(keys, counts, new_keys, new_counts):
 
 
 def build_observations(feature_cache, hypothesis, directory, *, partitions=16, buffer_rows=250_000,
-                       slice_rows=250_000):
+                       slice_rows=250_000, walk=None):
     """Level 2 for one hypothesis from cached features only (zero LDAT reads).
+
+    ``walk`` ({"lut": WalkLut, "context": WalkContext}, spec 009 FR-4) corrects each row's ``t_1 - t_2`` for
+    walk before geometry; rows without every walk input are dropped and counted.
 
     At most ``buffer_rows`` observations are held before the largest partition
     buffer is spilled; pair counts are merged per partition (memory grows with
@@ -319,7 +345,12 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
                    "hypothesis": describe_hypothesis(hypothesis), "partitions": partitions,
                    "sources_sha256": {name: _sha256(module.__file__) for name, module in
                                       (("ingest", ingest), ("geometry", skew_geometry))},
-                   "observation_dtype": OBSERVATION_DTYPE.descr}
+                   "observation_dtype": OBSERVATION_DTYPE.descr,
+                   "walk": None if walk is None else {"walk_lut_sha256": walk["lut"].sha256,
+                                                      "listmode_files": walk["context"].files}}
+    if walk is not None:
+        from src.cornell.skew import walk as tw
+        fingerprint["sources_sha256"]["walk"] = _sha256(tw.__file__)
     fingerprint = _plain(fingerprint)
     if directory.exists():
         existing = ObservationSet(directory)
@@ -341,6 +372,7 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
     counts = [np.empty(0, np.uint64) for _ in range(partitions)]
     geometry = {role: dict.fromkeys((ingest.ACCEPTED,) + ingest.GEOMETRY_REJECTIONS, 0)
                 for role in ROLES}
+    walk_counts = {role: {} for role in ROLES}
 
     def spill(p):
         rows = np.concatenate(buffers[p])
@@ -353,6 +385,10 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
     for _, role, block in feature_cache.blocks():
         for start in range(0, len(block), slice_rows):
             rows = np.array(block[start:start + slice_rows])
+            if walk is not None:
+                rows, seen = walk_rows(rows, walk)
+                for label, n in seen.items():
+                    walk_counts[role][label] = walk_counts[role].get(label, 0) + n
             result = ingest.apply_geometry(_Columns(rows), hypothesis)
             for label, n in result.counts().items():
                 geometry[role][label] += n
@@ -377,6 +413,7 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
     np.save(work / "pair_counts.npy", pair_counts[np.lexsort((pair_counts["role"], pair_counts["channel_j"],
                                                              pair_counts["channel_i"]))])
     manifest = {"fingerprint": fingerprint, "chunks": chunks, "geometry": geometry,
+                "walk": walk_counts if walk is not None else None,
                 "observations": {role: int(pair_counts["count"][pair_counts["role"] == k].sum())
                                  for k, role in enumerate(ROLES)},
                 "first_failure": _sum_first_failure(feature_cache)}

@@ -158,7 +158,10 @@ PETSYS_PYTHON_TOOLS = ("init_system", "acquire_sipm_data", "set_bias")
 
 _PATH_FIELDS = ("petsys_folder", "petsys_python", "processing_root", "ini_file", "yaml_file", "data_dir",
                 "calibration_dir", "report_dir", "lm_dir", "cog_limits_file", "doi_limits_file",
-                "calibration_file", "pair_map_file", "region_map_file")
+                "calibration_file", "pair_map_file", "region_map_file", "skew_lut_file", "walk_lut_file")
+# spec 009 FR-6: optional listmode timing correction; written to the profile only when set (older Managers
+# reject unknown fields), shown by no widget (the GUI keeps unshown fields through ``replace``).
+TIMING_PROFILE_DEFAULTS = {"skew_lut_file": None, "walk_lut_file": None, "lm_timing_uncorrected": "keep"}
 # Spec 005 FR-6: file dialogs whose last folder the profile remembers. The profile-file dialog has none.
 LAST_FOLDER_KEYS = ("raw_input", "ldat_inputs.calibrate", "ldat_inputs.listmode", "ldat_inputs.qc_analyze",
                     "conversion_run", *_PATH_FIELDS)
@@ -181,6 +184,9 @@ class MachineProfile:
     calibration_file: str | None = None
     pair_map_file: str | None = None
     region_map_file: str | None = None
+    skew_lut_file: str | None = None        # spec 009: canonical skew LUT applied to listmode dt
+    walk_lut_file: str | None = None        # spec 009: walk LUT applied with it
+    lm_timing_uncorrected: str = "keep"     # events without a correction: "keep" (raw dt, counted) or "drop"
     daq_type: str = "PFP_KX7"
     cards: tuple[str, ...] = ("/dev/psdaq1", "/dev/psdaq0")
     socket_path: str = "/tmp/d.sock"
@@ -198,6 +204,8 @@ class MachineProfile:
             _text(getattr(self, name), name, optional=True)
         for name in ("daq_type", "socket_path", "shared_memory_path"):
             _text(getattr(self, name), name)
+        if self.lm_timing_uncorrected not in ("keep", "drop"):
+            raise ProfileError("lm_timing_uncorrected must be 'keep' or 'drop'")
         if self.petsys_python is not None and not _absolute_path(self.petsys_python):
             raise ProfileError("petsys_python must be an absolute interpreter path")
         if not _absolute_path(self.socket_path) or not _absolute_path(self.shared_memory_path):
@@ -376,6 +384,9 @@ def save_profile(profile, path=None, *, overwrite=False):
     plain = to_plain(profile)
     if not plain["last_folders"]:
         del plain["last_folders"]   # Manager 1.0.0 rejects unknown fields: write the section only when used
+    for name, default in TIMING_PROFILE_DEFAULTS.items():
+        if plain[name] == default:  # likewise the spec 009 timing fields (Manager <= 1.1.1 rejects them)
+            del plain[name]
     content = yaml.safe_dump(plain, sort_keys=False, allow_unicode=True)
     target.parent.mkdir(parents=True, exist_ok=True)
     if not overwrite or not target.exists():
@@ -593,6 +604,12 @@ def preflight(profile, action, options=None, inputs=(), *, repo_root=None, probe
             need_file(name)
     if action == Action.LISTMODE:
         need_file("calibration_file")
+    if action in (Action.LISTMODE, Action.PIPELINE):
+        for name in ("skew_lut_file", "walk_lut_file"):
+            if getattr(profile, name) is not None:
+                need_file(name)
+        if profile.walk_lut_file is not None and profile.skew_lut_file is None:
+            issue("skew_lut_file", "A walk LUT needs the skew LUT it was fitted with")
 
     config = FrozenMapping()
     if processing and need_file("yaml_file"):

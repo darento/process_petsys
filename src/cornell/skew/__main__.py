@@ -41,6 +41,11 @@ def _ctr(argv):
     return ctr.main(argv)
 
 
+def _walk(argv):
+    from src.cornell.skew import walk
+    return walk.main(argv)
+
+
 def _inventory(argv):
     from src.cornell.skew import dataset
     return dataset.main(argv)
@@ -59,6 +64,7 @@ COMMANDS = {
     "conversion": (_conversion, "declare a conversion made with a native table (manifest JSON)"),
     "roundtrip": (_roundtrip, "matched-event check of a native conversion"),
     "ctr": (_ctr, "independent CTR from known-position point sources: CTR.json"),
+    "walk": (_walk, "time-walk LUT from point sources with a frozen skew LUT: WALK.json"),
     "inventory": (_inventory, "raw LDAT inventory and holdout (development)"),
     "benchmark": (_benchmark, "bounded raw-decoder benchmark (development)"),
 }

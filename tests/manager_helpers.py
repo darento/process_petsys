@@ -849,11 +849,12 @@ class CLIFixtures(PrivateOutput):
                    "inputs": [entry(d) for d in descriptors],
                    "files": {"calibration": str(maps["calibration"].path), "calibration_sidecar": None,
                              "cog_limits": str(maps["cog_limits"].path), "doi_limits": str(maps["doi_limits"].path),
-                             "pair_map": str(maps["pairs"].path), "region_map": str(maps["regions"].path)},
+                             "pair_map": str(maps["pairs"].path), "region_map": str(maps["regions"].path),
+                             "skew_lut": None, "walk_lut": None},
                    "options": {"num_regions": 5, "region_boundaries": None,
                                "metadata": {name: getattr(METADATA, name) for name in METADATA.__dataclass_fields__},
                                "batch_records": 1000, "debug": debug, "resume": False, "hit_limit": None,
-                               "lm_seed": None, "workers": 1, "in_place": False},
+                               "lm_seed": None, "workers": 1, "in_place": False, "timing_uncorrected": "keep"},
                    "outputs": {"directory": str(h.lm_parent / "lm job ; & $x [1]")}}
         return h, descriptors, maps, request
 

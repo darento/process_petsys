@@ -440,14 +440,17 @@ def processing_request(settings, stage, inputs, directory, context):
                               "calibration_sidecar": None if sidecar is None else str(sidecar),
                               "cog_limits": str(paths["cog_limits_file"]),
                               "doi_limits": str(paths["doi_limits_file"]),
-                              "pair_map": str(paths["pair_map_file"]), "region_map": str(paths["region_map_file"])},
+                              "pair_map": str(paths["pair_map_file"]), "region_map": str(paths["region_map_file"]),
+                              **{key: None if paths.get(f"{key}_file") is None else str(paths[f"{key}_file"])
+                                 for key in ("skew_lut", "walk_lut")}},
                        options={"num_regions": regions, "region_boundaries": None,
                                 "metadata": to_plain(lm_header_metadata(settings.profile, settings.action,
                                                                         settings.options)),
                                 "batch_records": LM_BATCH_RECORDS, "debug": options.debug, "resume": False,
                                 "hit_limit": options.hit_limit,       # compact LM decodes at this width (FR-22)
                                 "lm_seed": limits.lm_seed, "workers": resolve_workers(limits.workers),
-                                "in_place": True},                    # the stage folder itself (T29)
+                                "in_place": True,                     # the stage folder itself (T29)
+                                "timing_uncorrected": settings.profile.lm_timing_uncorrected},
                        outputs={"directory": str(directory)})
     else:
         live = settings.action == Action.QC      # offline files: source mode/duration not recorded
