@@ -57,7 +57,7 @@ from src.tk_input import disable_x_input_method
 
 disable_x_input_method()  # before any Tk root (bug-tk-ibus-destroy-hang)
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 TITLE = "PETsys Manager - Cornell"
 RECENT_TAB = "Recent Runs"     # spec 005 FR-3
 TABS = ("System Setup & Acquisition", "RAWF to LDAT Conversion", "LDAT Processing",

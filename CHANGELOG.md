@@ -50,6 +50,15 @@ First versioned release. Offline LDAT inspection as shipped by:
 
 ## PETsys Manager
 
+### 1.2.0 — 2026-10-20
+
+Timing correction in list mode, as shipped by [spec 009](specs/009-cornell-timing-walk/spec.md). Without the new profile fields, the list-mode output is unchanged.
+
+- **Profile:** optional `skew_lut_file` (canonical skew LUT) and `walk_lut_file` (time-walk LUT) apply to the list-mode `dt`. `lm_timing_uncorrected` (`keep`, the default, or `drop`) sets what happens to events without a correction: kept with the raw `dt` (counted) or rejected (counted).
+- **Refusals:** mismatched tables are refused: a skew LUT of another map, a walk LUT fitted with other COG/DOI limits, or one not paired with the skew LUT. A calibration other than the walk fit's is accepted if it has the same layout, and flagged.
+- **Provenance:** the list-mode job record and sidecar record both tables' SHA-256 values and the correction counts.
+- **No GUI widgets:** set the fields in the profile file. **A profile with these fields needs Manager 1.2.0 or later**; they are written only when set.
+
 ### 1.1.1 — 2026-10-18
 
 - Fix: on Linux with ibus as the X input method, Tk could hang when destroying a widget. Tk now opens without an X input method (`XMODIFIERS=@im=none`); plain typing is unaffected (bug-tk-ibus-destroy-hang).
