@@ -143,6 +143,31 @@ def test_rejects_duplicate_ledger_and_changed_input(tmp_path, lookup):
         scan_file(path, lookup, chunk_bytes=35, progress=progress)
 
 
+@pytest.mark.fr("bug-cornell-inventory-provenance")
+def test_inventory_command_writes_report_with_reader_provenance(tmp_path):
+    """``inventory`` completes on 16 ledger splits and hashes the reader sources it used."""
+    from src.cornell.skew.dataset import main
+    from src.mapping_generator import map_factory
+    root = Path(__file__).resolve().parents[1]
+    map_path = root / "maps/cornell_map_full_system.yaml"
+    _, modules, _, _ = map_factory(str(map_path))
+    a, b = sorted(modules)[:2]
+    contents = [pair([(i * 1000, 1.0, a)], [(i * 1000 + 1, 1.0, b)]) +
+                pair([(i * 1000 + 100, 1.0, a)], [(i * 1000 + 101, 1.0, b)]) for i in range(16)]
+    manifest = ledger(tmp_path, contents)
+    config = tmp_path / "config.yaml"
+    config.write_text(f"map_file: {map_path.as_posix()}\n", encoding="utf-8")
+    output = tmp_path / "inventory.json"
+    main([str(tmp_path), "--ledger", str(manifest), "--prefix", "run7_coincCompact_", "--config", str(config),
+          "--output", str(output)])
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert [row["index"] for row in report["splits"]] == list(range(16))
+    assert report["total_physical_coincidences"] == 32 and report["all_full_scans"] is True
+    hashed = {Path(path).resolve() for path in report["provenance_sha256"]}
+    assert {root / "src/ldat_stream.py", root / "src/timing/dataset.py"} <= hashed
+    assert not output.with_name(output.name + ".partial").exists()
+
+
 @pytest.mark.real_data
 def test_run7_raw_prefix_against_frozen_identity(real_data_file):
     from src.mapping_generator import map_factory

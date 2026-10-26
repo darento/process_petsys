@@ -15,7 +15,9 @@ import time
 
 import yaml
 
+from src import ldat_stream
 from src.mapping_generator import map_factory
+from src.timing import dataset as core_dataset
 from src.timing.dataset import MAX_CHUNK_BYTES, channel_lookup, scan_file
 
 
@@ -109,8 +111,9 @@ def main(argv=None):
     if any(len(region) != 2 or region not in set(modules.values()) for region in regions):
         parser.error("unavailable regions must be mapped SM:MM pairs")
     lookup = channel_lookup(modules, regions)
-    kernel_path = Path(_hits.__code__.co_filename)
-    provenance_files = (args.ledger, args.config, map_path, Path(__file__), kernel_path)
+    # the raw scan is src.timing.dataset over the shared src.ldat_stream decoder
+    provenance_files = (args.ledger, args.config, map_path, Path(__file__), Path(core_dataset.__file__),
+                        Path(ldat_stream.__file__))
     report = {"schema_version": 1,
               "scope": ("full" if args.max_records is None else "prefix") + " raw-record inventory; no analysis cuts",
               "created_utc": datetime.now(timezone.utc).isoformat(), "known_unavailable_regions": regions,
