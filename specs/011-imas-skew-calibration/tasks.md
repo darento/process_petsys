@@ -1,6 +1,6 @@
 # Tasks — IMAS skew calibration
 
-Status: not started, 2026-10-26. [Approved spec](spec.md), [plan](plan.md).
+Status: in progress, 2026-10-26 (T1-T6 done; T7 decision pending). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `011-FR-n` and names its check before coding.
@@ -37,30 +37,38 @@ Status: not started, 2026-10-26. [Approved spec](spec.md), [plan](plan.md).
 
 ## IMAS front end
 
-- [ ] **T3 — IMAS lookup and inventory** (FR-2, FR-6).
+- [x] **T3 — IMAS lookup and inventory** (FR-2, FR-6).
   - `src/imas/skew/setup.py` (dense lookup, SM numbering check), `python -m src.imas.skew inventory SPLITS... --out DIR`.
   - **Done when:**
     - `tests/test_imas_skew_setup.py`: synthetic map/config pass; a swapped `ring_yx` entry or a ring-major mismatch raises `GeometryError`; slab index 0–7 per TIME channel.
     - `tests/test_imas_skew_inventory.py`: synthetic LDAT counts records and hits per TIME channel; a channel with no hits is listed unobserved.
     - **Real (operator, Windows):** inventory of the 3 local splits (full files): records, hits per TIME channel and SM, unobserved channels compared with the 796 `9999` channels of `skew_IMAS.txt` and the dark minimodules of `docs/imas/image_regions_down.png`; read rate in MB/s.
-- [ ] **T4 — IMAS side selection** (FR-3).
+  - Verified 2026-10-26 (Windows, this PC): `tests/test_imas_skew_setup.py tests/test_imas_skew_inventory.py -m "" -n 0 --slow-limit 5` with `PETSYS_DATA_DIR`: 10 passed. Real: `python -m src.imas.skew inventory` on splits 08-10 (full, `PETSYS_DATA_DIR/IMAS_work/``inventory_3splits/`): 155,114,757 records, 49.6 GB in 116 s (423-434 MB/s, local SSD; the HDD rate is measured in T11); no unknown channels, empty sides or non-finite energies. 14,644/15,360 TIME channels observed; 716 unobserved, all among the 796 legacy `9999` channels (80 legacy `9999` channels have hits); 82 dark minimodules, no dark SM; 32 low-statistics channels (< 0.1 x median hits).
+  - Deviations: the map frame's SM centre is at 51.61 mm (midpoint of 1.7-101.517 mm on both axes, equal for every SM), not the plan's 48 mm (legacy `local_to_global`); `ImasSetup.local_origin` uses the map value. Inventory also writes `time_channel_hits.csv` and compares with `--legacy-skew`.
+- [x] **T4 — IMAS side selection** (FR-3).
   - `src/imas/skew/select.py`: steps 1–7 of the plan, first-failure codes; reference mode with the legacy hit-energy floor and 15 ns window.
   - **Done when:**
     - `tests/test_imas_skew_select.py`: one synthetic record per rejection reason and per boundary (`min_ch` exact, window `|dt|` = limit, keV at 408 and 613 exclusive, minimodule tie flagged, slab = top TIME channel);
     - every record gets exactly one code (counts sum to records);
     - **Real (operator):** on a 100,000-record prefix of split 08, the reference mode and an untracked harness calling the legacy script's per-event steps agree record by record; the production-vs-reference differences are counted per cause.
-- [ ] **T5 — Energy calibration from the dedicated split** (FR-4).
+  - Verified 2026-10-26: `tests/test_imas_skew_select.py -n 0 --slow-limit 5`: 6 passed. Real (operator harness `scripts_imas/parity_011_t4.py`, untracked): first 100,000 records of split 08 with the T5 calibration and 408-613 keV for both: reference mode and the legacy per-event steps (`read_binary_file`, `filter_min_ch`, `get_maxEnergy_sm_mM`, `filter_coincidence` 15 ns, `KevConverter`, `filter_total_energy`, `calculate_centroid`) agree on every record: 0 mismatches, maximum feature difference 0.0 (legacy outcomes: 30,026 passed, 47,868 energy, 19,301 side min channels, 1,833 window, 972 minimodule min channels). Production vs reference: 3,233 records move to `coincidence window` (10 vs 15 ns; 739 of them passed every reference cut), 3 move to `side min channels` (hit floor `en_min_ch` 0.2). Top-hit `|dt|` with no window (2M records): 4.3 % >= 10 ns, 2.0 % >= 15 ns, 0.9 % >= 50 ns: a flat tail, not lost coincidences.
+  - Deviation: one zero-ENERGY minimodule alone passes cut 3 with 0 keV (legacy single-module path) and fails the keV window; cut 3 needs two zero minimodules. `calibration=True` mode added for T5.
+- [x] **T5 — Energy calibration from the dedicated split** (FR-4).
   - `src/imas/skew/encal.py`, `python -m src.imas.skew encal ENCAL.json`.
   - **Done when:**
     - `tests/test_imas_skew_encal.py`: synthetic Gaussian peaks with background recover `mu` within 1 %; < 200 entries → `few entries`; no peak → `no peak`; the written file reads back through `KevConverter(file_type="mu")`; a missing channel converts to NaN, never a number.
     - **Real (operator):** split 08 as the dedicated split: channels fitted / few entries / no peak, per-SM peak spread, and the file SHA-256 recorded here.
-- [ ] **T6 — Geometry, source and feature cache** (FR-2, FR-5, FR-6).
+  - Verified 2026-10-26: `tests/test_imas_skew_encal.py -n 0 --slow-limit 5`: 5 passed. Real: `python -m src.imas.skew encal SPLIT08 --full-hash` (`PETSYS_DATA_DIR/IMAS_work/``encal_split08/`, 2 min 47 s): split SHA-256 `2dbe23da…02b0`, `encal.tsv` SHA-256 `dee766bf…8b25`; 38,415,456 records pass cuts 1-5. 14,559 channels fitted, 768 `few entries` (749 never selected), 33 `no peak` (mostly SM 43 and 118). Per-SM median peak 23.3-97.7 a.u. (median 55.6); within an SM, 5-95 % 35.8-73.7 a.u. (median over SMs); median sigma/mu 4.9 %.
+  - Deviations: command takes the splits as arguments (`encal SPLITS... --out DIR`), not `ENCAL.json`; the job (T11) declares the dedicated splits. One pass into 0.1 a.u. bins per channel (fit values at bin centres) instead of Cornell's two passes.
+- [x] **T6 — Geometry, source and feature cache** (FR-2, FR-5, FR-6).
   - `src/imas/skew/geometry.py` (flat SM facets, nominal signs `s_t = +1`, `s_a = −1`, 7 mm), `IMAS_SKEW_BAR`; IMAS adapter for the core cache.
   - **Done when:**
     - `tests/test_imas_skew_geometry.py`: known (SM, slab, centroid) → endpoint mm for SMs in rings 0 and 4 and azimuths 0, 5, 23; each sign flips its coordinate; an LOR through the bar crosses the annulus twice with the expected TOF; an LOR missing it is rejected.
     - `tests/test_imas_skew_cache.py`: synthetic IMAS cache resumes after an interrupted file and refuses a changed config, calibration or source.
     - **Real (operator):** feature cache and observation set on the 3 splits with T5's calibration: per-cut counts, accepted observations, cache bytes per LDAT byte, peak memory, time.
 
+  - Verified 2026-10-26: `tests/test_imas_skew_geometry.py tests/test_imas_skew_cache.py -n 0 --slow-limit 5`: 9 passed; T1 Cornell selection plus every IMAS file, `-m "not real_data"`: 190 passed, 4 xfailed. Real: `python -m src.imas.skew observe` on splits 08-10 with T5's calibration, nominal geometry (s_t +1, s_a -1, 7 mm), all train, 1 worker (`PETSYS_DATA_DIR/IMAS_work/``observe_3splits/`, 3 min 52 s, peak 0.78 GiB): 155,114,757 records; first failures: 45,100,997 passed pre-geometry, 70,071,812 energy window, 30,556,296 side min channels, 7,818,712 window, 1,519,523 minimodule min channels, 47,417 invalid calibration. Geometry: 2,048,060 accepted, 32,853,707 opposition angle (< 165 degrees, after crossing the shell), 10,199,230 no shell crossing. Features 4.92 GB = 0.099 bytes per LDAT byte (plan assumed 0.059: ~99 GB cache per TB); observations 0.28 GB; features 191 s, observations 40 s.
+  - Deviations: `python -m src.imas.skew observe` (development stage report) added; `peak_memory` and `tree_bytes` moved to `src/timing/report.py` (Cornell `job.py` imports them; not a fingerprinted source).
 ## Decision point
 
 - [ ] **T7 — Pair-statistics measurement and estimator decision** (FR-7).
@@ -69,6 +77,9 @@ Status: not started, 2026-10-26. [Approved spec](spec.md), [plan](plan.md).
     - `tests/test_imas_skew_pairstats.py`: synthetic observation set with known pair counts reproduces the histogram, components and projection.
     - **Real:** the report on the 3 splits recorded here.
     - **Owner decision** written into the spec as a change (estimator, and any revision of T8–T15) before T8 starts.
+
+  - Verified 2026-10-26: `tests/test_imas_skew_pairstats.py -n 0 --slow-limit 5`: 2 passed. Real report (`PETSYS_DATA_DIR/IMAS_work/``pairstats_3splits.json`, 10 s): 2,048,060 observations over 1,352,415 distinct pairs (median 1, p95 3, max 11 per pair; 1,378 pairs >= 6, 0 >= 30); 14,559 channels with observations, median 282 (p5 163) per channel from median 186 partners; one connected component. Spec 008 pair fits (declared kernel 200 ps, no pair >= 30 for estimation): 2 usable pairs of 1,352,415. Grouped: 46,483 minimodule pairs, median 46 observations; 4,271 ASIC pairs, median 487. Rings 0/4 ~700k, rings 1-3 ~900k observations; no SM without observations. Linear projection to 1 TB (x20.1): ~41M observations, median ~5,700 per channel, ~930 per minimodule pair, ~9,800 per ASIC pair; a zero-truncated Poisson estimate puts ~2.3M reachable pairs at ~18 observations each.
+  - Owner decision pending.
 
 ## Provisional (revised after T7)
 
