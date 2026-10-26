@@ -6,17 +6,19 @@ and file bytes.
 """
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from cornell_timing_helpers import CONFIG, ROOT, make_setup
+from cornell_timing_helpers import CONFIG, DRAWING_SOURCE, ROOT, make_setup, random_records, write
 from src.cornell.skew.ingest import GeometryHypothesis, apply_geometry
 
 pytestmark = pytest.mark.fr("011-FR-1")
 GOLDEN = ROOT / "tests/data/golden/timing/011_t1_cornell_geometry.npz"
 BASELINE = ROOT / "tests/data/baselines/cornell_run7_pipeline_011.json"
+MANIFESTS = ROOT / "tests/data/golden/timing/011_t2_cornell_cache_manifests.json"
 GEOMETRY_FIELDS = ("codes", "endpoints_mm", "shell_segments", "shell_fractions", "shell_tof_ps")
 
 
@@ -69,6 +71,43 @@ def test_lor_stage_matches_cornell_geometry(tmp_path):
         assert np.array_equal(value, expected[key], equal_nan=True), key
     # the fixture reaches the common geometry outcomes (one shell segment needs a tangent LOR)
     assert {0, 1, 2, 3} <= set(np.unique(actual["selected/codes"]).tolist())
+
+
+def cache_manifests(work, setup):
+    """Feature-cache and observation-set manifests of a synthetic two-file Cornell cache.
+
+    Inputs get a fixed mtime so the fingerprint depends only on content, sources and settings.
+    """
+    from src.cornell.skew import cache as tc
+    from src.cornell.skew.geometry import AnnularSource
+    paths = [write(work / f"run_{i}.ldat", random_records(setup, 400, seed=40 + i)) for i in range(2)]
+    for path in paths:
+        os.utime(path, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    holdout = {"qualified": True, "roles_frozen_before_fitting": True,
+               "partitions": [{"index": i, "role": ("train", "validation")[i], "anchor_start_ps": -2 ** 62,
+                               "anchor_end_ps": 2 ** 62} for i in range(2)]}
+    features = tc.build_feature_cache(work / "features", [{"index": i, "path": p} for i, p in enumerate(paths)],
+                                      config_path=CONFIG, encal_path=setup.provenance["encal"], root=ROOT,
+                                      holdout=holdout, energy_calibration_prefix={1: 3}, seed=5)
+    hypothesis = GeometryHypothesis.faceted("faceted +1", CONFIG, setup, axial_sign=-1, transverse_sign=1,
+                                            source=AnnularSource(**DRAWING_SOURCE))
+    observations = tc.build_observations(features, hypothesis, work / "observations", partitions=4)
+    return {"features": features.manifest, "observations": observations.manifest}
+
+
+def test_cornell_cache_fingerprint_unchanged(tmp_path):
+    """Synthetic Cornell cache manifests equal the golden; source hashes are those of today's files."""
+    golden = json.loads(MANIFESTS.read_text(encoding="utf-8"))
+    actual = cache_manifests(tmp_path, make_setup(tmp_path))
+    for level, sources in golden["sources"].items():
+        expected = golden["manifests"][level]
+        expected["fingerprint"]["sources_sha256"] = {name: _sha256(ROOT / path) for name, path in sources.items()}
+        if level == "observations":
+            expected["fingerprint"]["features_sha256"] = actual["features"]["fingerprint_sha256"]
+        else:
+            expected["fingerprint_sha256"] = hashlib.sha256(json.dumps(expected["fingerprint"], sort_keys=True)
+                                                            .encode()).hexdigest()
+        assert actual[level] == expected, level
 
 
 def _sha256(path):

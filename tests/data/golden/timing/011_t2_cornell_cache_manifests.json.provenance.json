@@ -1,0 +1,18 @@
+{
+ "requirements": [
+  "011-FR-1"
+ ],
+ "generated_utc_date": "2026-10-26",
+ "repo_commit": "41421aff3c99d33854248b6f83621ac36b86a66e",
+ "sources": {
+  "src/cornell/skew/cache.py": "e593eaa23d0f2b916a8cfe4f41c48ed18941d79a494ed554e7fd0c5aecfbac27",
+  "tests/test_timing_core.py": "2cc5b63f6d8df2ef6ea854eaeb7a0332d440fb0b8c02a5f5184c0c426b85e2dc",
+  "tests/cornell_timing_helpers.py": "e2c63b2ad01be2c48eafd23b7486a1a5e3b25d31acb5463d5af66613d2a2f39e",
+  "scripts/capture_011_t2.py": "0b924c072ffed5d9e80b6da98daf55d1d6a1ec6b1d74e001e2f6b3fd2ef7a552"
+ },
+ "golden": "timing/011_t2_cornell_cache_manifests.json",
+ "sha256": "f8c4a98cd20029b1aebd2c86cb318954e7f8cf1113b8beabdd3a78b9eeaac669",
+ "fixture": "tests/test_timing_core.py:cache_manifests (random_records 400, seeds 40-41, fixed mtime)",
+ "method": "Cornell build_feature_cache/build_observations at HEAD after spec 011 T1, before the T2 adapter seam. sources_sha256 values are those of the listed files at that commit; the test recomputes them from today's files.",
+ "truth": "Regression value of the pre-seam code, not physical truth."
+}

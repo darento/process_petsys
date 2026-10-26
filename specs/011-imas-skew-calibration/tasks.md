@@ -24,12 +24,16 @@ Status: not started, 2026-10-26. [Approved spec](spec.md), [plan](plan.md).
     - The run7 byte check from T2 is done here, as `tests/test_timing_core.py::test_run7_pipeline_bytes_unchanged` (`real_data`, `slow`): 8 whole run7 files, all train, `workers=4`; baseline `tests/data/baselines/cornell_run7_pipeline_011.json` captured at d56f49b. Two files gave no pair with ≥30 events. LUT compared rounded to 1e-6 ps (BLAS thread order moves delays by ~1e-11 ps between processes).
     - Cache fingerprints hash module source, so they change with the move: existing Cornell caches rebuild once, same content. T2 compares the fingerprint against the post-T1 value.
   - Verified 2026-10-26: selection above plus `tests/test_timing_core.py`, `-m "not real_data"`: 157 passed, 4 xfailed (before: 156 passed, 4 xfailed; +1 golden test). `tests/test_timing_core.py -m "" -n 0 --slow-limit 5` with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: 2 passed (283 s). `py_compile src/timing/*.py src/cornell/skew/*.py` OK.
-- [ ] **T2 — Adapter seam in the cache** (FR-1, FR-6).
+- [x] **T2 — Adapter seam in the cache** (FR-1, FR-6).
   - `src/timing/cache.py` takes an adapter (`select_batch`, `rejection_labels`, `fingerprint_sources`); the Cornell adapter wraps today's lookup.
   - **Done when:**
     - the T1 Cornell selection passes unchanged;
     - `tests/test_timing_core.py::test_cornell_cache_fingerprint_unchanged`: the manifest fingerprint of a synthetic Cornell cache equals the post-T1 value (golden);
     - `tests/test_timing_core.py::test_run7_pipeline_bytes_unchanged` (added in T1) still passes against the pre-T1 baseline.
+  - Deviations:
+    - The adapter API is `kind`, `labels`, `code_label`, `fingerprint()` and `feature_batches(path, partition, *, max_records, seed)`, not `select_batch`/`rejection_labels`/`fingerprint_sources`. Cornell owns its LDAT read (`ingest.production_batches`, patched in tests as `tc.ingest.LdatStream`), so the adapter yields whole `FeatureBatch`es. Level 2 takes a geometry adapter (`kind`, `describe`, `sources`, `apply`) and an optional walk adapter (`fingerprint`, `source`, `rows`). Cornell's `CornellFeatures`, `CornellGeometry` and `CornellWalk` are in `src/cornell/skew/cache.py`, which keeps the spec 008 `build_feature_cache`/`build_observations` signatures and re-exports the core names.
+    - Golden `tests/data/golden/timing/011_t2_cornell_cache_manifests.json` holds both manifests, captured at 41421af (post-T1 HEAD) by local `scripts/capture_011_t2.py`. The test recomputes `sources_sha256` from the named files, so later legitimate edits to `ingest.py` and the other hashed sources don't fail it. At capture time the literal values matched: T2 edits no hashed file.
+  - Verified 2026-10-26 (Windows, this PC): T1 selection plus `tests/test_timing_core.py`, `-m "not real_data"`: 159 passed, 4 xfailed (157 + bug-cornell-inventory-provenance + fingerprint test). `tests/test_timing_core.py tests/test_cornell_timing_cache.py -m "" -n 0 --slow-limit 5` with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: 8 passed (301 s), including run7 with `workers=4` (adapter pickled to spawned workers).
 
 ## IMAS front end
 

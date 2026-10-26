@@ -1,0 +1,363 @@
+{
+ "sources": {
+  "features": {
+   "ingest": "src/cornell/skew/ingest.py",
+   "kernels": "src/timing/kernels.py",
+   "ldat_stream": "src/ldat_stream.py"
+  },
+  "observations": {
+   "ingest": "src/cornell/skew/ingest.py",
+   "geometry": "src/cornell/skew/geometry.py",
+   "kernels": "src/timing/kernels.py",
+   "shell": "src/timing/shell.py"
+  }
+ },
+ "manifests": {
+  "features": {
+   "fingerprint": {
+    "schema_version": 3,
+    "kind": "cornell timing features",
+    "inputs": [
+     {
+      "index": 0,
+      "name": "run_0.ldat",
+      "size_bytes": 93408,
+      "mtime_ns": 1700000000000000000
+     },
+     {
+      "index": 1,
+      "name": "run_1.ldat",
+      "size_bytes": 94384,
+      "mtime_ns": 1700000000000000000
+     }
+    ],
+    "config_sha256": "b1dad0f7f53881c3ce21fc4b1a43d0896e67b4104555000524265fb7624bde04",
+    "map_sha256": "6f688c2ee697d5c4c284ba113567def4e49a47777fe61ec4e9cc393b78a7f29c",
+    "encal_sha256": "bfe84f93ed2710fbcd811cde6405770efd3ffb075682e964a6174ebda4ed0021",
+    "sources_sha256": {
+     "ingest": "c65402e2b0e833ff377028b770c1c256178c401259428a533011a9d22df6528f",
+     "kernels": "45fbf55a8b575d9517690ad2c4bf71d05cbfca5dd895a444fd1535ae880ecac7",
+     "ldat_stream": "3dc01cc026f3969ec41ef2953b4fc38e104b594da4c49adbea4bffe8b0959562"
+    },
+    "partitions": {
+     "0": {
+      "file_index": 0,
+      "role": "train",
+      "anchor_start_ps": -4611686018427387904,
+      "anchor_end_ps": 4611686018427387904,
+      "excluded_prefix_records": 0
+     },
+     "1": {
+      "file_index": 1,
+      "role": "validation",
+      "anchor_start_ps": -4611686018427387904,
+      "anchor_end_ps": 4611686018427387904,
+      "excluded_prefix_records": 3
+     }
+    },
+    "seed": 5,
+    "max_records": null,
+    "feature_dtype": [
+     [
+      "file",
+      "<i2"
+     ],
+     [
+      "record",
+      "<i8"
+     ],
+     [
+      "time_channel_1",
+      "<i4"
+     ],
+     [
+      "time_channel_2",
+      "<i4"
+     ],
+     [
+      "sm_1",
+      "<i2"
+     ],
+     [
+      "mm_1",
+      "<i2"
+     ],
+     [
+      "sm_2",
+      "<i2"
+     ],
+     [
+      "mm_2",
+      "<i2"
+     ],
+     [
+      "slab_1",
+      "|i1"
+     ],
+     [
+      "slab_2",
+      "|i1"
+     ],
+     [
+      "module_tie",
+      "|i1"
+     ],
+     [
+      "dt_ps",
+      "<i8"
+     ],
+     [
+      "energy_kev_1",
+      "<f4"
+     ],
+     [
+      "energy_kev_2",
+      "<f4"
+     ],
+     [
+      "x_1",
+      "<f8"
+     ],
+     [
+      "y_1",
+      "<f8"
+     ],
+     [
+      "x_2",
+      "<f8"
+     ],
+     [
+      "y_2",
+      "<f8"
+     ],
+     [
+      "q_top_1",
+      "<f4"
+     ],
+     [
+      "q_time_1",
+      "<f4"
+     ],
+     [
+      "e_raw_1",
+      "<f4"
+     ],
+     [
+      "doi_ratio_1",
+      "<f4"
+     ],
+     [
+      "q_top_2",
+      "<f4"
+     ],
+     [
+      "q_time_2",
+      "<f4"
+     ],
+     [
+      "e_raw_2",
+      "<f4"
+     ],
+     [
+      "doi_ratio_2",
+      "<f4"
+     ]
+    ]
+   },
+   "fingerprint_sha256": "a454ba2508c54f26e375fd029dcc56576a2c4db1f6a58659884c963f80a0ac2f",
+   "labels": [
+    "accepted",
+    "energy calibration prefix",
+    "file edge guard",
+    "unmapped channel",
+    "side min channels",
+    "no positive minimodule energy",
+    "minimodule min channels",
+    "coincidence window",
+    "unresolved slab",
+    "missing energy calibration",
+    "invalid energy calibration",
+    "energy window",
+    "invalid endpoint",
+    "no shell crossing",
+    "opposition angle",
+    "one shell segment"
+   ],
+   "notes": [
+    "rows: holdout-kept records passing every pre-geometry cut",
+    "energy_kev stored as float32"
+   ]
+  },
+  "observations": {
+   "fingerprint": {
+    "schema_version": 3,
+    "kind": "cornell timing observations",
+    "features_sha256": "a454ba2508c54f26e375fd029dcc56576a2c4db1f6a58659884c963f80a0ac2f",
+    "hypothesis": {
+     "name": "faceted +1",
+     "frames_sha256": "7c81ea54258f1a3b402de2a37e0888c6a1853867b88da0e5d74ad69cf7576d7b",
+     "source": "AnnularSource(inner_radius_mm=137.5, outer_radius_mm=142.5, axial_min_mm=-150.0, axial_max_mm=150.0, center_mm=(0.0, 0.0, 0.0), axis=(0.0, 0.0, 1.0))",
+     "opposition_tolerance_deg": 15.0
+    },
+    "partitions": 4,
+    "sources_sha256": {
+     "ingest": "c65402e2b0e833ff377028b770c1c256178c401259428a533011a9d22df6528f",
+     "geometry": "33de6f8c2deefeb30c71c013b4dd437bfef8f9d00a55b6fd7ced99b6c6fe7b9e",
+     "kernels": "45fbf55a8b575d9517690ad2c4bf71d05cbfca5dd895a444fd1535ae880ecac7",
+     "shell": "92246a047cb2f0faa285ec798e253db487724fe1ac3c538fa4e360e6391fbb28"
+    },
+    "observation_dtype": [
+     [
+      "file",
+      "<i2"
+     ],
+     [
+      "record",
+      "<i8"
+     ],
+     [
+      "role",
+      "|i1"
+     ],
+     [
+      "swapped",
+      "|i1"
+     ],
+     [
+      "channel_i",
+      "<i4"
+     ],
+     [
+      "channel_j",
+      "<i4"
+     ],
+     [
+      "dt_ps",
+      "<i8"
+     ],
+     [
+      "sm_i",
+      "<i2"
+     ],
+     [
+      "mm_i",
+      "<i2"
+     ],
+     [
+      "sm_j",
+      "<i2"
+     ],
+     [
+      "mm_j",
+      "<i2"
+     ],
+     [
+      "slab_i",
+      "|i1"
+     ],
+     [
+      "slab_j",
+      "|i1"
+     ],
+     [
+      "module_tie",
+      "|i1"
+     ],
+     [
+      "energy_kev_i",
+      "<f4"
+     ],
+     [
+      "energy_kev_j",
+      "<f4"
+     ],
+     [
+      "endpoint_i_mm",
+      "<f8",
+      [
+       3
+      ]
+     ],
+     [
+      "endpoint_j_mm",
+      "<f8",
+      [
+       3
+      ]
+     ],
+     [
+      "shell_tof_ps",
+      "<f8",
+      [
+       4
+      ]
+     ]
+    ],
+    "walk": null
+   },
+   "chunks": [
+    1,
+    1,
+    1,
+    1
+   ],
+   "geometry": {
+    "train": {
+     "accepted": 7,
+     "invalid endpoint": 0,
+     "no shell crossing": 7,
+     "opposition angle": 55,
+     "one shell segment": 0
+    },
+    "validation": {
+     "accepted": 8,
+     "invalid endpoint": 0,
+     "no shell crossing": 5,
+     "opposition angle": 56,
+     "one shell segment": 0
+    },
+    "test": {
+     "accepted": 0,
+     "invalid endpoint": 0,
+     "no shell crossing": 0,
+     "opposition angle": 0,
+     "one shell segment": 0
+    }
+   },
+   "walk": null,
+   "observations": {
+    "train": 7,
+    "validation": 8,
+    "test": 0
+   },
+   "first_failure": {
+    "train": {
+     "passed pre-geometry": 69,
+     "unmapped channel": 23,
+     "side min channels": 148,
+     "no positive minimodule energy": 7,
+     "minimodule min channels": 40,
+     "coincidence window": 10,
+     "unresolved slab": 40,
+     "missing energy calibration": 12,
+     "invalid energy calibration": 7,
+     "energy window": 44
+    },
+    "validation": {
+     "energy calibration prefix": 3,
+     "passed pre-geometry": 69,
+     "unmapped channel": 13,
+     "side min channels": 165,
+     "no positive minimodule energy": 4,
+     "minimodule min channels": 39,
+     "coincidence window": 11,
+     "unresolved slab": 32,
+     "missing energy calibration": 8,
+     "invalid energy calibration": 15,
+     "energy window": 41
+    },
+    "test": {}
+   }
+  }
+ }
+}
