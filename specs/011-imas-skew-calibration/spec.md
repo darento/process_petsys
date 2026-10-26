@@ -1,6 +1,6 @@
 # Spec 011 — IMAS skew calibration
 
-Status: `draft` (2026-10-26)
+Status: `clarified` (2026-10-26; [pending inputs](#pending-inputs) are data, not open decisions)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (Cornell per-channel skew LUT, shell pair fits, global solve, native table, point-source CTR). Evidence (untracked, `docs/imas/`): manuscript `IMAS_TBPET_Dec24.docx`, poster `IMAS_IEEE2025_poster.pptx`, readout map `ModuleMap_FEM256_RR.pptx`, LDAT Inspector screenshots `image_regions_down.png` and `image_FEM_skew.png`.
 
@@ -16,7 +16,7 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
 - **Units:** timestamps in ps; hit energies in PETsys QDC units (a.u.); keV only through the energy calibration of FR-4.
 - **Development data (local):** `20251119_Skew_400s_0_coinCompact_00000008/9/10.ldat` under `PETSYS_DATA_DIR/IMAS/` (3 of about 30 splits, ~16.5 GB and ~13.3 s each, about a third of a bar turn).
 - **Ship data:** about 1 TB of skew acquisitions brought by the owner on an external HDD.
-- **Validation data:** an IMAS 22Na point-source acquisition (owner is transferring it; name and position pending) and the legacy IMAS skew LUT (file pending).
+- **Validation data:** an IMAS 22Na point-source acquisition and the legacy IMAS production skew LUT (see [pending inputs](#pending-inputs)).
 
 **Owner decisions, 2026-10-26:**
 
@@ -43,21 +43,22 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
   - The geometry is reported as nominal: SM face positions, minimodule pitch and ring positions are not physically qualified.
 - **FR-3 — IMAS side selection.**
   - Per side: `min_ch` and `en_min_ch` from the config, the highest-energy minimodule, its highest-charge TIME hit as timestamp and slab.
-  - Both sides inside the declared keV window; LOR opening angle at least 165° in 3D; `|dt|` inside the declared coincidence window.
+  - Both sides inside the declared keV window (408–613 keV, owner); LOR opening angle at least 165° in 3D; `|dt|` inside the declared coincidence window.
   - A reference mode reproduces the selection of `scripts_imas/imas_skew_cal_bigdata_optimized.py` on a bounded prefix; its differences from the production selection (slab from the highest TIME channel instead of the TIME-channel centroid, 15 ns legacy window) are listed with counts.
   - Every rejection is counted once, by its first failing cut.
 - **FR-4 — Energy calibration from the skew data.**
-  - A per-TIME-channel 511 keV photopeak calibration is fitted from the skew acquisition's own events, from a declared subset of files or records that is recorded in the job.
+  - A per-TIME-channel 511 keV photopeak calibration is fitted from the skew acquisition's own events, from dedicated splits per run declared in the job (owner). Those splits may also enter the skew fit; held-out splits never do.
   - Channels without a usable peak get an explicit status; their events are rejected and counted, never converted with a guessed factor.
   - The output is a file `KevConverter` reads and a manifest with its inputs and fit parameters. Every skew and CTR result names the calibration and keV window that produced it.
 - **FR-5 — Corona source model.**
   - An annulus from 155 to 165 mm radius (bar centre 160 mm ± 5 mm), axially from −350 to +350 mm about the scanner centre, coaxial with the scanner. Its parameters, and the fact that they are nominal, are recorded in every output.
   - Each accepted LOR crosses the annulus in two segments, the two branch hypotheses of spec 008; an LOR that does not cross it twice is rejected and counted.
 - **FR-6 — Inventory, scale and cache.**
-  - A job file lists every split explicitly (paths on the external HDD included), with frozen roles (energy calibration, train, held-out).
+  - A job file lists every run and split explicitly (paths on the external HDD included), with frozen roles (energy calibration, train, held-out).
+  - Several skew runs with the same bar setup are pooled into one solve, as in spec 008 FR-18; per run, the report compares 511 keV peak positions and pair residuals against the pooled delays, and optionally a per-run solve, so a run-dependent offset stays visible.
   - The inventory reports per file: physical coincidence records, first-failure counts, accepted observations, and counts per TIME channel and SM. Channels with no or few observations are listed as unobserved or low-statistics, so down regions appear from the data.
   - Memory is bounded by the configured chunk and cache buffers, never by the number of records. The job resumes from completed cache blocks and never reuses a cache whose inputs, config, map, calibration, geometry, cuts or schema differ.
-  - The job reports stage timings, throughput and peak memory; on ~1 TB it must finish on the machine that holds the HDD (a time budget is set after the FR-7 measurement).
+  - The job reports stage timings, throughput and peak memory. The ship job runs on this Windows PC reading the external HDD directly (owner); the HDD read rate is measured, and a time budget is set after the FR-7 measurement.
 - **FR-7 — Pair-statistics measurement and estimator decision.**
   - Before any IMAS solver work, a measurement on the 3 local splits reports: accepted observations, distinct channel pairs, observations per pair (distribution), fraction of pairs with both branches resolved, partners per channel, connected components, and a linear projection to ~1 TB.
   - The owner then chooses the estimator, recorded here as a spec change: spec 008's per-pair two-branch fits and global solve, a per-channel estimator over all partners, or grouped pairs (minimodule or ASIC pairs first).
@@ -67,14 +68,15 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
   - No missing value, `9999` or invented zero enters any correction.
 - **FR-9 — Outputs.** From one solved LUT:
   - **Canonical LUT:** spec 008's CSV and manifest, with IMAS global TIME-channel IDs, subtractive delays `b` in ps (`t_corrected = t − b`), uncertainty, status and `apply` flag.
-  - **PETsys native table:** `time_offset_calibration_table` rows `port slave chip channel offset_ps` for applied channels, decoded from the IMAS global IDs. Whether the two DAQ boards need one table or two is settled in Clarify.
+  - **PETsys native table:** `time_offset_calibration_table` rows `port slave chip channel offset_ps` for applied channels, decoded from the IMAS global IDs. One PETsys configuration handles both DAQ boards, so one table holds all channels (owner).
   - **Legacy skew file:** `ch skew` per line as `src/utils.py:read_skew` reads it. The legacy consumers add the value (`t + skew`), so `skew = −b`. Channels without an applied delay are omitted; that legacy readers then use `9999` is documented, not hidden.
   - **Timestamp correction:** a tracked function applies the canonical LUT to the timestamps of an LDAT batch or a coincidence's two sides and counts uncorrected hits, so any script can use the LUT without converting files.
   - Each export is checked through its consumer: positive injected delays, endpoint swaps, and the native parser of spec 008.
 - **FR-10 — Point-source CTR.**
   - The LUT is frozen and evaluated on the 22Na acquisition with the job's cuts and calibration (or one fitted the same way from the point-source data; recorded).
   - The source position comes from timing-blind LOR convergence, as in spec 008; its declared nominal position is recorded too.
-  - On the same events: uncorrected, legacy IMAS LUT and the new LUT, with model-free and Gaussian FWHM, uncertainties, tails and counts.
+  - The 22Na acquisition has the same hardware state as the skew runs (owner).
+  - On the same events: uncorrected, the legacy IMAS production LUT and the new LUT, with model-free and Gaussian FWHM, uncertainties, tails and counts.
   - **Acceptance:** the new LUT's FWHM is better than the legacy LUT's by more than their combined uncertainty. The manuscript's legacy values (2293 ps uncorrected, 563 ps corrected, NECR phantom at 0.5 kBq/mL) are context, not a comparison on the same events.
 - **FR-11 — Diagnostics.**
   - Per-ASIC diagnostics as spec 008 FR-19, decoding IMAS global IDs.
@@ -95,15 +97,21 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
   - FR-10 acceptance passes on the 22Na acquisition against the legacy IMAS LUT.
 - **Suites:** the required repository suites pass; missing acquisitions are explicit skips naming `PETSYS_DATA_DIR`.
 
-## Open questions (Clarify)
+## Clarify answers (owner, 2026-10-26)
 
-1. **Legacy IMAS LUT:** which file, from which acquisition and with which cuts; confirm it uses the additive `t + skew` convention of `imas_listmode.py`.
-2. **22Na acquisition:** name, nominal position, activity and duration; was it acquired after the skew run, with the same hardware state?
-3. **~1 TB contents:** the 400 s skew run is ~30 splits (~500 GB). Is the rest more splits of the same run, or other skew runs (different day, activity, bar radius)? If several runs, are they pooled as in spec 008 FR-18?
-4. **keV window:** the config uses 450–570 keV, the manuscript's skew used 408–613 keV. Which one for the skew job and for the CTR?
-5. **Native table and two DAQs:** is the IMAS RAW → LDAT conversion one PETsys configuration with one `time_offset_calibration_table`, or one per DAQ board?
-6. **Energy calibration subset:** a dedicated set of splits, or a prefix of every train file (spec 008's held-out prefix rule)?
-7. **Run location for the ship job:** this Windows PC reading the HDD, or another machine?
+1. **Legacy IMAS LUT:** the production skew file IMAS uses today (FR-10).
+2. **22Na acquisition:** same hardware state as the skew runs.
+3. **~1 TB contents:** several skew runs with the same bar setup, pooled into one job as in spec 008 FR-18, with per-run comparisons (FR-6).
+4. **keV window:** 408–613 keV for the skew job and the CTR (FR-3). It is declared in the job; `imas_2DAQ.yaml`'s `energy_range` (450–570) is left for other IMAS scripts.
+5. **Native table:** one PETsys configuration handles both DAQ boards, so one `time_offset_calibration_table` holds all channels (FR-9).
+6. **Energy calibration:** dedicated splits per run, declared in the job (FR-4).
+7. **Ship job:** this Windows PC, reading the external HDD directly (FR-6).
+
+## Pending inputs
+
+- The legacy production skew file, with the acquisition and cuts it came from, and confirmation that it uses the additive `t + skew` convention of `scripts_imas/imas_listmode.py`.
+- The 22Na acquisition: name, nominal position, activity and duration (transfer from the IMAS PC in progress).
+- The ~1 TB HDD: run list and split counts.
 
 ## Out of scope
 
