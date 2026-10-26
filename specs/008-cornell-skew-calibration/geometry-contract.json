@@ -284,8 +284,8 @@
  "legacy_defects": "Frozen probes and strict xfail tests; original/optimized/pointSource scripts unchanged",
  "owner_axes_statement": "2026-10-13: slabs transaxial, slab index increases axially; each TIME channel reads two slabs. Matches original time-axial (x_rtp=1) transform; optimized swaps roles.",
  "drawings_sha256": {
-  "docs/drawings_Cornell_info/Cornell Sketch r01 231010.pdf": "d3eafb6724823a4c988bcaaabcf73bbfeb94f294a321e0cf4fbebc037bcb6993",
-  "docs/drawings_Cornell_info/Ph Norm D275L300 r01 260126.pdf": "bf9c2be703bed64280b77e465c8664ca912fd0f58e1ff64094dc63fb0666b131"
+  "docs/cornell/drawings/Cornell Sketch r01 231010.pdf": "d3eafb6724823a4c988bcaaabcf73bbfeb94f294a321e0cf4fbebc037bcb6993",
+  "docs/cornell/drawings/Ph Norm D275L300 r01 260126.pdf": "bf9c2be703bed64280b77e465c8664ca912fd0f58e1ff64094dc63fb0666b131"
  },
  "source_drawing": {
   "inner_radius_mm": 137.5,

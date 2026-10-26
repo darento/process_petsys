@@ -2,7 +2,7 @@
 
 Status: `shipped` (2026-10-20; T9 validation on Windows, [known limitations](#known-limitations-at-closing); PETsys Manager 1.2.0)
 
-Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (per-channel skew LUT, point-source CTR). Evidence (untracked): [docs/research/cornell-timing-walk.md](../../docs/research/cornell-timing-walk.md).
+Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (per-channel skew LUT, point-source CTR). Evidence (untracked): [docs/cornell/research/cornell-timing-walk.md](../../docs/cornell/research/cornell-timing-walk.md).
 
 ## Goal and population
 

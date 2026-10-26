@@ -1,6 +1,6 @@
 # Plan — Cornell time-walk correction
 
-Status: approved plan for [spec 009](spec.md), 2026-10-19; shipped 2026-10-20 (T9); deviations recorded in [tasks](tasks.md). [Ordered tasks](tasks.md). Evidence (untracked): [docs/research/cornell-timing-walk.md](../../docs/research/cornell-timing-walk.md).
+Status: approved plan for [spec 009](spec.md), 2026-10-19; shipped 2026-10-20 (T9); deviations recorded in [tasks](tasks.md). [Ordered tasks](tasks.md). Evidence (untracked): [docs/cornell/research/cornell-timing-walk.md](../../docs/cornell/research/cornell-timing-walk.md).
 
 ## Recommendation
 
