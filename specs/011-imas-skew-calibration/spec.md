@@ -1,6 +1,6 @@
 # Spec 011 — IMAS skew calibration
 
-Status: `approved` (owner, 2026-10-26; [pending inputs](#pending-inputs) are data, not open decisions)
+Status: `in progress` (approved by the owner 2026-10-26; FR-7 decision recorded the same day, see [Spec changes](#spec-changes); [pending inputs](#pending-inputs) are data, not open decisions)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (Cornell per-channel skew LUT, shell pair fits, global solve, native table, point-source CTR). Evidence (untracked, `docs/imas/`): manuscript `IMAS_TBPET_Dec24.docx`, poster `IMAS_IEEE2025_poster.pptx`, readout map `ModuleMap_FEM256_RR.pptx`, LDAT Inspector screenshots `image_regions_down.png` and `image_FEM_skew.png`.
 
@@ -46,6 +46,7 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
   - Both sides inside the declared keV window (408–613 keV, owner); LOR opening angle at least 165° in 3D; `|dt|` inside the declared coincidence window.
   - A reference mode reproduces the selection of `scripts_imas/imas_skew_cal_bigdata_optimized.py` on a bounded prefix; its differences from the production selection (slab from the highest TIME channel instead of the TIME-channel centroid, 15 ns legacy window) are listed with counts.
   - Every rejection is counted once, by its first failing cut.
+  - **Opening-angle study (owner, 2026-10-26):** production keeps >= 165 degrees. On the 3 local splits, >= 150 and >= 135 degrees are compared with the FR-7 estimators (residual widths, branch separation, delay differences against 165 degrees) and reported; any change of the production cut is a later spec change.
 - **FR-4 — Energy calibration from the skew data.**
   - A per-TIME-channel 511 keV photopeak calibration is fitted from the skew acquisition's own events, from dedicated splits per run declared in the job (owner). Those splits may also enter the skew fit; held-out splits never do.
   - Channels without a usable peak get an explicit status; their events are rejected and counted, never converted with a guessed factor.
@@ -58,11 +59,17 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
   - Several skew runs with the same bar setup are pooled into one solve, as in spec 008 FR-18; per run, the report compares 511 keV peak positions and pair residuals against the pooled delays, and optionally a per-run solve, so a run-dependent offset stays visible.
   - The inventory reports per file: physical coincidence records, first-failure counts, accepted observations, and counts per TIME channel and SM. Channels with no or few observations are listed as unobserved or low-statistics, so down regions appear from the data.
   - Memory is bounded by the configured chunk and cache buffers, never by the number of records. The job resumes from completed cache blocks and never reuses a cache whose inputs, config, map, calibration, geometry, cuts or schema differ.
+  - **Cache levels (owner, 2026-10-26):** the ship job streams LDAT through selection and geometry straight into observation sets (~6 GB per TB) and resumes per completed file; the feature cache (~99 GB per TB) is optional, used on the local splits for geometry and angle variants. Ship data may reach ~8 TB.
   - The job reports stage timings, throughput and peak memory. The ship job runs on this Windows PC reading the external HDD directly (owner); the HDD read rate is measured, and a time budget is set after the FR-7 measurement.
 - **FR-7 — Pair-statistics measurement and estimator decision.**
   - Before any IMAS solver work, a measurement on the 3 local splits reports: accepted observations, distinct channel pairs, observations per pair (distribution), fraction of pairs with both branches resolved, partners per channel, connected components, and a linear projection to ~1 TB.
   - The owner then chooses the estimator, recorded here as a spec change: spec 008's per-pair two-branch fits and global solve, a per-channel estimator over all partners, or grouped pairs (minimodule or ASIC pairs first).
   - Whatever is chosen recovers injected delays on synthetic IMAS-geometry fixtures within its declared uncertainty, keeps a gauge, and reports per-channel uncertainty.
+  - **Measurement (3 splits, T7):** 2,048,060 observations over 1,352,415 pairs (1.5 per pair, none >= 30), 2 pairs usable by spec 008's fits; median 282 observations and 186 partners per channel, one connected component. Linear projection to 1 TB: ~18 per pair, ~5,700 per channel.
+  - **Decision (owner, 2026-10-26): both estimators are implemented and compared on the same observation sets, the 3 local splits and the 1-8 TB ship data:**
+    - **Global EM:** one delay per TIME channel from every observation. The two-branch mixture of spec 008 (segment-averaged Gaussian kernel, flat background) with shift `b_i - b_j`; E-step branch/background responsibilities, M-step weighted least squares on the channel graph (moment-matched segment kernel), global `sigma`, background and branch fraction; a gauge per connected component. Data-only coarse start: SM offsets, then minimodule, then channel, with the kernel width annealed from wide to free at the SM stage; an alias test (+-1 branch separation) per group marks ambiguous groups. Per-channel uncertainty from the weighted channel graph, checked against held-out residuals.
+    - **Spec 008:** per-pair two-branch fits and the global solve, unchanged in the core, with the IMAS window.
+    - Both write the same canonical LUT form. The report compares them (delays, uncertainties, held-out residuals, statuses); the deliverable LUT is chosen by the owner after the FR-10 CTR of both.
 - **FR-8 — Solve, statuses and gauge.**
   - As spec 008 FR-10 and FR-12: connected components, an explicit gauge, uncertainties, statuses (calibrated, low statistics, disconnected, ambiguous, failed fit, unobserved).
   - No missing value, `9999` or invented zero enters any correction.
@@ -119,3 +126,7 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
 - Position: NN or DOI calibration, physical qualification of the IMAS geometry.
 - Other components: reconstruction, IMAS listmode changes beyond the correction function, Manager actions, GUI widgets, conversion of RAW files.
 - Manufactured singles.
+
+## Spec changes
+
+- **2026-10-26, FR-7 decision (owner):** after the T7 measurement, both estimators (global EM per channel with a data-only coarse start, and spec 008's pair fits and solve) are implemented and compared; ship data may reach ~8 TB, so the feature cache becomes optional and the job streams into observation sets (FR-6); production keeps the 165 degree opening angle with a 150/135 degree side study (FR-3). Tasks T8-T15 revised accordingly.

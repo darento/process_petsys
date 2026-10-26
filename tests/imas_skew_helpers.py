@@ -1,10 +1,13 @@
 """Shared synthetic IMAS skew fixtures (spec 011): config copies, sides and compact LDAT records."""
+import json
 from pathlib import Path
 import struct
 
+import numpy as np
 import yaml
 
 from src.mapping_generator import ChannelType
+from src.timing.cache import OBSERVATION_DTYPE, PAIR_COUNT_DTYPE, ObservationSet, pair_partition
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/imas_2DAQ.yaml"
@@ -63,3 +66,93 @@ def mu_file(path, values):
     lines = ["ID\tmu"] + [f"{ch}\t{mu}" for ch, mu in values.items()]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+# --- synthetic IMAS-geometry observations (spec 011 T9-T11) --------------------------------------------------
+
+class Columns:
+    """``column(name)`` view of plain arrays (geometry adapter input)."""
+
+    def __init__(self, **values):
+        self.values = values
+
+    def column(self, name):
+        return self.values[name]
+
+
+def channel_table(setup, sms, modules):
+    """TIME channels of ``modules`` in ``sms``: channel, SM, minimodule, slab x and the minimodule's y range."""
+    rows = []
+    for sm in sms:
+        for mm in modules:
+            time, energy = channels(setup, sm, mm)
+            ys = [setup.local_map[ch][1] for ch in energy]
+            rows += [(ch, sm, mm, setup.local_map[ch][0], min(ys), max(ys)) for ch in time]
+    return np.array(rows, dtype=[("ch", "i8"), ("sm", "i8"), ("mm", "i8"), ("x", "f8"), ("lo", "f8"),
+                                 ("hi", "f8")])
+
+
+def sides(pool, count, rng, *, partner_pool=None, rings=None, n_azimuth=24):
+    """Random side pairs from ``pool`` to the opposite SM (+-1) in ``partner_pool`` (same ring, or one of
+    ``rings``), lower channel first, with random axial positions: Columns for a geometry adapter."""
+    partner_pool = pool if partner_pool is None else partner_pool
+    a = pool[rng.integers(0, len(pool), count)]
+    ring = a["sm"] // n_azimuth if rings is None else np.asarray(rings)[rng.integers(0, len(rings), count)]
+    k = (a["sm"] % n_azimuth + n_azimuth // 2 + rng.integers(-1, 2, count)) % n_azimuth + n_azimuth * ring
+    b = np.empty(count, pool.dtype)
+    for n, sm in enumerate(k):
+        options = partner_pool[partner_pool["sm"] == sm]
+        if not len(options):
+            options = partner_pool
+        b[n] = options[rng.integers(0, len(options))]
+    swap = a["ch"] > b["ch"]
+    first, second = np.where(swap, b, a), np.where(swap, a, b)
+    keep = first["ch"] != second["ch"]
+    first, second = first[keep], second[keep]
+    return Columns(ch_1=first["ch"], ch_2=second["ch"], sm_1=first["sm"], x_1=first["x"],
+                   y_1=rng.uniform(first["lo"], first["hi"]), sm_2=second["sm"], x_2=second["x"],
+                   y_2=rng.uniform(second["lo"], second["hi"]))
+
+
+def lors(geometry, pool, count, rng, *, partner_pool=None, n_azimuth=24):
+    """Accepted LORs from ``pool`` to the opposite SM (+-1) in ``partner_pool``: (channel_i < channel_j, TOF)."""
+    columns = sides(pool, count, rng, partner_pool=partner_pool, n_azimuth=n_azimuth)
+    result = geometry.apply(columns)
+    ok = result.codes == 0
+    return columns.column("ch_1")[ok], columns.column("ch_2")[ok], result.shell_tof_ps[ok]
+
+
+def skew_events(ci, cj, tof, delays, rng, *, noise=200.0, background=0.1, window=10_000.0, zero_width=False,
+                branch=None):
+    """``dt = t + b_i - b_j + noise`` with t uniform in one branch segment; flat background inside the window."""
+    near = rng.random(len(ci)) < 0.5 if branch is None else np.full(len(ci), branch == "near")
+    lo, hi = np.where(near, tof[:, 0], tof[:, 2]), np.where(near, tof[:, 1], tof[:, 3])
+    if zero_width:
+        point = 0.5 * (tof[:, [0, 2]] + tof[:, [1, 3]])
+        tof = np.repeat(point, 2, axis=1)
+        lo = hi = np.where(near, point[:, 0], point[:, 1])
+    shift = np.array([delays[c] for c in ci]) - np.array([delays[c] for c in cj])
+    dt = rng.uniform(lo, hi) + shift + rng.normal(0, noise, len(ci)) if noise else lo + shift
+    flat = rng.random(len(ci)) < background
+    dt[flat] = rng.uniform(-window, window, flat.sum())
+    inside = np.abs(dt) < window
+    return ci[inside], cj[inside], dt[inside], tof[inside]
+
+
+def observation_set(directory, ci, cj, dt, tof, partitions=2):
+    """Minimal canonical ``ObservationSet`` (train role) from arrays with ``channel_i < channel_j``."""
+    rows = np.zeros(len(ci), OBSERVATION_DTYPE)
+    rows["record"] = np.arange(len(ci))
+    rows["channel_i"], rows["channel_j"], rows["dt_ps"] = ci, cj, np.round(dt)
+    rows["shell_tof_ps"] = tof
+    part = pair_partition(rows["channel_i"], rows["channel_j"], partitions)
+    directory.mkdir(parents=True)
+    for p in range(partitions):
+        np.save(directory / f"p{p:03d}_c00000.npy", rows[part == p])
+    keys, counts = np.unique(np.stack([rows["channel_i"], rows["channel_j"]]), axis=1, return_counts=True)
+    table = np.zeros(keys.shape[1], PAIR_COUNT_DTYPE)
+    table["channel_i"], table["channel_j"], table["count"] = keys[0], keys[1], counts
+    np.save(directory / "pair_counts.npy", table)
+    (directory / "manifest.json").write_text(json.dumps({"fingerprint": {"partitions": partitions},
+                                                         "chunks": [1] * partitions}), encoding="utf-8")
+    return ObservationSet(directory)

@@ -171,6 +171,58 @@ class CanonicalLut:
         return corrected_dt_ps(timestamp_i, timestamp_j, self.delay(channel_i), self.delay(channel_j))
 
 
+# --- Timestamp correction from any delay table (spec 011 T12, FR-9) ----------
+
+_EXACT_FLOAT_PS = 2 ** 53
+
+
+class DelayTable:
+    """Subtractive delays {TIME channel: b} plus the channels known to have none (``missing``)."""
+
+    def __init__(self, delays, missing=(), provenance=None):
+        delays = {int(c): float(b) for c, b in delays.items()}
+        if any(not math.isfinite(b) for b in delays.values()):
+            raise LutError("delay table values must be finite")
+        self.delays, self.missing = delays, frozenset(int(c) for c in missing)
+        self.provenance = provenance or {}
+        self._keys = np.array(sorted(delays), np.int64)
+        self._values = np.array([delays[c] for c in self._keys.tolist()], np.float64)
+
+    @classmethod
+    def from_lut(cls, table):
+        """Applied channels of a ``CanonicalLut``; every other listed channel is missing."""
+        missing = table.rows["time_channel"][~table.rows["apply"]].tolist()
+        return cls(table._delay, missing, {"lut_sha256": table.manifest["table"]["sha256"]})
+
+    def lookup(self, channels):
+        """(delays, found) for an array of channels; delays are 0 where not found (check ``found``)."""
+        channels = np.asarray(channels, np.int64)
+        index = np.clip(np.searchsorted(self._keys, channels), 0, max(len(self._keys) - 1, 0))
+        found = (self._keys[index] == channels) if len(self._keys) else np.zeros(channels.shape, bool)
+        return np.where(found, self._values[index] if len(self._keys) else 0.0, 0.0), found
+
+
+def correct_timestamps(timestamps, channels, table):
+    """``t - b`` (float64 ps) per hit and a mask of hits that got a delay; others keep ``t`` and are counted
+    by the caller as uncorrected, never shifted by a guessed value."""
+    timestamps = np.asarray(timestamps)
+    if timestamps.dtype.kind not in "iu":
+        raise LutError("raw compact timestamps must be integers in ps")
+    if len(timestamps) and np.abs(timestamps).max() >= _EXACT_FLOAT_PS:
+        raise LutError("timestamps beyond 2^53 ps are not exact in float64")
+    delays, found = table.lookup(channels)
+    return timestamps.astype(np.float64) - delays, found
+
+
+def correct_batch(batch, table, time_channels):
+    """Corrected timestamps of an ``LdatBatch`` (TIME hits only; ENERGY hits unchanged) and hit counts."""
+    corrected, found = correct_timestamps(batch.timestamp, batch.channel, table)
+    is_time = np.isin(batch.channel, time_channels)
+    corrected = np.where(is_time, corrected, batch.timestamp.astype(np.float64))
+    return corrected, {"hits": int(len(batch.channel)), "time_hits": int(is_time.sum()),
+                       "corrected": int((found & is_time).sum()), "uncorrected_time_hits": int((~found & is_time).sum())}
+
+
 # --- Native PETsys time-offset table (T9a) ------------------------------------
 
 NATIVE_SCHEMA = "cornell-petsys-time-offset/1"

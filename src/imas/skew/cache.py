@@ -15,7 +15,7 @@ from pathlib import Path
 from src import ldat_stream
 from src.imas.skew import geometry as imas_geometry, select as sel, setup as imas_setup
 from src.imas.skew.setup import ImasSetup
-from src.timing import cache as core_cache, kernels as core_kernels, shell as core_shell
+from src.timing import cache as core_cache, kernels as core_kernels, shell as core_shell, stream as core_stream
 from src.timing.cache import _sha256
 
 _LOOKUP = {}
@@ -103,3 +103,15 @@ def build_observations(feature_cache, geometry, directory, *, partitions=16, buf
     """``src.timing.cache.build_observations`` for an ``ImasGeometry``."""
     return core_cache.build_observations(feature_cache, ImasObservations(geometry), directory,
                                          partitions=partitions, buffer_rows=buffer_rows, slice_rows=slice_rows)
+
+
+def stream_observations(directory, inputs, geometry, *, config_path, encal_path, root=".", holdout,
+                        energy_calibration_prefix, window_ps=sel.COINCIDENCE_WINDOW_PS, kev_window=sel.KEV_WINDOW,
+                        max_records=None, workers=1, partitions=16, buffer_rows=250_000, progress=None):
+    """``src.timing.stream.stream_observations`` with the IMAS selection and an ``ImasGeometry`` (no feature cache)."""
+    adapter = ImasFeatures(str(config_path), str(encal_path), str(Path(root)), int(window_ps),
+                           tuple(float(v) for v in kev_window))
+    return core_stream.stream_observations(directory, inputs, adapter, ImasObservations(geometry), holdout=holdout,
+                                           energy_calibration_prefix=energy_calibration_prefix, seed=0,
+                                           max_records=max_records, workers=workers, partitions=partitions,
+                                           buffer_rows=buffer_rows, progress=progress)

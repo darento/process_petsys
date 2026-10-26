@@ -10,9 +10,9 @@ with ``u``, ``v`` the side's local transaxial x and axial y minus the SM centre
 of the map frame (``ImasSetup.local_origin``). ``s_t``, ``s_a`` in {-1, +1} are
 the frame signs; the legacy transform (``scripts_imas/
 imas_skew_cal_bigdata_optimized.py:local_to_global``) is ``s_t = +1``,
-``s_a = -1`` with a 48 mm origin and the endpoint on the face. The signs are
-selected from the data in T9; until then the nominal pair is used and reported
-as such. Nothing here is physically qualified: no gaps, NN positions or DOI.
+``s_a = -1`` with a 48 mm origin and the endpoint on the face. The data
+select the same pair (``SELECTED_*``, sign study of spec 011 T11). Nothing
+here is physically qualified: no gaps, NN positions or DOI.
 
 The source is the rotating PMMA bar's corona, an annulus coaxial with the
 scanner (``IMAS_SKEW_BAR``, nominal). Endpoints then go through the core LOR
@@ -33,6 +33,10 @@ IMAS_SKEW_BAR = AnnularSource(155.0, 165.0, -350.0, 350.0, (0.0, 0.0, 0.0), (0.0
 INTERACTION_DEPTH_MM = 7.0
 OPPOSITION_TOLERANCE_DEG = 15.0          # 3D LOR opening angle >= 165 degrees
 NOMINAL_TRANSVERSE_SIGN, NOMINAL_AXIAL_SIGN = 1, -1
+# Sign study (spec 011 T11, 3 splits, 947,155 common events, EM with free separation scale): the legacy pair
+# wins; axial by 6,414 log-likelihood units (flip: sigma 279.9 -> 284.9 ps, delays move 5.9 ps robust sd),
+# transverse by 565 units (flip moves delays 0.3 ps: weakly identified and immaterial to the LUT).
+SELECTED_TRANSVERSE_SIGN, SELECTED_AXIAL_SIGN = 1, -1
 
 
 @dataclass(frozen=True)
@@ -57,10 +61,14 @@ class ImasGeometry:
 
     @classmethod
     def from_setup(cls, setup, *, transverse_sign=NOMINAL_TRANSVERSE_SIGN, axial_sign=NOMINAL_AXIAL_SIGN,
-                   source=IMAS_SKEW_BAR, depth_mm=INTERACTION_DEPTH_MM, name=None):
-        name = name or f"imas facets s_t {transverse_sign:+d} s_a {axial_sign:+d}"
+                   source=IMAS_SKEW_BAR, depth_mm=INTERACTION_DEPTH_MM,
+                   opposition_tolerance_deg=OPPOSITION_TOLERANCE_DEG, name=None):
+        name = name or f"imas facets s_t {transverse_sign:+d} s_a {axial_sign:+d}" + (
+            "" if opposition_tolerance_deg == OPPOSITION_TOLERANCE_DEG else
+            f" opening >= {180 - opposition_tolerance_deg:g} deg")
         return cls(name, int(transverse_sign), int(axial_sign), setup.ring_r, tuple(setup.ring_z),
-                   tuple(float(a) for a in setup.azimuth), tuple(setup.local_origin), source, float(depth_mm))
+                   tuple(float(a) for a in setup.azimuth), tuple(setup.local_origin), source, float(depth_mm),
+                   float(opposition_tolerance_deg))
 
     @classmethod
     def nominal(cls, setup, *, source=IMAS_SKEW_BAR):
@@ -86,14 +94,19 @@ class ImasGeometry:
         return (np.array(self.azimuth), np.array(self.ring_z), self.ring_r + self.depth_mm, self.transverse_sign,
                 self.axial_sign, self.local_origin[0], self.local_origin[1])
 
-    def apply(self, features):
-        """Geometry stage over feature rows (``column(name)``); reads no LDAT."""
+    def endpoints(self, features):
+        """(codes, endpoints (n, 6) mm) over feature rows; code 1 where either side is undefined."""
         column = features.column
         count = len(column("sm_1"))
         codes = np.zeros(count, np.int64)
         endpoints = np.full((count, 6), np.nan)
         _endpoints(column("sm_1"), column("x_1"), column("y_1"), column("sm_2"), column("x_2"), column("y_2"),
                    *self._tables(), codes, endpoints)
+        return codes, endpoints
+
+    def apply(self, features):
+        """Geometry stage over feature rows (``column(name)``); reads no LDAT."""
+        codes, endpoints = self.endpoints(features)
         return lor_stage(self.name, codes, endpoints, source_tables(self.source, self.opposition_tolerance_deg))
 
 

@@ -1,0 +1,349 @@
+"""Pooled IMAS skew job: ``python -m src.imas.skew run JOB.json --work DIR`` (spec 011 T13, FR-4, FR-6, FR-8).
+
+The job file declares every run and split with explicit roles; nothing else
+is read::
+
+    {"schema": "imas-skew-job/1", "config": "configs/imas_2DAQ.yaml",
+     "runs": [{"name": "r1", "splits": [{"path": ".../x_00000008.ldat", "roles": ["encal", "train"]},
+                                         {"path": ".../x_00000009.ldat", "roles": ["train"]},
+                                         {"path": ".../x_00000010.ldat", "roles": ["heldout"]}]}],
+     "estimators": ["em", "pairs"], "per_run_solves": false, "workers": 4,
+     "legacy": ".../skew_IMAS.txt", "transverse_sign": 1, "axial_sign": -1}
+
+Roles:
+
+* ``encal``: the run's dedicated 511 keV calibration splits (FR-4).
+* ``train``: enters the skew fit.
+* ``heldout``: never enters any fit, and cannot be ``encal`` or ``train``.
+
+Each run needs at least one ``encal`` and one ``train`` split. Unknown keys,
+unknown roles, repeated paths and missing files are refused before any work.
+
+Stages, each resumable in ``DIR`` (whose ``job_fingerprint.json`` must match
+the job):
+
+1. Per run, energy calibration from its ``encal`` splits (``encal.run``),
+   reused when its inputs match.
+2. Per run, a streamed observation set of its train and held-out splits (T8,
+   held-out files in the ``test`` role), resumed per file.
+3. Pooled solve over all runs' train rows: global EM and/or spec 008 pair
+   fits and global solve. Canonical LUTs ``lut_<estimator>.csv``.
+4. Checks:
+   * the pooled held-out events with each LUT (``solve.held_out``) and with
+     the legacy LUT;
+   * per run, 511 keV peaks against the first run and EM residual widths
+     with the pooled delays on its train and held-out events;
+   * optionally, a solve per run compared with the pooled delays, so a
+     run-dependent offset stays visible (FR-6).
+
+A disk preflight checks the free space in ``DIR`` against the expected
+observation-set size (6.3 GB per TB of LDAT, T8) with a 2x margin.
+``job_report.json`` holds stage timings, throughput and peak memory.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import time
+
+import numpy as np
+
+from src.imas.skew import cache as ic, encal, outputs, solve
+from src.imas.skew.geometry import SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, ImasGeometry
+from src.imas.skew.setup import ImasSetup
+from src.timing.report import peak_memory
+
+SCHEMA = "imas-skew-job/1"
+ROLES = ("encal", "train", "heldout")
+OBSERVATION_BYTES_PER_LDAT_BYTE = 6.3e-3        # T8: 313 MB from 49.6 GB
+DISK_MARGIN = 2.0
+JOB_KEYS = {"schema", "config", "runs", "estimators", "per_run_solves", "workers", "max_records", "legacy",
+            "transverse_sign", "axial_sign"}
+
+
+class JobError(ValueError):
+    """The job file or its work directory is inconsistent; nothing was changed."""
+
+
+@dataclass(frozen=True)
+class Split:
+    path: Path
+    roles: frozenset
+
+
+@dataclass(frozen=True)
+class Run:
+    name: str
+    splits: tuple
+
+    def having(self, role):
+        return [s for s in self.splits if role in s.roles]
+
+
+@dataclass(frozen=True)
+class Job:
+    config: Path
+    runs: tuple
+    estimators: tuple = solve.ESTIMATORS
+    per_run_solves: bool = False
+    workers: int = 1
+    max_records: int | None = None
+    legacy: Path | None = None
+    transverse_sign: int = SELECTED_TRANSVERSE_SIGN
+    axial_sign: int = SELECTED_AXIAL_SIGN
+    source: dict | None = None
+
+
+def load_job(path):
+    """Validated job; every refusal names the offending entry."""
+    path = Path(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("schema") != SCHEMA:
+        raise JobError(f"{path.name}: schema must be {SCHEMA!r}")
+    unknown = set(data) - JOB_KEYS
+    if unknown:
+        raise JobError(f"{path.name}: unknown keys {sorted(unknown)}")
+    runs, seen = [], set()
+    for run in data.get("runs") or []:
+        if set(run) - {"name", "splits"} or not run.get("name") or not run.get("splits"):
+            raise JobError(f"run {run.get('name')!r}: needs exactly a name and its splits")
+        splits = []
+        for split in run["splits"]:
+            if set(split) - {"path", "roles"} or not split.get("path"):
+                raise JobError(f"run {run['name']}: each split needs exactly a path and its roles")
+            roles = frozenset(split.get("roles") or ())
+            if not roles or roles - set(ROLES):
+                raise JobError(f"{split['path']}: roles must be a non-empty subset of {ROLES}")
+            if "heldout" in roles and len(roles) > 1:
+                raise JobError(f"{split['path']}: a held-out split has no other role")
+            resolved = Path(split["path"]).resolve()
+            if resolved in seen:
+                raise JobError(f"{split['path']}: declared twice")
+            seen.add(resolved)
+            splits.append(Split(Path(split["path"]), roles))
+        result = Run(str(run["name"]), tuple(splits))
+        if not result.having("encal") or not result.having("train"):
+            raise JobError(f"run {result.name}: needs at least one encal and one train split")
+        runs.append(result)
+    if not runs:
+        raise JobError(f"{path.name}: no runs")
+    if len({r.name for r in runs}) != len(runs):
+        raise JobError(f"{path.name}: run names must be unique")
+    estimators = tuple(data.get("estimators") or solve.ESTIMATORS)
+    if not estimators or set(estimators) - set(solve.ESTIMATORS):
+        raise JobError(f"{path.name}: estimators must be among {solve.ESTIMATORS}")
+    return Job(Path(data.get("config", "configs/imas_2DAQ.yaml")), tuple(runs), estimators,
+               bool(data.get("per_run_solves", False)), int(data.get("workers", 1)), data.get("max_records"),
+               Path(data["legacy"]) if data.get("legacy") else None,
+               int(data.get("transverse_sign", SELECTED_TRANSVERSE_SIGN)),
+               int(data.get("axial_sign", SELECTED_AXIAL_SIGN)), data)
+
+
+def _identity(path):
+    stat = Path(path).stat()
+    return {"name": Path(path).name, "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def preflight(job, work):
+    """Every declared file present; free disk for the observation sets (2x margin)."""
+    missing = [str(s.path) for r in job.runs for s in r.splits if not s.path.is_file()]
+    if missing:
+        raise JobError(f"declared files not found: {missing[:5]}")
+    if job.legacy is not None and not job.legacy.is_file():
+        raise JobError(f"legacy LUT not found: {job.legacy}")
+    ldat = sum(s.path.stat().st_size for r in job.runs for s in r.splits if s.roles & {"train", "heldout"})
+    need = DISK_MARGIN * OBSERVATION_BYTES_PER_LDAT_BYTE * ldat
+    probe = Path(work)
+    while not probe.exists():
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free
+    if free < need:
+        raise JobError(f"{work}: {free / 1e9:.1f} GB free, {need / 1e9:.1f} GB needed for the observation sets")
+    return {"ldat_bytes_observed": ldat, "disk_needed_bytes": need, "disk_free_bytes": free}
+
+
+def fingerprint(job):
+    declared = {"config": str(job.config), "estimators": list(job.estimators), "max_records": job.max_records,
+                "signs": [job.transverse_sign, job.axial_sign],
+                "runs": [{"name": r.name, "splits": [{**_identity(s.path), "path": str(s.path.resolve()),
+                                                      "roles": sorted(s.roles)} for s in r.splits]}
+                         for r in job.runs]}
+    return {"schema": SCHEMA, "declared": declared,
+            "sha256": hashlib.sha256(json.dumps(declared, sort_keys=True).encode()).hexdigest()}
+
+
+def _claim(work, job):
+    work = Path(work)
+    marker = work / "job_fingerprint.json"
+    stamp = fingerprint(job)
+    if marker.exists():
+        if json.loads(marker.read_text(encoding="utf-8"))["sha256"] != stamp["sha256"]:
+            raise JobError(f"{work}: work directory of another job (different runs, files, roles or settings)")
+    elif work.exists() and any(work.iterdir()):
+        raise JobError(f"{work}: not empty and not this job's work directory")
+    else:
+        work.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(stamp, indent=1) + "\n", encoding="utf-8")
+    return stamp
+
+
+def _energy_calibration(run, directory, job):
+    """``encal.run`` on the run's encal splits, or its earlier output when the inputs match."""
+    manifest = directory / "encal.json"
+    expected = [_identity(s.path) for s in run.having("encal")]
+    if manifest.exists():
+        inputs = json.loads(manifest.read_text(encoding="utf-8"))["inputs"]
+        if [{k: i[k] for k in ("name", "size_bytes", "mtime_ns")} for i in inputs] != expected:
+            raise JobError(f"{directory}: energy calibration from other splits")
+        return directory / "encal.tsv", json.loads(manifest.read_text(encoding="utf-8")), True
+    if directory.exists():
+        shutil.rmtree(directory)       # incomplete output of this job (no manifest)
+    path, written = encal.run([s.path for s in run.having("encal")], directory, config_path=job.config,
+                              max_records=job.max_records, workers=job.workers)
+    return path, written, False
+
+
+def _observations(run, directory, job, encal_path, geometry):
+    splits = [s for s in run.splits if s.roles & {"train", "heldout"}]
+    inputs = [{"index": k, "path": s.path} for k, s in enumerate(splits)]
+    holdout = {"qualified": True, "roles_frozen_before_fitting": True,
+               "partitions": [{"index": k, "role": "test" if "heldout" in s.roles else "train",
+                               "anchor_start_ps": -2 ** 62, "anchor_end_ps": 2 ** 62} for k, s in enumerate(splits)]}
+    return ic.stream_observations(directory, inputs, geometry, config_path=job.config, encal_path=encal_path,
+                                  holdout=holdout, energy_calibration_prefix={k: 0 for k in range(len(splits))},
+                                  max_records=job.max_records, workers=job.workers)
+
+
+class PooledObservations:
+    """Several runs' observation sets as one, partition by partition (same pair hashing)."""
+
+    def __init__(self, sets):
+        self.sets = list(sets)
+        counts = {s.partitions for s in self.sets}
+        if len(counts) != 1:
+            raise JobError("observation sets disagree on pair partitions")
+        self.partitions = counts.pop()
+
+    def partition(self, p):
+        return np.concatenate([s.partition(p) for s in self.sets])
+
+
+def _peaks(calibrations):
+    """511 keV peak per TIME channel, each run against the first: median ratio and robust spread."""
+    names = list(calibrations)
+    reference = calibrations[names[0]]
+    result = {}
+    for name in names[1:]:
+        both = np.isfinite(reference) & np.isfinite(calibrations[name])
+        ratio = calibrations[name][both] / reference[both]
+        result[f"{name} / {names[0]}"] = {
+            "channels": int(both.sum()), "median_ratio": float(np.median(ratio)) if both.any() else None,
+            "robust_sd_ratio": float(1.4826 * np.median(np.abs(ratio - np.median(ratio)))) if both.any() else None}
+    return result
+
+
+def _mu(path, setup):
+    values = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines()[1:]:
+        channel, mu = line.split("\t")
+        values[int(channel)] = float(mu)
+    return np.array([values.get(int(c), np.nan) for c in setup.time_channels])
+
+
+def run_job(job, work, *, progress=print):
+    work = Path(work)
+    started = time.perf_counter()
+    disk = preflight(job, work)
+    stamp = _claim(work, job)
+    setup = ImasSetup.from_files(job.config)
+    geometry = ImasGeometry.from_setup(setup, transverse_sign=job.transverse_sign, axial_sign=job.axial_sign)
+    report = {"schema_version": 1, "scanner": "imas", "requirement": "011-FR-6/FR-12",
+              "created_utc": datetime.now(timezone.utc).isoformat(), "job": stamp, "preflight": disk,
+              "geometry": geometry.describe(), "runs": {}, "stages": {}}
+    sets, calibrations = {}, {}
+    for run in job.runs:
+        clock = time.perf_counter()
+        encal_path, manifest, reused = _energy_calibration(run, work / run.name / "encal", job)
+        calibrations[run.name] = _mu(encal_path, setup)
+        encal_seconds = time.perf_counter() - clock
+        progress(f"{run.name}: energy calibration {'reused' if reused else 'done'} {manifest['status_counts']}")
+        clock = time.perf_counter()
+        observations = _observations(run, work / run.name / "observations", job, encal_path, geometry)
+        stream_seconds = time.perf_counter() - clock
+        sets[run.name] = observations
+        ldat = sum(s.path.stat().st_size for s in run.splits if s.roles & {"train", "heldout"})
+        report["runs"][run.name] = {
+            "encal": {"path": str(encal_path), "sha256": hashlib.sha256(encal_path.read_bytes()).hexdigest(),
+                      "status_counts": manifest["status_counts"], "reused": reused, "seconds": encal_seconds},
+            "observations": {"path": str(observations.directory), **{k: observations.manifest[k] for k in (
+                "observations", "first_failure", "geometry", "files")}, "seconds": stream_seconds,
+                "ldat_bytes": ldat, "bytes_per_second": ldat / stream_seconds if stream_seconds > 0 else None}}
+        progress(f"{run.name}: {observations.manifest['observations']} observations")
+    pooled = PooledObservations(sets.values())
+    provenance = {"job_sha256": stamp["sha256"], "setup": setup.provenance, "geometry": geometry.describe(),
+                  "runs": {name: {"encal_sha256": r["encal"]["sha256"], "observations": r["observations"]["path"]}
+                           for name, r in report["runs"].items()}}
+    solutions, tables = {}, {}
+    for name in job.estimators:
+        clock = time.perf_counter()
+        if name == "em":
+            solution, _ = solve.em_estimator(pooled, setup, directory=None)
+        else:
+            solution, _ = solve.pair_estimator(pooled, setup)
+        report["stages"][f"solve_{name}_seconds"] = time.perf_counter() - clock
+        outputs.write_imas_lut(work / f"lut_{name}.csv", solution, {**provenance, "estimator": name}, setup)
+        solutions[name], tables[name] = solution, solve.applied_table(solution)
+        report.setdefault("estimators", {})[name] = solve.summary(solution)
+        progress(f"pooled {name}: {solution.diagnostics['status_counts']}")
+    if job.legacy is not None:
+        tables["legacy"] = solve.legacy_table(job.legacy)
+    names = list(tables)
+    report["comparisons"] = {f"{a} vs {b}": solve.compare(tables[a], tables[b])
+                             for k, a in enumerate(names) for b in names[k + 1:]}
+    clock = time.perf_counter()
+    populated = {name: table for name, table in tables.items() if table}
+    report["held_out"] = {name: solve.held_out({name: table}, pooled, setup, roles=(2,))
+                          for name, table in populated.items()}
+    if len(populated) > 1:
+        report["held_out"]["common"] = solve.held_out(populated, pooled, setup, roles=(2,))
+    report["stages"]["held_out_seconds"] = time.perf_counter() - clock
+    report["per_run"] = {"peaks_511_kev": _peaks(calibrations)}
+    if "em" in solutions:
+        pooled_table = tables["em"]
+        for run in job.runs:
+            entry = {role: solve.held_out({"pooled em": pooled_table}, sets[run.name], setup, roles=(code,))
+                     for role, code in (("train", 0), ("heldout", 2))}
+            if job.per_run_solves:
+                alone, _ = solve.em_estimator(sets[run.name], setup)
+                entry["alone_versus_pooled"] = solve.compare(solve.applied_table(alone), pooled_table)
+            report["per_run"][run.name] = entry
+    report["stages"]["total_seconds"] = time.perf_counter() - started
+    report["peak_memory"] = peak_memory()
+    (work / "job_report.json").write_text(json.dumps(report, indent=1, default=float) + "\n", encoding="utf-8")
+    return report
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="python -m src.imas.skew run", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("job", type=Path, help="job file (schema imas-skew-job/1)")
+    parser.add_argument("--work", type=Path, required=True, help="work directory (resumed when it is this job's)")
+    args = parser.parse_args(argv)
+    try:
+        report = run_job(load_job(args.job), args.work)
+    except JobError as error:
+        print(f"job refused: {error}")
+        return 2
+    print(json.dumps({k: report[k] for k in ("estimators", "comparisons", "held_out", "stages") if k in report},
+                     indent=1, default=float))
+    print(f"-> {args.work / 'job_report.json'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

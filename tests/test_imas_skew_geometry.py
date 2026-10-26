@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import yaml
 
-from imas_skew_helpers import CONFIG
+from imas_skew_helpers import CONFIG, channel_table, observation_set, sides
 from src.imas.skew.geometry import IMAS_SKEW_BAR, ImasGeometry
 from src.imas.skew.setup import ImasSetup
 from src.timing.shell import C_MM_PER_PS, GEOMETRY_REJECTIONS, GeometryError, shell_intervals
@@ -76,3 +76,32 @@ def test_bar_lor_crossings_and_rejections(setup):
     p, q = result.endpoints_mm[0, :3], result.endpoints_mm[0, 3:]
     reference = shell_intervals(p, q, IMAS_SKEW_BAR)
     assert np.allclose(sorted(tof), sorted(v for s in reference for v in (s.tof_start_ps, s.tof_end_ps)))
+
+
+@pytest.mark.slow
+def test_sign_study_picks_injected_signs(setup, tmp_path):
+    """Events generated with s_t -1, s_a +1. The axial sign is identified; a transverse flip moves the shell
+    TOF by a few ps only, absorbed by the delays: weakly identified, and immaterial to the LUT."""
+    from src.imas.skew import study
+    rng = np.random.default_rng(17)
+    table = channel_table(setup, range(24, 96), (5, 10))         # rings 1-3
+    columns = sides(table, 40_000, rng, rings=(1, 2, 3))
+    results = {signs: ImasGeometry.from_setup(setup, transverse_sign=signs[0], axial_sign=signs[1]).apply(columns)
+               for signs in study.SIGNS}
+    common = np.logical_and.reduce([result.codes == 0 for result in results.values()])
+    ci, cj = columns.column("ch_1")[common], columns.column("ch_2")[common]
+    delays = {int(c): rng.uniform(-1500, 1500) for c in table["ch"]}
+    truth = results[(-1, 1)].shell_tof_ps[common]
+    near = rng.random(len(ci)) < 0.5
+    lo, hi = np.where(near, truth[:, 0], truth[:, 2]), np.where(near, truth[:, 1], truth[:, 3])
+    dt = (rng.uniform(lo, hi) + np.array([delays[c] for c in ci]) - np.array([delays[c] for c in cj])
+          + rng.normal(0, 150, len(ci)))
+    sets = {signs: observation_set(tmp_path / f"{signs[0]}{signs[1]}", ci, cj, dt, result.shell_tof_ps[common])
+            for signs, result in results.items()}
+    report = study.sign_study(sets, setup)
+    assert report["common_events"] == len(ci) > 5000
+    assert report["selected"]["axial_sign"] == 1 and report["axial_margin_log_likelihood"] > 10
+    assert [h["axial_sign"] for h in report["hypotheses"][:2]] == [1, 1]
+    assert all(h["converged"] and abs(h["separation_scale"] - 1) < 0.02 for h in report["hypotheses"])
+    flipped = next(h for h in report["hypotheses"][1:] if h["axial_sign"] == 1)
+    assert flipped["delays_versus_selected"]["robust_sd_ps"] < 5

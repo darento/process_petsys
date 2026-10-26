@@ -402,7 +402,9 @@ class ObservationSet:
         return self.manifest["fingerprint"]["partitions"]
 
     def partition(self, p):
-        chunks = [np.load(self.directory / f"p{p:03d}_c{c:05d}.npy") for c in range(self.manifest["chunks"][p])]
+        paths = (self.manifest["chunk_paths"][p] if "chunk_paths" in self.manifest     # streamed sets (spec 011 T8)
+                 else [f"p{p:03d}_c{c:05d}.npy" for c in range(self.manifest["chunks"][p])])
+        chunks = [np.load(self.directory / path) for path in paths]
         return np.concatenate(chunks) if chunks else np.empty(0, OBSERVATION_DTYPE)
 
     def pair_counts(self):
