@@ -1,6 +1,6 @@
 # Spec 011 — IMAS skew calibration
 
-Status: `clarified` (2026-10-26; [pending inputs](#pending-inputs) are data, not open decisions)
+Status: `approved` (owner, 2026-10-26; [pending inputs](#pending-inputs) are data, not open decisions)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (Cornell per-channel skew LUT, shell pair fits, global solve, native table, point-source CTR). Evidence (untracked, `docs/imas/`): manuscript `IMAS_TBPET_Dec24.docx`, poster `IMAS_IEEE2025_poster.pptx`, readout map `ModuleMap_FEM256_RR.pptx`, LDAT Inspector screenshots `image_regions_down.png` and `image_FEM_skew.png`.
 
