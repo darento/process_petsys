@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import time
 from pathlib import Path
 
 import numba
@@ -370,8 +371,10 @@ def _components(u, v, n):
 # --- stages -----------------------------------------------------------------------------------------------------
 
 def _stage(data, b, theta, group, n_groups, options, *, fixed_sigma=None, free=True, label="",
-           max_iterations=None):
-    """Iterate E-step + M-step at one grouping until delays and global parameters settle."""
+           max_iterations=None, progress=None):
+    """Iterate E-step + M-step at one grouping until delays and global parameters settle.
+
+    ``progress(text)`` gets one line per iteration and one at the end of the stage."""
     gu, gv = group[data.pair_i], group[data.pair_j]
     inter = gu != gv
     labels = _components(gu[inter], gv[inter], n_groups)
@@ -380,7 +383,9 @@ def _stage(data, b, theta, group, n_groups, options, *, fixed_sigma=None, free=T
     previous, b_previous, step, halvings, converged = -np.inf, b, None, 0, False
     iterations = 0
     record = None
-    for iterations in range(1, (max_iterations or options.max_iterations) + 1):
+    started = time.perf_counter()
+    limit = max_iterations or options.max_iterations
+    for iterations in range(1, limit + 1):
         current = _estep_all(data, b, theta, options)
         ll = current.stats["log_likelihood"]
         if step is not None and ll < previous - 1e-9 * max(1.0, abs(previous)) and halvings < options.max_halvings:
@@ -411,6 +416,10 @@ def _stage(data, b, theta, group, n_groups, options, *, fixed_sigma=None, free=T
                   "background_fraction": theta.background, "branch_fraction": theta.branch,
                   "separation_scale": theta.scale, "last_step_ps": float(np.abs(delta).max(initial=0.0)), "cg_iterations": cg_iterations,
                   "underflow": current.stats["underflow"]}
+        if progress is not None:
+            progress(f"{label} {iterations}/{limit}: log-likelihood {ll:.1f}, sigma {theta.sigma:.1f} ps, "
+                     f"background {theta.background:.3f}, max step {record['last_step_ps']:.3f} ps, "
+                     f"{time.perf_counter() - started:.0f} s")
         theta = new
         if settled:
             converged = True
@@ -418,6 +427,9 @@ def _stage(data, b, theta, group, n_groups, options, *, fixed_sigma=None, free=T
         previous, b_previous, step = ll, b, delta
         b = b + delta[group]
     record = dict(record or {"stage": label, "iterations": iterations}, converged=converged)
+    if progress is not None:
+        progress(f"{label}: {'converged' if converged else 'stopped at the iteration limit'} after {iterations} "
+                 f"iterations ({time.perf_counter() - started:.0f} s)")
     return b, theta, record
 
 
@@ -434,8 +446,8 @@ def _alias_test(data, b, theta, group, n_groups, options):
     return shift, plus, minus, count > 0
 
 
-def _stage_with_alias(data, b, theta, group, n_groups, options, label, history):
-    b, theta, record = _stage(data, b, theta, group, n_groups, options, label=label)
+def _stage_with_alias(data, b, theta, group, n_groups, options, label, history, progress=None):
+    b, theta, record = _stage(data, b, theta, group, n_groups, options, label=label, progress=progress)
     history.append(record)
     moved = 0
     for _ in range(options.alias_rounds):
@@ -447,7 +459,7 @@ def _stage_with_alias(data, b, theta, group, n_groups, options, label, history):
         before = _estep_all(data, b, theta, options).stats["log_likelihood"]
         trial = b + np.where(better, np.where(plus >= minus, shift, -shift), 0.0)[group]
         trial, trial_theta, trial_record = _stage(data, trial, theta, group, n_groups, options,
-                                                  label=label + " (alias moved)")
+                                                  label=label + " (alias moved)", progress=progress)
         if trial_record.get("log_likelihood", -np.inf) <= before:
             break
         b, theta, record = trial, trial_theta, trial_record
@@ -494,13 +506,13 @@ def _pinv_diagonal(matrix, degree, labels, options, rng):
 
 # --- driver -----------------------------------------------------------------------------------------------------
 
-def solve_em(data, coarse=(), options=EmOptions()):
+def solve_em(data, coarse=(), options=EmOptions(), *, progress=None):
     """Channel delays (``src.timing.solver.Solution``) from an ``EmData`` set.
 
     ``coarse`` lists ``(name, labels)`` groupings applied before the channel
     stage, coarsest first; ``labels`` gives each of ``data.channels`` its group
     (for IMAS: SM, then SM x 16 + minimodule). ``sigma`` is annealed at the first
-    stage only.
+    stage only. ``progress(text)`` receives a line per iteration.
     """
     n = len(data.channels)
     theta = _Theta(float(options.sigma_ps), float(options.background_fraction), float(options.branch_fraction),
@@ -521,10 +533,10 @@ def solve_em(data, coarse=(), options=EmOptions()):
                     continue
                 b, kept, record = _stage(data, b, theta, group, n_groups, options, fixed_sigma=float(width),
                                          free=False, label=f"{name} anneal {width:g} ps",
-                                         max_iterations=options.anneal_iterations)
+                                         max_iterations=options.anneal_iterations, progress=progress)
                 record["anneal"] = True
                 history.append(record)
-        b, theta, margin = _stage_with_alias(data, b, theta, group, n_groups, options, name, history)
+        b, theta, margin = _stage_with_alias(data, b, theta, group, n_groups, options, name, history, progress)
         margins[name] = margin
     final = _estep_all(data, b, theta, options)
     return _solution(data, b, theta, final, margins["channel"], history, options)

@@ -54,7 +54,7 @@ def event_keys(observations, *, files=None, roles=(0,)):
     return np.unique(np.concatenate(keys)) if keys else np.empty(0, np.int64)
 
 
-def sign_study(sets, setup, *, files=None, options=SIGN_OPTIONS):
+def sign_study(sets, setup, *, files=None, options=SIGN_OPTIONS, progress=None):
     """``sets``: {(s_t, s_a): ObservationSet}; EM on the events every hypothesis accepts."""
     common = None
     for observations in sets.values():
@@ -63,8 +63,11 @@ def sign_study(sets, setup, *, files=None, options=SIGN_OPTIONS):
     results, tables = {}, {}
     for signs, observations in sets.items():
         started = time.perf_counter()
+        if progress is not None:
+            progress(f"signs s_t {signs[0]:+d} s_a {signs[1]:+d}: EM on {len(common):,} common events")
         solution, _ = solve.em_estimator(observations, setup, files=files,
-                                         where=lambda rows: np.isin(event_key(rows), common), options=options)
+                                         where=lambda rows: np.isin(event_key(rows), common), options=options,
+                                         progress=progress)
         diagnostics = solution.diagnostics
         if diagnostics["observations"] != len(common):
             raise ValueError("hypotheses must be compared on the same events")
@@ -92,27 +95,39 @@ def sign_study(sets, setup, *, files=None, options=SIGN_OPTIONS):
 
 
 def angle_study(sets, setup, *, train_files, heldout_files, reference=OPPOSITION_TOLERANCE_DEG,
-                options=solve.EM_OPTIONS):
+                options=solve.EM_OPTIONS, progress=None):
     """``sets``: {opposition tolerance (deg): ObservationSet}; EM per cut, compared with ``reference``."""
     name = {tolerance: f">= {180 - tolerance:g} deg" for tolerance in sets}
     solutions, results = {}, {}
     for tolerance, observations in sets.items():
         started = time.perf_counter()
-        solutions[tolerance], _ = solve.em_estimator(observations, setup, files=train_files, options=options)
+        if progress is not None:
+            progress(f"opening {name[tolerance]}: EM on train files {list(train_files)}")
+        solutions[tolerance], _ = solve.em_estimator(observations, setup, files=train_files, options=options,
+                                                     progress=progress)
+        diagnostics = solutions[tolerance].diagnostics
         results[name[tolerance]] = {"seconds": time.perf_counter() - started, **solve.summary(solutions[tolerance]),
-                                    "observations": solutions[tolerance].diagnostics["observations"]}
+                                    "observations": diagnostics["observations"], "converged": diagnostics["converged"]}
     reference_table = solve.applied_table(solutions[reference])
     for tolerance, solution in solutions.items():
         if tolerance != reference:
             results[name[tolerance]]["versus_reference"] = solve.compare(solve.applied_table(solution),
                                                                          reference_table)
-    held = solve.held_out({name[t]: s for t, s in solutions.items()}, sets[reference], setup, heldout_files)
+    if progress is not None:
+        progress(f"held-out check on the {name[reference]} events of files {list(heldout_files)}")
+    held = solve.held_out({name[t]: solve.applied_table(s) for t, s in solutions.items()}, sets[reference], setup,
+                          heldout_files)
     return {"reference": name[reference], "cuts": results, "held_out_on_reference_events": held}
 
 
-def _sets(features, setup, work, hypotheses):
+def _sets(features, setup, work, hypotheses, progress=print):
     cache = FeatureCache(features)
-    return {key: ic.build_observations(cache, geometry, work / folder) for key, (geometry, folder) in hypotheses.items()}
+    sets = {}
+    for key, (geometry, folder) in hypotheses.items():
+        started = time.perf_counter()
+        sets[key] = ic.build_observations(cache, geometry, work / folder)
+        progress(f"{geometry.name}: {sets[key].manifest['observations']} ({time.perf_counter() - started:.0f} s)")
+    return sets
 
 
 def main(argv=None):
@@ -127,6 +142,8 @@ def main(argv=None):
     parser.add_argument("--heldout-files", type=int, nargs="+", default=[2])
     parser.add_argument("--transverse-sign", type=int, choices=(-1, 1), default=NOMINAL_TRANSVERSE_SIGN)
     parser.add_argument("--axial-sign", type=int, choices=(-1, 1), default=NOMINAL_AXIAL_SIGN)
+    parser.add_argument("--max-iterations", type=int, default=50,
+                        help="EM iterations per stage (default 50; a stage stopped there is reported unconverged)")
     args = parser.parse_args(argv)
     report_path = args.work / f"{args.study}.json"
     if report_path.exists():
@@ -134,20 +151,26 @@ def main(argv=None):
     args.work.mkdir(parents=True, exist_ok=True)
     setup = ImasSetup.from_files(args.config)
     started = time.perf_counter()
+
+    def progress(text):
+        print(f"[{time.perf_counter() - started:7.0f} s] {text}", flush=True)
     if args.study == "signs":
         hypotheses = {(t, a): (ImasGeometry.from_setup(setup, transverse_sign=t, axial_sign=a),
                                f"obs_st{t:+d}_sa{a:+d}") for t, a in SIGNS}
-        result = sign_study(_sets(args.features, setup, args.work, hypotheses), setup, files=args.files)
+        result = sign_study(_sets(args.features, setup, args.work, hypotheses, progress), setup, files=args.files,
+                            options=replace(SIGN_OPTIONS, max_iterations=args.max_iterations), progress=progress)
     else:
         hypotheses = {tol: (ImasGeometry.from_setup(setup, transverse_sign=args.transverse_sign,
                                                     axial_sign=args.axial_sign, opposition_tolerance_deg=tol),
                             f"obs_tol{tol:g}") for tol in ANGLE_TOLERANCES_DEG}
-        result = angle_study(_sets(args.features, setup, args.work, hypotheses), setup, train_files=args.train_files,
-                             heldout_files=args.heldout_files)
+        result = angle_study(_sets(args.features, setup, args.work, hypotheses, progress), setup,
+                             train_files=args.train_files, heldout_files=args.heldout_files,
+                             options=replace(solve.EM_OPTIONS, max_iterations=args.max_iterations), progress=progress)
     report = {"schema_version": 1, "scanner": "imas", "requirement": "011-FR-2" if args.study == "signs" else "011-FR-3",
               "created_utc": datetime.now(timezone.utc).isoformat(), "features": str(args.features),
               "feature_fingerprint": FeatureCache(args.features).manifest["fingerprint"],
-              "seconds": time.perf_counter() - started, **result, "peak_memory": peak_memory()}
+              "em_max_iterations": args.max_iterations, "seconds": time.perf_counter() - started, **result,
+              "peak_memory": peak_memory()}
     report_path.write_text(json.dumps(report, indent=1, default=float) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in result.items()}, indent=1, default=float))
     print(f"-> {report_path}")

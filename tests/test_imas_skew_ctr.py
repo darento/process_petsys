@@ -106,10 +106,11 @@ def test_new_lut_beats_legacy_beats_uncorrected(case):
     assert fits[ctr.LEGACY]["fwhm_ps"] == pytest.approx(width * math.hypot(NOISE_PS, math.sqrt(2) * LEGACY_ERROR_PS),
                                                         rel=0.12)
     assert fits["em"]["fwhm_ps"] < fits[ctr.LEGACY]["fwhm_ps"] < fits[ctr.UNCORRECTED]["fwhm_ps"]
-    assert report["acceptance"]["em"]["accepted"]
-    paired = report["acceptance"]["em"]["fwhm_ps"]["paired"]
-    assert paired["significant"] and paired["statistical"] < report["acceptance"]["em"]["fwhm_ps"][
-        "combined_uncertainty_ps"]                            # shared events: common fluctuations cancel
+    accepted = report["acceptance"]["em"]
+    assert accepted["accepted"] and accepted["judged_on"] == "model_free_fwhm_ps"
+    assert accepted["model_free_fwhm_ps"]["accepted"] and accepted["model_free_fwhm_ps"]["paired"]["significant"]
+    paired = accepted["fwhm_ps"]["paired"]                   # shared events: common fluctuations cancel
+    assert paired["significant"] and paired["statistical"] < accepted["fwhm_ps"]["combined_uncertainty_ps"]
     out = case["base"] / "out"
     assert (out / "ctr.png").is_file() and (out / "ctr_histograms.csv").is_file()
 

@@ -84,7 +84,8 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
   - The source position comes from timing-blind LOR convergence, as in spec 008; its declared nominal position is recorded too.
   - The 22Na acquisition has the same hardware state as the skew runs (owner).
   - On the same events: uncorrected, the legacy IMAS production LUT and the new LUT, with model-free and Gaussian FWHM, uncertainties, tails and counts.
-  - **Acceptance:** the new LUT's FWHM is better than the legacy LUT's by more than their combined uncertainty. The manuscript's legacy values (2293 ps uncorrected, 563 ps corrected, NECR phantom at 0.5 kBq/mL) are context, not a comparison on the same events.
+  - **Model-free FWHM (owner 2026-10-26):** local-polynomial, replacing spec 008's 3-bin-smoothed crossing for IMAS. Peak height from a quadratic fit of the residual histogram within ±0.35 × a rough FWHM of the mode; each crossing of background + fraction × (height − background) from a quadratic fit within ±0.25 × the rough FWHM of it (Poisson weights, refined twice). Same rule for the FWTM. Chosen on Poisson replicates of Gaussian and Gaussian + tail peaks before any ship result: replicate SD 1.6-1.9x lower, bias +0.2-0.3 % (common to tables of the same shape). Cornell (spec 008) keeps its estimator.
+  - **Acceptance:** the new LUT's model-free FWHM is better than the legacy LUT's by more than their combined uncertainty (owner 2026-10-26: the residual peak is not Gaussian; the Gaussian FWHM is reported, not judged). The manuscript's legacy values (2293 ps uncorrected, 563 ps corrected, NECR phantom at 0.5 kBq/mL) are context, not a comparison on the same events.
 - **FR-11 — Diagnostics.**
   - Per-ASIC diagnostics as spec 008 FR-19, decoding IMAS global IDs.
   - A per-SM and per-minimodule delay overview laid out by ring and azimuthal SM, like the Inspector's System Overview.

@@ -28,14 +28,16 @@ Tables: uncorrected, legacy and each LUT, on the same events: those whose two
 TIME channels have an applied delay in every compared table (a LUT without
 any applied delay is reported unavailable and not compared). Per table:
 residual ``t_1 - t_2`` minus the geometric TOF, fitted as spec 008
-(``src.timing.ctr``): Gaussian and model-free FWHM, FWTM, background,
+(``src.timing.ctr``) except the model-free widths, which come from local
+quadratic fits (``local_crossings``): Gaussian and model-free FWHM, FWTM, background,
 bootstrap and systematic uncertainty (source +- sigma per axis, depth
 variants), LOR-distance sensitivity and the TOF dependence. The bootstrap
 draws one weight per event, shared by all tables.
 
-Acceptance (FR-10): a LUT passes when its FWHM (Gaussian and model-free) is
-below the legacy one by more than their uncertainties added in quadrature
-(conservative: the tables share events). Beside it, the paired improvement:
+Acceptance (FR-10): a LUT passes when its model-free FWHM is below the
+legacy one by more than their uncertainties added in quadrature
+(conservative: the tables share events). The Gaussian FWHM is reported for
+each table but not judged: the residual peak is not Gaussian (owner). Beside it, the paired improvement:
 the same bootstrap replicates and systematic variants fitted for both tables,
 so their common fluctuations cancel. The width is a system CTR at these cuts,
 not an intrinsic detector CTR.
@@ -75,6 +77,8 @@ _ACQUISITION_KEYS = {"name", "ldat", "source_mm", "source_sigma_mm"}
 STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied delay", "LOR outside distance",
           "near source")
 FWHM_KEYS = ("model_free_fwhm_ps", "fwhm_ps")
+MODEL_FREE = core.local_crossings      # owner 2026-10-26: local quadratic crossings (spec 011 FR-10)
+ACCEPTANCE_KEY = "model_free_fwhm_ps"   # owner 2026-10-26: the peak is not Gaussian; Gaussian FWHM reported only
 
 
 def _frozen(entry, label, base):
@@ -337,7 +341,8 @@ def acceptance(results, paired=None):
                           combined, "accepted": bool(old - new > combined)}
             if paired and name in paired:
                 entry[key]["paired"] = paired[name][key]
-        entry["accepted"] = all(entry[k].get("accepted") for k in FWHM_KEYS)
+        entry["accepted"] = bool(entry[ACCEPTANCE_KEY].get("accepted"))
+        entry["judged_on"] = ACCEPTANCE_KEY
         out[name] = entry
     return out
 
@@ -352,13 +357,15 @@ def paired_differences(accumulator):
     for t, name in enumerate(accumulator.names):
         if name in (UNCORRECTED, LEGACY):
             continue
-        fits = {k: core.fit_histogram(pooled[k, 0], edges) for k in (t, legacy)}
+        fits = {k: core.fit_histogram(pooled[k, 0], edges, crossings=MODEL_FREE) for k in (t, legacy)}
         if any(f["status"] != "fitted" for f in fits.values()):
             out[name] = {key: {"status": "unavailable"} for key in FWHM_KEYS}
             continue
-        replicates = [{k: core.fit_histogram(boot[k, r], edges, start=fits[k]["_start"]) for k in (t, legacy)}
+        replicates = [{k: core.fit_histogram(boot[k, r], edges, start=fits[k]["_start"], crossings=MODEL_FREE)
+                       for k in (t, legacy)}
                       for r in range(boot.shape[1])]
-        variants = {v.name: {k: core.fit_histogram(pooled[k, i], edges, start=fits[k]["_start"]) for k in (t, legacy)}
+        variants = {v.name: {k: core.fit_histogram(pooled[k, i], edges, start=fits[k]["_start"], crossings=MODEL_FREE)
+                             for k in (t, legacy)}
                     for i, v in enumerate(accumulator.variants) if v.group}
         entry = {}
         for key in FWHM_KEYS:
@@ -415,7 +422,8 @@ def run_ctr(spec, *, log=print):
         stages = accumulator.stages[index]
         log(f"{acquisition.name}: {stages['records']:,} records, {stages['near source']:,} near the source "
             f"({time.perf_counter() - clock:.1f} s)")
-    results = {name: core.summarize(accumulator.view(t)) for t, name in enumerate(accumulator.names)}
+    results = {name: core.summarize(accumulator.view(t), crossings=MODEL_FREE)
+               for t, name in enumerate(accumulator.names)}
     report = {
         "schema": REPORT_SCHEMA, "requirement": "011-FR-10",
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -425,8 +433,10 @@ def run_ctr(spec, *, log=print):
                  "lor_distance_mm": spec.lor_distance_mm, "lor_between_endpoints": True,
                  "window_ps": spec.window_ps, "bin_ps": spec.bin_ps, "max_records": spec.max_records,
                  "same_events": "both TIME channels with an applied delay in every compared table"},
-        "model": "Gaussian + flat background, binned Poisson likelihood; model-free FWHM/FWTM above the fitted "
-                 f"background (3-bin smoothing); Gaussian FWTM/FWHM {core.GAUSSIAN_FWTM_TO_FWHM:.3f}",
+        "model": "Gaussian + flat background, binned Poisson likelihood (reported only); model-free FWHM/FWTM "
+                 "above the fitted background from local quadratic fits (peak within +-"
+                 f"{core.PEAK_WINDOW:g} x rough FWHM, crossings within +-{core.EDGE_WINDOW:g} x rough FWHM); "
+                 f"Gaussian FWTM/FWHM {core.GAUSSIAN_FWTM_TO_FWHM:.3f}",
         "uncertainty": f"statistical: {spec.bootstrap} seeded Poisson bootstrap replicates, one weight per event "
                        "shared by all tables; systematic: source +- sigma per axis, depth "
                        f"{'/'.join(f'{d:g}' for d in spec.depth_variants_mm)} mm; LOR "

@@ -97,16 +97,17 @@ def coarse_groups(setup, channels):
     return (("sm", sm), ("minimodule", sm * 16 + lookup.mm[channels]))
 
 
-def em_estimator(observations, setup, *, roles=(0,), files=None, where=None, options=EM_OPTIONS, directory=None):
+def em_estimator(observations, setup, *, roles=(0,), files=None, where=None, options=EM_OPTIONS, directory=None,
+                 progress=None):
     """Global EM over every IMAS TIME channel; ``files`` and ``where(rows)`` restrict the rows;
-    ``directory`` memory-maps the observation chunks."""
+    ``directory`` memory-maps the observation chunks; ``progress(text)`` follows the iterations."""
     def keep(rows):
         mask = np.ones(len(rows), bool) if files is None else np.isin(rows["file"], files)
         return mask if where is None else mask & where(rows)
 
     data = em.EmData.from_observation_set(observations, setup.time_channels, roles=roles, where=keep,
                                           directory=directory)
-    solution = em.solve_em(data, coarse_groups(setup, data.channels), options)
+    solution = em.solve_em(data, coarse_groups(setup, data.channels), options, progress=progress)
     return solution, data
 
 

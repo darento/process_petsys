@@ -139,12 +139,15 @@ def skew_events(ci, cj, tof, delays, rng, *, noise=200.0, background=0.1, window
     return ci[inside], cj[inside], dt[inside], tof[inside]
 
 
-def observation_set(directory, ci, cj, dt, tof, partitions=2):
-    """Minimal canonical ``ObservationSet`` (train role) from arrays with ``channel_i < channel_j``."""
+def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None):
+    """Minimal canonical ``ObservationSet`` (train role) from arrays with ``channel_i < channel_j``; ``files``
+    gives each row its input-file index (default 0)."""
     rows = np.zeros(len(ci), OBSERVATION_DTYPE)
     rows["record"] = np.arange(len(ci))
     rows["channel_i"], rows["channel_j"], rows["dt_ps"] = ci, cj, np.round(dt)
     rows["shell_tof_ps"] = tof
+    if files is not None:
+        rows["file"] = files
     part = pair_partition(rows["channel_i"], rows["channel_j"], partitions)
     directory.mkdir(parents=True)
     for p in range(partitions):

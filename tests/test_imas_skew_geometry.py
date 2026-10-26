@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import yaml
 
-from imas_skew_helpers import CONFIG, channel_table, observation_set, sides
+from imas_skew_helpers import CONFIG, channel_table, lors, observation_set, sides, skew_events
 from src.imas.skew.geometry import IMAS_SKEW_BAR, ImasGeometry
 from src.imas.skew.setup import ImasSetup
 from src.timing.shell import C_MM_PER_PS, GEOMETRY_REJECTIONS, GeometryError, shell_intervals
@@ -105,3 +105,24 @@ def test_sign_study_picks_injected_signs(setup, tmp_path):
     assert all(h["converged"] and abs(h["separation_scale"] - 1) < 0.02 for h in report["hypotheses"])
     flipped = next(h for h in report["hypotheses"][1:] if h["axial_sign"] == 1)
     assert flipped["delays_versus_selected"]["robust_sd_ps"] < 5
+
+
+@pytest.mark.fr("011-FR-3", "bug-angle-study-held-out")
+def test_angle_study_reports_held_out_per_cut(setup, tmp_path):
+    """bug-angle-study-held-out: the held-out check got solutions instead of delay tables and crashed after
+    every EM had run."""
+    from src.imas.skew import study
+    rng = np.random.default_rng(23)
+    table = channel_table(setup, range(48, 72), (5, 10))
+    geometry = ImasGeometry.from_setup(setup)
+    ci, cj, tof = lors(geometry, table, 20_000, rng)
+    delays = {int(c): rng.uniform(-1500, 1500) for c in table["ch"]}
+    ci, cj, dt, tof = skew_events(ci, cj, tof, delays, rng)
+    files = rng.integers(0, 2, len(ci))
+    sets = {tolerance: observation_set(tmp_path / f"tol{tolerance}", ci, cj, dt, tof, files=files)
+            for tolerance in (15.0, 30.0)}
+    report = study.angle_study(sets, setup, train_files=[0], heldout_files=[1])
+    held = report["held_out_on_reference_events"]
+    assert held["events"] > 1000 and {">= 165 deg", ">= 150 deg"} <= set(held)
+    assert report["cuts"][">= 150 deg"]["versus_reference"]["robust_sd_ps"] < 1e-6
+

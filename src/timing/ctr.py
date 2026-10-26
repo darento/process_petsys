@@ -83,9 +83,9 @@ def _model(params, edges):
     return signal * np.diff(ndtr((edges - mean) / sigma)) + background / (len(edges) - 1)
 
 
-def _width_at(counts, centers, background_per_bin, fraction):
+def _width_at(counts, centers, background_per_bin, fraction, crossings=None):
     """Model-free full width at ``fraction`` of the peak height above the background (3-bin smoothing)."""
-    crossing = level_crossings(counts, centers, background_per_bin, fraction)
+    crossing = (crossings or level_crossings)(counts, centers, background_per_bin, fraction)
     return None if crossing is None else float(crossing[1] - crossing[0])
 
 
@@ -111,8 +111,60 @@ def level_crossings(counts, centers, background_per_bin, fraction):
     return float(x_left), float(x_right), float(level)
 
 
-def fit_histogram(counts, edges, *, start=None):
-    """Gaussian + flat background, binned Poisson likelihood; ``status`` says why numbers are absent."""
+PEAK_WINDOW, EDGE_WINDOW = 0.35, 0.25   # local model-free windows, in units of a rough FWHM (spec 011 FR-10)
+
+
+def _local_fit(counts, centers, x0, half):
+    """Quadratic in (x - x0) through the bins within ``half`` of ``x0`` (Poisson weights)."""
+    near = np.abs(centers - x0) <= half
+    return np.polyfit(centers[near] - x0, counts[near], 2, w=1 / np.sqrt(np.maximum(counts[near], 1.0)))
+
+
+def local_crossings(counts, centers, background_per_bin, fraction):
+    """``level_crossings`` from local quadratic fits (spec 011 FR-10): the peak height from the bins within
+    ``PEAK_WINDOW`` x a rough FWHM of the mode, each crossing from the bins within ``EDGE_WINDOW`` x it (refined
+    twice). Model free (no global shape); about half the replicate spread of the 3-bin-smoothed crossing."""
+    counts = np.asarray(counts, np.float64)
+    rough = level_crossings(counts, centers, background_per_bin, 0.5)
+    if rough is None:
+        return None
+    step = centers[1] - centers[0]
+    peak_half = max(PEAK_WINDOW * (rough[1] - rough[0]), 2 * step)
+    edge_half = max(EDGE_WINDOW * (rough[1] - rough[0]), 2 * step)
+    smooth = np.convolve(counts, np.ones(3) / 3, mode="same")
+    k = int(np.argmax(smooth))
+    a, b, c = _local_fit(counts, centers, centers[k], peak_half)
+    vertex = -b / (2 * a) if a < 0 and abs(b / (2 * a)) <= peak_half else 0.0
+    height = float(np.polyval((a, b, c), vertex))
+    if not height > background_per_bin:
+        return None
+    level = background_per_bin + fraction * (height - background_per_bin)
+    left, right = k, k
+    while left > 0 and smooth[left - 1] >= level:
+        left -= 1
+    while right < len(smooth) - 1 and smooth[right + 1] >= level:
+        right += 1
+    if left == 0 or right == len(smooth) - 1:
+        return None
+    found = []
+    for x0 in (centers[left] - step / 2, centers[right] + step / 2):
+        for _ in range(2):
+            poly = _local_fit(counts, centers, x0, edge_half)
+            poly[-1] -= level
+            roots = np.roots(poly)
+            roots = roots[np.isreal(roots)].real
+            roots = roots[np.abs(roots) <= edge_half]
+            if not len(roots):
+                return None
+            x0 = x0 + roots[np.argmin(np.abs(roots))]
+        found.append(float(x0))
+    return found[0], found[1], float(level)
+
+
+def fit_histogram(counts, edges, *, start=None, crossings=None):
+    """Gaussian + flat background, binned Poisson likelihood; ``status`` says why numbers are absent.
+
+    ``crossings`` is the model-free rule: ``level_crossings`` (spec 008, default) or ``local_crossings``."""
     counts = np.asarray(counts, np.float64)
     edges = np.asarray(edges, np.float64)
     total = float(counts.sum())
@@ -142,8 +194,8 @@ def fit_histogram(counts, edges, *, start=None):
     inside = (sigma > width / 2) and (sigma < edges[-1] - edges[0]) and (edges[0] < mean < edges[-1])
     with np.errstate(divide="ignore", invalid="ignore"):
         deviance = 2 * np.sum(mu - counts + np.where(counts > 0, counts * np.log(counts / mu), 0.0))
-    half = _width_at(counts, centers, background / bins, 0.5)
-    tenth = _width_at(counts, centers, background / bins, 0.1)
+    half = _width_at(counts, centers, background / bins, 0.5, crossings)
+    tenth = _width_at(counts, centers, background / bins, 0.1, crossings)
     return {"status": "fitted" if result.success and inside else "fit failed",
             "events": total, "mean_ps": float(mean), "sigma_ps": float(sigma),
             "fwhm_ps": float(FWHM_PER_SIGMA * sigma), "model_free_fwhm_ps": half, "model_free_fwtm_ps": tenth,
@@ -214,7 +266,7 @@ def variants(spec):
     return out
 
 
-def summarize(accumulator):
+def summarize(accumulator, crossings=None):
     """Fits, bootstrap and systematics per acquisition and pooled (event weighted)."""
     spec, edges = accumulator.spec, accumulator.edges
     names = [a.name for a in spec.acquisitions]
@@ -225,17 +277,17 @@ def summarize(accumulator):
             return array[..., selector, :].sum(axis=-2) if scope == "pooled" else array[..., selector, :]
 
         hist = pick(accumulator.hist)
-        nominal = fit_histogram(hist[0], edges)
+        nominal = fit_histogram(hist[0], edges, crossings=crossings)
         entry = {"fit": _public(nominal)}
         if nominal["status"] != "fitted":
             entry["uncertainty"] = None
             results[scope] = entry
             continue
         boot = pick(accumulator.boot) if spec.bootstrap else np.zeros((0, len(edges) - 1))
-        replicate = [fit_histogram(h, edges, start=nominal["_start"]) for h in boot]
+        replicate = [fit_histogram(h, edges, start=nominal["_start"], crossings=crossings) for h in boot]
         good = [f for f in replicate if f["status"] == "fitted"]
         entry["bootstrap"] = {"replicates": len(replicate), "fitted": len(good)}
-        variant_fits = {v.name: fit_histogram(hist[i], edges, start=nominal["_start"])
+        variant_fits = {v.name: fit_histogram(hist[i], edges, start=nominal["_start"], crossings=crossings)
                         for i, v in enumerate(accumulator.variants) if i}
         entry["variants"] = {name: _public(f) for name, f in variant_fits.items()}
         for key in ("fwhm_ps", "model_free_fwhm_ps", "model_free_fwtm_ps"):
