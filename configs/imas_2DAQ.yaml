@@ -18,7 +18,7 @@ relax_factor: 0.5
 mon_id: [0, 4923, 134572, 265872]
 
 # pipe rotation size
-pipe_radius: 321.0 # mm
+pipe_radius: 160.0 # mm
 
 # Ring R and supermodule centre YXZ
 ring_r: 410.0
