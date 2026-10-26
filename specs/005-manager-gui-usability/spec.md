@@ -1,8 +1,6 @@
 # Spec 005 — PETsys Manager GUI usability
 
-Status: `paused` (2026-10-13; owner cannot perform Cornell operator verification for approximately six hours and authorizes isolated spec 008 work)
-
-Resume after owner verification is available: revalidate pending representative-acquisition GUI checks and the Manager regression suite. Manager implementation remains frozen while spec 008 is active; this pause changes lifecycle metadata only.
+Status: `shipped` (2026-10-26; T17 Cornell operator check, [known limitations](#known-limitations-at-closing); PETsys Manager 1.1.0, released 2026-10-11)
 
 Constitution: [`AGENTS.md`](../../AGENTS.md). Workflow: [`docs/prompts.md`](../../docs/prompts.md). Builds on spec 003 ([`../003-petsys-manager-migration/spec.md`](../003-petsys-manager-migration/spec.md)), shipped 2026-10-06 as PETsys Manager 1.0.0. This spec ships as PETsys Manager 1.1.0.
 
@@ -82,3 +80,8 @@ The changes are in the GUI, plus a progress counter and a profile section. Syste
 ## Out of scope
 
 Numerical or output changes; processing warnings in the banner; per-slab LM plots (declined by the owner, 2026-10-05); time remaining from past runs; finished notifications or sounds; repeat-run and run-details views; profile switching; remote/small-screen layouts; listing run folders without a `runs.tsv` line.
+
+## Known limitations at closing
+
+- **Operator check is overall:** the Cornell operator reported that the Manager GUI works (2026-10-26) but gave no notes per T17 item; the acquisition growth banner's red state is not recorded as tested.
+- **No Cornell `-m real_data` run under this spec:** the Linux evidence is the spec 010 full non-real run at `a141124` (1364 passed, 4 xfailed, `gui` tests ran), which includes every spec 005 test. Spec 005 changes no numerical result or output file.

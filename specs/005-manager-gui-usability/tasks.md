@@ -335,7 +335,7 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
     - `-m "not real_data" -n 0 --slow-limit 5` → 1154 passed, 23 skipped.
     - Committed tree (4cea42f): `-m "not real_data"` → 1159 passed, 18 skipped (17 `linux`, 1 Linux-only artifact; the 5 checkout audits ran and passed). `tests/data/` unchanged. `-m real_data` not repeated: the fixes change only a GUI status label and test waits, no real-data result.
 
-- [ ] **T17 — Cornell full run and operator check** (all FRs).
+- [x] **T17 — Cornell full run and operator check** (all FRs).
   - On a clean checkout with an env matching `process_petsys.yml`, run the full run and `-m real_data` from a desktop-session terminal on the Cornell PC.
   - An operator walks through the Manager:
     - a real conversion with ≥ 3 splits (bar, GB written, estimate after the first split);
@@ -348,3 +348,8 @@ Order follows the owner's priority: progress and time remaining first (FR-1, FR-
     - the window fits the monitor.
 
   **Done when:** both runs pass on Linux, with their summary lines recorded. The operator's notes per item go in this task. Then the spec `Status` becomes `shipped`.
+
+  Closed 2026-10-26 by the owner:
+  - **Operator check (Cornell PC): PASS overall.** The operator reported that the Manager GUI works fine; no notes per item and no record of the red growth-banner case.
+  - **Full run (Linux):** not repeated for this spec. The spec 010 T6 run on the Cornell PC (desktop session, `a141124`, `-m "not real_data"`) → 1364 passed, 4 xfailed, none skipped; it includes every spec 005 test.
+  - **`-m real_data` (Linux):** not run. Spec 005 changes no numerical result or output file. Both gaps are listed under the spec's known limitations.
