@@ -184,3 +184,7 @@ scripts_gui/
 encal_files/
 png/
 gui/
+# Local editor settings, Cornell evidence (drawings, research, media) and QC outputs.
+.vscode/
+docs/cornell/
+system_QC_results/
