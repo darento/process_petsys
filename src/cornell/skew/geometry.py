@@ -8,33 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from numbers import Real
 
 import numpy as np
 
 from src.mapping_generator import ChannelType
-
-C_MM_PER_PS = 0.299792458
-
-
-class GeometryError(ValueError):
-    """Required geometry is missing, inconsistent or nonfinite."""
-
-
-def _vector(value, size, label):
-    try:
-        result = np.asarray(value, dtype=np.float64)
-    except (TypeError, ValueError) as exc:
-        raise GeometryError(f"{label}: expected {size} finite coordinates") from exc
-    if result.shape != (size,) or not np.isfinite(result).all():
-        raise GeometryError(f"{label}: expected {size} finite coordinates")
-    return result
-
-
-def _scalar(value, label):
-    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
-        raise GeometryError(f"{label}: finite numeric value required")
-    return float(value)
+from src.timing.shell import (C_MM_PER_PS, AnnularSource, GeometryError, ShellInterval,  # noqa: F401
+                              _scalar, _vector, geometric_tof_ps, legacy_opposition_accepts,
+                              shell_intervals)
 
 
 @dataclass(frozen=True)
@@ -230,29 +210,6 @@ def build_faceted_detector_frames(config, local_map, channel_modules, channel_ty
     return frames
 
 
-@dataclass(frozen=True)
-class AnnularSource:
-    inner_radius_mm: float
-    outer_radius_mm: float
-    axial_min_mm: float
-    axial_max_mm: float
-    center_mm: tuple[float, float, float]
-    axis: tuple[float, float, float]
-
-    def __post_init__(self):
-        for name in ("inner_radius_mm", "outer_radius_mm", "axial_min_mm", "axial_max_mm"):
-            object.__setattr__(self, name, _scalar(getattr(self, name), name))
-        if not 0 < self.inner_radius_mm < self.outer_radius_mm or self.axial_min_mm >= self.axial_max_mm:
-            raise GeometryError("shell must have positive thickness and axial length")
-        center = _vector(self.center_mm, 3, "source center")
-        axis = _vector(self.axis, 3, "source axis")
-        norm = float(np.linalg.norm(axis))
-        if not math.isfinite(norm) or norm == 0:
-            raise GeometryError("source axis must have finite nonzero norm")
-        object.__setattr__(self, "center_mm", tuple(center))
-        object.__setattr__(self, "axis", tuple(axis / norm))
-
-
 # Normalization phantom (drawing Ph Norm D275L300 r01): fluid radii 137.5/142.5 mm,
 # 300 mm long, centred at YAML z=0 by its fixture (owner, ~1 mm transverse).
 NORMALIZATION_PHANTOM = AnnularSource(137.5, 142.5, -150.0, 150.0, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0))
@@ -260,100 +217,3 @@ NORMALIZATION_PHANTOM = AnnularSource(137.5, 142.5, -150.0, 150.0, (0.0, 0.0, 0.
 # selected by run7 data (T6 hypothesis-exclusive events) and owner-accepted 2026-10-13.
 SELECTED_AXIAL_SIGN = -1
 SELECTED_TRANSVERSE_SIGN = 1
-
-
-@dataclass(frozen=True)
-class ShellInterval:
-    fraction_start: float
-    fraction_end: float
-    tof_start_ps: float
-    tof_end_ps: float
-
-
-def _line(endpoint_i_mm, endpoint_j_mm):
-    start = _vector(endpoint_i_mm, 3, "detector i")
-    end = _vector(endpoint_j_mm, 3, "detector j")
-    delta = end - start
-    length = float(np.linalg.norm(delta))
-    if not math.isfinite(length) or length == 0:
-        raise GeometryError("detector endpoints must form a finite nonzero LOR")
-    return start, delta, length
-
-
-def shell_intervals(endpoint_i_mm, endpoint_j_mm, source):
-    """Positive-length source segments along i→j, clipped to detector endpoints.
-
-    TOF is (distance to i - distance to j)/c; reversing endpoints negates
-    and reverses intervals. Tangency alone has zero source length, hence no
-    usable segment. A tangent to the inner cavity can give one merged segment.
-    """
-    if not isinstance(source, AnnularSource):
-        raise GeometryError("explicit finite annular source required")
-    start, direction, length = _line(endpoint_i_mm, endpoint_j_mm)
-    axis = np.asarray(source.axis)
-    relative = start - source.center_mm
-    z0, dz = float(relative @ axis), float(direction @ axis)
-    radial_start = relative - z0 * axis
-    radial_direction = direction - dz * axis
-    a = float(radial_direction @ radial_direction)
-    b = 2.0 * float(radial_start @ radial_direction)
-    radial2 = float(radial_start @ radial_start)
-    if not all(math.isfinite(x) for x in (a, b, radial2, z0, dz)):
-        raise GeometryError("LOR exceeds finite numerical geometry range")
-    boundaries = [0.0, 1.0]
-    if a > 0:
-        for radius in (source.inner_radius_mm, source.outer_radius_mm):
-            constant = radial2 - radius * radius
-            discriminant = b * b - 4 * a * constant
-            if discriminant >= 0:
-                root = math.sqrt(discriminant)
-                # Stable quadratic roots, including a double root at tangency.
-                q = -0.5 * (b + math.copysign(root, b))
-                roots = (-b / (2 * a),) if q == 0 else (q / a, constant / q)
-                boundaries.extend(t for t in roots if 0 < t < 1)
-    if dz != 0:
-        boundaries.extend(t for z in (source.axial_min_mm, source.axial_max_mm)
-                          if 0 < (t := (z - z0) / dz) < 1)
-    boundaries = sorted(set(boundaries))
-    segments = []
-    for lo, hi in zip(boundaries, boundaries[1:]):
-        middle = (lo + hi) / 2
-        radial = radial_start + middle * radial_direction
-        r2 = float(radial @ radial)
-        z = z0 + middle * dz
-        # Radial boundaries themselves carry zero measure. An axial-parallel
-        # line exactly on a radial surface is not assigned a fabricated volume.
-        if (source.inner_radius_mm ** 2 < r2 < source.outer_radius_mm ** 2
-                and source.axial_min_mm <= z <= source.axial_max_mm):
-            if segments and segments[-1][1] == lo:
-                segments[-1] = (segments[-1][0], hi)
-            else:
-                segments.append((lo, hi))
-    return tuple(ShellInterval(lo, hi, length * (2 * lo - 1) / C_MM_PER_PS,
-                               length * (2 * hi - 1) / C_MM_PER_PS) for lo, hi in segments)
-
-
-def geometric_tof_ps(source_position_mm, endpoint_i_mm, endpoint_j_mm):
-    """Known-position TOF, independent of measured timing or branch selection."""
-    point = _vector(source_position_mm, 3, "source position")
-    start, delta, _ = _line(endpoint_i_mm, endpoint_j_mm)
-    result = (np.linalg.norm(point - start) - np.linalg.norm(point - start - delta)) / C_MM_PER_PS
-    if not math.isfinite(result):
-        raise GeometryError("nonfinite source flight distances")
-    return float(result)
-
-
-def legacy_opposition_accepts(endpoint_i_mm, endpoint_j_mm, *, tolerance_deg=15.0):
-    """Legacy >=(180-tolerance) 3D scanner-origin angle; separate from shell."""
-    tolerance_deg = _scalar(tolerance_deg, "opposition tolerance")
-    if not 0 <= tolerance_deg <= 180:
-        raise GeometryError("opposition tolerance must be in [0,180] degrees")
-    start, delta, _ = _line(endpoint_i_mm, endpoint_j_mm)
-    end = start + delta
-    norms = np.linalg.norm(start), np.linalg.norm(end)
-    if not all(math.isfinite(x) and x > 0 for x in norms):
-        raise GeometryError("scanner-center endpoint has no opposition angle")
-    cosine = float(np.clip((start / norms[0]) @ (end / norms[1]), -1.0, 1.0))
-    # Avoid acos precision loss; equality accepts the declared boundary.
-    limit = math.cos(math.radians(180 - tolerance_deg))
-    return bool(cosine <= limit + 8 * np.finfo(np.float64).eps)

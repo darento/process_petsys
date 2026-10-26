@@ -12,18 +12,24 @@ Status: not started, 2026-10-26. [Approved spec](spec.md), [plan](plan.md).
 
 ## Core extraction (Cornell unchanged)
 
-- [ ] **T1 — Scanner-neutral core** (FR-1).
+- [x] **T1 — Scanner-neutral core** (FR-1).
   - Move into `src/timing/`: `dataset.py` (bounded scan), `kernels.py` (side-selection kernels, codes, `FeatureBatch`, `Partition`, `holdout_codes`), `shell.py` (`AnnularSource`, `shell_intervals`, `_shell`, LOR stage on precomputed endpoints), `lut.py`, `ctr.py` core, `plots.py`. `src/cornell/skew/*` re-export them; no behavior change.
   - Split Cornell's `_geometry` into the Cornell endpoint kernel and the core LOR stage.
   - **Done when:**
     - `tests/test_cornell_timing_*.py tests/test_cornell_walk.py tests/test_manager_timing_luts.py tests/test_manager_listmode.py -m "not real_data"` pass with no test edited (summary equal to the pre-change run, recorded first).
     - `tests/test_timing_core.py::test_lor_stage_matches_cornell_geometry`: on synthetic Cornell features, the split stage gives arrays equal (`np.array_equal`) to the pre-split `apply_geometry`, captured as a golden under `tests/data/golden/` with provenance.
+  - Deviations:
+    - `pairs.py` and `solver.py` moved too (`lut` imports `solver`); whole-module moves (`pairs`, `solver`, `lut`, `plots`) leave `sys.modules` aliases in `src/cornell/skew`, so Cornell imports and monkeypatches hit the same object. Partial moves (`dataset`, `ingest`, `geometry`) keep `LdatStream`-calling code in Cornell and re-import the moved names.
+    - `ctr.py` core move deferred to T13 (only consumer is the IMAS CTR).
+    - The run7 byte check from T2 is done here, as `tests/test_timing_core.py::test_run7_pipeline_bytes_unchanged` (`real_data`, `slow`): 8 whole run7 files, all train, `workers=4`; baseline `tests/data/baselines/cornell_run7_pipeline_011.json` captured at d56f49b. Two files gave no pair with ≥30 events. LUT compared rounded to 1e-6 ps (BLAS thread order moves delays by ~1e-11 ps between processes).
+    - Cache fingerprints hash module source, so they change with the move: existing Cornell caches rebuild once, same content. T2 compares the fingerprint against the post-T1 value.
+  - Verified 2026-10-26: selection above plus `tests/test_timing_core.py`, `-m "not real_data"`: 157 passed, 4 xfailed (before: 156 passed, 4 xfailed; +1 golden test). `tests/test_timing_core.py -m "" -n 0 --slow-limit 5` with `PETSYS_DATA_DIR`/`PETSYS_CAL_DIR`: 2 passed (283 s). `py_compile src/timing/*.py src/cornell/skew/*.py` OK.
 - [ ] **T2 — Adapter seam in the cache** (FR-1, FR-6).
   - `src/timing/cache.py` takes an adapter (`select_batch`, `rejection_labels`, `fingerprint_sources`); the Cornell adapter wraps today's lookup.
   - **Done when:**
     - the T1 Cornell selection passes unchanged;
-    - `tests/test_timing_core.py::test_cornell_cache_fingerprint_unchanged`: the manifest fingerprint of a synthetic Cornell cache equals the pre-change value (golden);
-    - `tests/test_cornell_timing_real.py` with a new `real_data` case `test_run7_job_bytes_unchanged`: a bounded run7 job (first 2 files, prefix) before and after T1–T2 gives equal SHA-256 for feature blocks, observation partitions, pair fits and LUT. The "before" hashes are a baseline under `tests/data/baselines/` recorded from HEAD before T1, with provenance.
+    - `tests/test_timing_core.py::test_cornell_cache_fingerprint_unchanged`: the manifest fingerprint of a synthetic Cornell cache equals the post-T1 value (golden);
+    - `tests/test_timing_core.py::test_run7_pipeline_bytes_unchanged` (added in T1) still passes against the pre-T1 baseline.
 
 ## IMAS front end
 

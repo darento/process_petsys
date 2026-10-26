@@ -1,0 +1,20 @@
+{
+ "requirements": [
+  "011-FR-1"
+ ],
+ "generated_utc_date": "2026-10-26",
+ "repo_commit": "d56f49b91fc3b5fdaf2a6a766e6c84897f6d7925",
+ "sources": {
+  "src/cornell/skew/ingest.py": "a56e5bf22359ecefed5838a3075c211e7c6282b670a00ac4e9dff2b1c33dc59a",
+  "src/cornell/skew/geometry.py": "7cece55d265ad6085415921ae76b45843c618148c30d226ed2929ac9d1551728",
+  "tests/test_timing_core.py": "b34fd2ffef0a7ff83178b745a02b0997ae0beccda8e61ef8ce9f5cce5a0682e8",
+  "tests/cornell_timing_helpers.py": "e2c63b2ad01be2c48eafd23b7486a1a5e3b25d31acb5463d5af66613d2a2f39e",
+  "scripts/capture_011_t1.py": "47bca41004622a2387f80753d00108c0da0f4c6cda03433b0ec1f5258b45700f"
+ },
+ "golden": "timing/011_t1_cornell_geometry.npz",
+ "sha256": "2cb740ff8525387946163bc19a0c8f4b6694f319e574a9e7076ea21cbdb6805e",
+ "bytes": 1282804,
+ "fixture": "tests/test_timing_core.py:geometry_arrays (synthetic_columns count=5000 seed=11)",
+ "method": "Cornell apply_geometry at HEAD before spec 011 T1 moved the LOR stage to src/timing/.",
+ "truth": "Regression value of the pre-move code, not physical truth."
+}

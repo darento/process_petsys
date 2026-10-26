@@ -38,20 +38,22 @@ import yaml
 from src import utils
 from src.detector_features import calculate_centroid
 from src.filters import filter_coincidence, filter_min_ch, filter_total_energy
-from src.ldat_inspector.fastread import _pow
 from src.cornell.skew.geometry import (C_MM_PER_PS, NORMALIZATION_PHANTOM, OWNER_INTERACTION_DEPTH_MM,
                                        SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, AnnularSource,
                                        FacetedDetectorFrame, GeometryError, build_faceted_detector_frames)
 from src.ldat_stream import LdatStream
 from src.mapping_generator import ChannelType, map_factory
+from src.timing.kernels import (ACCEPTED, FEATURE_FLOAT, FEATURE_INT, HOLDOUT_EXCLUSIONS,
+                                LEGACY_COINCIDENCE_WINDOW_PS, WALK_FEATURES, FeatureBatch, Partition,
+                                _KIND_ENERGY, _KIND_TIME, _centroid, _keep, _max_module,
+                                _min_ch, _time_hits, holdout_codes)
+from src.timing.shell import GEOMETRY_REJECTIONS, GeometryResult, lor_stage
 
-LEGACY_COINCIDENCE_WINDOW_PS = 15000
 LEGACY_LOCAL_ORIGIN_MM = 48.0
 LEGACY_ANGLE_ACCEPTANCE_DEG = 15
 LEGACY_HIT_ENERGY_MIN = 0.0          # read_binary_file default: keeps energy >= 0
 C_MM_PER_PS_LEGACY = C_VAC * 1000 / 1e12   # legacy expression, scipy constant
 
-ACCEPTED = "accepted"
 # First-failure labels in legacy evaluation order.
 REJECTIONS = (
     "unmapped channel",
@@ -279,14 +281,7 @@ def reference_counts(path, setup, *, file_index, max_records=None, seed=0):
 # Codes: 0 passes every pre-geometry cut; k > 0 is REJECTIONS[k - 1].
 PASSED = 0
 _CODE = {label: index + 1 for index, label in enumerate(REJECTIONS)}
-_KIND_TIME, _KIND_ENERGY = 1, 2
 _MU_MISSING, _MU_VALID, _MU_INVALID = 0, 1, 2
-FEATURE_INT = ("record", "time_channel_1", "time_channel_2", "sm_1", "mm_1", "sm_2", "mm_2",
-               "slab_1", "slab_2", "dt_ps", "module_tie")
-FEATURE_FLOAT = ("energy_kev_1", "energy_kev_2", "x_1", "y_1", "x_2", "y_2")
-# spec 009 FR-1 raw walk ingredients per side: timestamped TIME-hit charge, summed TIME charge,
-# summed ENERGY charge (the keV numerator) and listmode's DOI ratio (ENERGY sum / maximum), a.u.
-WALK_FEATURES = ("q_top_1", "q_time_1", "e_raw_1", "doi_ratio_1", "q_top_2", "q_time_2", "e_raw_2", "doi_ratio_2")
 _PRE_GEOMETRY = REJECTIONS[:9]
 
 
@@ -354,99 +349,6 @@ def _bit(file_index, record, side, seed_mix):
 
 
 @numba.njit(cache=True)
-def _keep(start, n, energy, channel, kind, out):
-    """Legacy reader hits (energy >= 0) into ``out``; second value flags unmapped."""
-    m, unmapped = 0, False
-    for i in range(start, start + n):
-        if energy[i] >= 0:
-            out[m] = i
-            m += 1
-            c = channel[i]
-            if c < 0 or c >= kind.size or kind[c] == 0:
-                unmapped = True
-    return m, unmapped
-
-
-@numba.njit(cache=True)
-def _min_ch(hits, m, channel, kind, min_ch):
-    n_energy = 0
-    for j in range(m):
-        if kind[channel[hits[j]]] == 2:
-            n_energy += 1
-    return min_ch <= n_energy < m
-
-
-@numba.njit(cache=True)
-def _max_module(hits, m, energy, channel, kind, sm, mm, out, keys, module_energy):
-    """get_maxEnergy_sm_mM: (selected count, energy, ok, tie); first-seen order on ties."""
-    first_key = sm[channel[hits[0]]] * 4096 + mm[channel[hits[0]]] if m else -1
-    single = True
-    for j in range(1, m):
-        c = channel[hits[j]]
-        if sm[c] * 4096 + mm[c] != first_key:
-            single = False
-    if single:
-        total = 0.0
-        for j in range(m):
-            out[j] = hits[j]
-            if kind[channel[hits[j]]] == 2:
-                total += np.float64(energy[hits[j]])
-        return m, total, True, False
-    n_keys = 0
-    for j in range(m):
-        c = channel[hits[j]]
-        key = sm[c] * 4096 + mm[c]
-        seen = False
-        for q in range(n_keys):
-            if keys[q] == key:
-                seen = True
-        if not seen:
-            keys[n_keys] = key
-            n_keys += 1
-    best, best_energy = -1, 0.0
-    for q in range(n_keys):
-        total = 0.0
-        for j in range(m):
-            c = channel[hits[j]]
-            if sm[c] * 4096 + mm[c] == keys[q] and kind[c] == 2:
-                total += np.float64(energy[hits[j]])
-        module_energy[q] = total
-        if total > best_energy:
-            best_energy = total
-            best = q
-    if best < 0:
-        return 0, 0.0, False, False
-    tied = 0
-    for q in range(n_keys):
-        if module_energy[q] == best_energy:
-            tied += 1
-    count = 0
-    for j in range(m):
-        c = channel[hits[j]]
-        if sm[c] * 4096 + mm[c] == keys[best]:
-            out[count] = hits[j]
-            count += 1
-    return count, best_energy, True, tied > 1
-
-
-@numba.njit(cache=True)
-def _time_hits(hits, m, energy, channel, kind):
-    """Top-two TIME hits by energy, earlier hit first on ties (stable sort)."""
-    top, second, n_time = -1, -1, 0
-    for j in range(m):
-        i = hits[j]
-        if kind[channel[i]] != 1:
-            continue
-        n_time += 1
-        if top < 0 or energy[i] > energy[top]:
-            second = top
-            top = i
-        elif second < 0 or energy[i] > energy[second]:
-            second = i
-    return top, second, n_time
-
-
-@numba.njit(cache=True)
 def _slab(top, second, n_time, channel, position, bit):
     p = position[channel[top]]
     count = 2 if n_time >= 2 else 1
@@ -460,24 +362,6 @@ def _slab(top, second, n_time, channel, position, bit):
     if diff > 1 or diff < -1:
         return -1
     return 2 * p if diff == 1 else 2 * p + 1
-
-
-@numba.njit(cache=True)
-def _centroid(hits, m, energy, channel, kind, coord_x, coord_y):
-    sx = wx = sy = wy = 0.0
-    for j in range(m):
-        i = hits[j]
-        c = channel[i]
-        if kind[c] == 1:
-            w = np.float64(energy[i]) + 0.00001
-            sx += w * coord_x[c]
-            wx += w
-        else:
-            # CPython float ** calls C pow(); numba's x*x differs by ulps (see fastread._c_pow).
-            w = _pow(np.float64(energy[i]) + 0.00001, 2.0)
-            sy += w * coord_y[c]
-            wy += w
-    return sx / wx, sy / wy
 
 
 @numba.njit(cache=True)
@@ -575,25 +459,6 @@ def _select(n1, n2, first, timestamp, energy, channel, kind, sm, mm, coord_x, co
     return n_out
 
 
-@dataclass(frozen=True)
-class FeatureBatch:
-    """Records passing every pre-geometry cut; ``codes`` cover every record read."""
-    first_record: int
-    codes: np.ndarray
-    ints: np.ndarray
-    floats: np.ndarray
-    walk: np.ndarray | None = None      # WALK_FEATURES columns (spec 009), None where not computed
-
-    def column(self, name):
-        if name in FEATURE_INT:
-            return self.ints[:, FEATURE_INT.index(name)]
-        if name in WALK_FEATURES:
-            if self.walk is None:
-                raise KeyError(f"{name}: walk ingredients were not computed for these features")
-            return self.walk[:, WALK_FEATURES.index(name)]
-        return self.floats[:, FEATURE_FLOAT.index(name)]
-
-
 def select_batch(batch, lookup, *, file_index, seed=0):
     """Compiled T4a selection up to the energy window/centroid for one ``LdatBatch``.
 
@@ -660,10 +525,7 @@ def compiled_legacy_outcomes(path, setup, lookup, *, file_index, max_records=Non
 # norm_10082026_r7_cal-P1-target_2026-10-11_1152, whose ``.encal`` photopeak
 # factors used those prefixes. Train files keep every record.
 RUN7_ENERGY_CALIBRATION_PREFIX = {3: 3_186_061, 5: 3_185_078, 8: 3_184_900, 11: 3_185_980, 14: 3_192_263}
-HOLDOUT_EXCLUSIONS = ("energy calibration prefix", "file edge guard")
-GEOMETRY_REJECTIONS = ("invalid endpoint", "no shell crossing", "opposition angle", "one shell segment")
 PRODUCTION_LABELS = (ACCEPTED,) + HOLDOUT_EXCLUSIONS + _PRE_GEOMETRY + GEOMETRY_REJECTIONS
-_HOLDOUT_CODE = {label: -1 - index for index, label in enumerate(HOLDOUT_EXCLUSIONS)}
 PASSED_PRE_GEOMETRY = "passed pre-geometry"
 
 
@@ -673,54 +535,6 @@ def code_label(code):
     if code < 0:
         return HOLDOUT_EXCLUSIONS[-1 - code]
     return PASSED_PRE_GEOMETRY if code == 0 else REJECTIONS[code - 1]
-
-
-@dataclass(frozen=True)
-class Partition:
-    """One file's frozen role; anchors (ps) are inclusive guarded bounds."""
-    file_index: int
-    role: str
-    anchor_start_ps: int
-    anchor_end_ps: int
-    excluded_prefix_records: int
-
-    @classmethod
-    def from_holdout(cls, holdout, file_index, energy_calibration_prefix):
-        """From ``dataset.freeze_holdout`` output; held-out files need a prefix bound."""
-        if not holdout.get("qualified") or not holdout.get("roles_frozen_before_fitting"):
-            raise ValueError("holdout is not qualified and frozen")
-        matches = [p for p in holdout["partitions"] if p["index"] == file_index]
-        if len(matches) != 1:
-            raise ValueError(f"file {file_index}: no unique holdout partition")
-        partition = matches[0]
-        if partition["role"] not in ("train", "validation", "test") or None in (
-                partition["anchor_start_ps"], partition["anchor_end_ps"]):
-            raise ValueError(f"file {file_index}: invalid role or guarded interval")
-        if partition["role"] == "train":
-            prefix = 0
-        elif int(energy_calibration_prefix.get(file_index, -1)) >= 0:
-            prefix = int(energy_calibration_prefix[file_index])
-        else:
-            raise ValueError(f"held-out file {file_index}: energy-calibration prefix bound required")
-        return cls(file_index, partition["role"], int(partition["anchor_start_ps"]),
-                   int(partition["anchor_end_ps"]), prefix)
-
-
-def holdout_codes(batch, partition):
-    """Per-record holdout code: prefix first, then anchor outside the guarded interval.
-
-    The anchor is the record's first hit (detector 1, else detector 2), as in
-    ``dataset``; a record without hits has no anchor and is guarded out.
-    """
-    records = batch.first_record + np.arange(batch.count, dtype=np.int64)
-    has_hits = (batch.n1.astype(np.int64) + batch.n2) > 0
-    anchor = np.zeros(batch.count, np.int64)
-    anchor[has_hits] = batch.timestamp[batch.first_hit[has_hits]]
-    codes = np.zeros(batch.count, np.int8)
-    codes[~has_hits | (anchor < partition.anchor_start_ps) | (anchor > partition.anchor_end_ps)] = \
-        _HOLDOUT_CODE["file edge guard"]
-    codes[records < partition.excluded_prefix_records] = _HOLDOUT_CODE["energy calibration prefix"]
-    return codes
 
 
 def production_batches(path, lookup, partition, *, max_records=None, seed=0, block_bytes=None,
@@ -827,77 +641,9 @@ def _endpoint(sm, x, y, valid, azimuth, axial_center, axial_sign, transverse_sig
 
 
 @numba.njit(cache=True)
-def _add_bound(bounds, n, t):
-    if 0 < t < 1:
-        bounds[n] = t
-        return n + 1
-    return n
-
-
-@numba.njit(cache=True)
-def _shell(p, q, center, axis, r_in, r_out, z_min, z_max, fractions, tof):
-    """geometry.shell_intervals port: segment count, -1 for a degenerate LOR."""
-    d0, d1, d2 = q[0] - p[0], q[1] - p[1], q[2] - p[2]
-    length = math.sqrt(d0 * d0 + d1 * d1 + d2 * d2)
-    if not (np.isfinite(length) and length > 0):
-        return -1
-    v0, v1, v2 = p[0] - center[0], p[1] - center[1], p[2] - center[2]
-    z0 = v0 * axis[0] + v1 * axis[1] + v2 * axis[2]
-    dz = d0 * axis[0] + d1 * axis[1] + d2 * axis[2]
-    s0, s1, s2 = v0 - z0 * axis[0], v1 - z0 * axis[1], v2 - z0 * axis[2]
-    e0, e1, e2 = d0 - dz * axis[0], d1 - dz * axis[1], d2 - dz * axis[2]
-    a = e0 * e0 + e1 * e1 + e2 * e2
-    b = 2.0 * (s0 * e0 + s1 * e1 + s2 * e2)
-    radial2 = s0 * s0 + s1 * s1 + s2 * s2
-    if not (np.isfinite(a) and np.isfinite(b) and np.isfinite(radial2) and np.isfinite(z0) and np.isfinite(dz)):
-        return -1
-    bounds = np.empty(8)
-    bounds[0], bounds[1] = 0.0, 1.0
-    n = 2
-    if a > 0:
-        for radius in (r_in, r_out):
-            constant = radial2 - radius * radius
-            discriminant = b * b - 4 * a * constant
-            if discriminant >= 0:
-                root = math.sqrt(discriminant)
-                half = -0.5 * (b + math.copysign(root, b))
-                if half == 0:
-                    n = _add_bound(bounds, n, -b / (2 * a))
-                else:
-                    n = _add_bound(bounds, n, half / a)
-                    n = _add_bound(bounds, n, constant / half)
-    if dz != 0:
-        n = _add_bound(bounds, n, (z_min - z0) / dz)
-        n = _add_bound(bounds, n, (z_max - z0) / dz)
-    bounds[:n].sort()
-    inner2, outer2 = _pow(r_in, 2.0), _pow(r_out, 2.0)
-    segments = 0
-    for i in range(n - 1):
-        lo, hi = bounds[i], bounds[i + 1]
-        if lo == hi:
-            continue
-        middle = (lo + hi) / 2
-        w0, w1, w2 = s0 + middle * e0, s1 + middle * e1, s2 + middle * e2
-        r2 = w0 * w0 + w1 * w1 + w2 * w2
-        z = z0 + middle * dz
-        if inner2 < r2 < outer2 and z_min <= z <= z_max:
-            if segments and fractions[2 * segments - 1] == lo:
-                fractions[2 * segments - 1] = hi
-            elif segments == 2:
-                return 3
-            else:
-                fractions[2 * segments] = lo
-                fractions[2 * segments + 1] = hi
-                segments += 1
-    for i in range(2 * segments):
-        tof[i] = length * (2 * fractions[i] - 1) / C_MM_PER_PS
-    return segments
-
-
-@numba.njit(cache=True)
-def _geometry(sm1, x1, y1, sm2, x2, y2, valid, azimuth, axial_center, axial_sign, transverse_sign,
-              apothem, centers_x, centers_y, limit, offset, row_pitch, tile_rad, center, axis, r_in,
-              r_out, z_min, z_max, cos_limit, codes, endpoints, segments, fractions, tof):
+def _endpoints(sm1, x1, y1, sm2, x2, y2, valid, azimuth, axial_center, axial_sign, transverse_sign,
+               apothem, centers_x, centers_y, limit, offset, row_pitch, tile_rad, codes, endpoints):
+    """Cornell faceted endpoints of both sides; code 1 where either is undefined."""
     for k in range(sm1.size):
         p, q = endpoints[k, :3], endpoints[k, 3:]
         if not (_endpoint(sm1[k], x1[k], y1[k], valid, azimuth, axial_center, axial_sign, transverse_sign,
@@ -906,61 +652,22 @@ def _geometry(sm1, x1, y1, sm2, x2, y2, valid, azimuth, axial_center, axial_sign
                               transverse_sign, apothem, centers_x, centers_y, limit, offset, row_pitch,
                               tile_rad, q)):
             codes[k] = 1
-            continue
-        n = _shell(p, q, center, axis, r_in, r_out, z_min, z_max, fractions[k], tof[k])
-        segments[k] = n
-        norm_p = math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2])
-        norm_q = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2])
-        if n < 0 or not (norm_p > 0 and norm_q > 0 and np.isfinite(norm_p) and np.isfinite(norm_q)):
-            codes[k] = 1
-            continue
-        cosine = ((p[0] / norm_p) * (q[0] / norm_q) + (p[1] / norm_p) * (q[1] / norm_q)
-                  + (p[2] / norm_p) * (q[2] / norm_q))
-        if n == 0:
-            codes[k] = 2
-        elif min(1.0, max(-1.0, cosine)) > cos_limit:
-            codes[k] = 3
-        elif n != 2:
-            codes[k] = 4
-        else:
-            codes[k] = 0
-
-
-@dataclass(frozen=True)
-class GeometryResult:
-    """Geometry stage over feature rows: code 0 accepted, k > 0 ``GEOMETRY_REJECTIONS[k - 1]``.
-
-    Endpoints are detector 1 then detector 2 (mm); shell fractions/TOF (ps)
-    hold up to two segments along detector 1 -> 2, NaN where absent.
-    """
-    hypothesis: str
-    codes: np.ndarray
-    endpoints_mm: np.ndarray
-    shell_segments: np.ndarray
-    shell_fractions: np.ndarray
-    shell_tof_ps: np.ndarray
-
-    def counts(self):
-        found = np.bincount(self.codes, minlength=len(GEOMETRY_REJECTIONS) + 1)
-        return {label: int(found[index]) for index, label in enumerate((ACCEPTED,) + GEOMETRY_REJECTIONS)}
 
 
 def apply_geometry(features, hypothesis):
     """Run one declared hypothesis on stored feature rows; reads no LDAT.
 
     ``features`` is any object with ``column(name)`` (``FeatureBatch`` or cached blocks).
+    Cornell endpoints first, then the scanner-neutral LOR stage (``src.timing.shell``).
     """
     column = features.column
     count = len(column("sm_1"))
     codes = np.zeros(count, np.int64)
     endpoints = np.full((count, 6), np.nan)
-    segments = np.zeros(count, np.int64)
-    fractions, tof = np.full((count, 4), np.nan), np.full((count, 4), np.nan)
-    _geometry(column("sm_1"), column("x_1"), column("y_1"), column("sm_2"), column("x_2"), column("y_2"),
-              *hypothesis.tables(), codes, endpoints, segments, fractions, tof)
-    if (segments > 2).any():
-        raise GeometryError("annular shell produced more than two segments")
-    return GeometryResult(hypothesis.name, codes, endpoints, segments, fractions, tof)
+    tables = hypothesis.tables()
+    _endpoints(column("sm_1"), column("x_1"), column("y_1"), column("sm_2"), column("x_2"), column("y_2"),
+               *tables[:12], codes, endpoints)
+    return lor_stage(hypothesis.name, codes, endpoints, tables[12:])
 
 
 def time_channel_classes(setup, down_regions):

@@ -34,6 +34,7 @@ import yaml
 
 from src.cornell.skew import geometry as skew_geometry, ingest
 from src import ldat_stream
+from src.timing import kernels as core_kernels, shell as core_shell
 
 # 2: sources hashed under src/cornell/skew/ (T10); 3: walk ingredients per side (spec 009 FR-4). Older caches
 # are refused (their fingerprint differs), never reused.
@@ -219,7 +220,7 @@ def build_feature_cache(directory, inputs, *, config_path, encal_path, root, hol
         "config_sha256": _sha256(config_path), "map_sha256": _sha256(root / config["map_file"]),
         "encal_sha256": _sha256(encal_path),
         "sources_sha256": {name: _sha256(module.__file__) for name, module in
-                           (("ingest", ingest), ("ldat_stream", ldat_stream))},
+                           (("ingest", ingest), ("kernels", core_kernels), ("ldat_stream", ldat_stream))},
         "partitions": {str(k): v for k, v in partitions.items()}, "seed": seed, "max_records": max_records,
         "feature_dtype": FEATURE_DTYPE.descr}
     fingerprint = _plain(fingerprint)
@@ -344,7 +345,8 @@ def build_observations(feature_cache, hypothesis, directory, *, partitions=16, b
                    "features_sha256": feature_cache.manifest["fingerprint_sha256"],
                    "hypothesis": describe_hypothesis(hypothesis), "partitions": partitions,
                    "sources_sha256": {name: _sha256(module.__file__) for name, module in
-                                      (("ingest", ingest), ("geometry", skew_geometry))},
+                                      (("ingest", ingest), ("geometry", skew_geometry), ("kernels", core_kernels),
+                                       ("shell", core_shell))},
                    "observation_dtype": OBSERVATION_DTYPE.descr,
                    "walk": None if walk is None else {"walk_lut_sha256": walk["lut"].sha256,
                                                       "listmode_files": walk["context"].files}}
