@@ -18,6 +18,9 @@ from src.timing.shell import C_MM_PER_PS
 
 LOCALIZATION_ITERATIONS = 6
 LOCALIZATION_FLOOR_MM = 5.0
+SEED_STEPS_MM = (25.0, 4.0)       # coarse grid over the bore, then a fine grid around the coarse best
+SEED_NEAR_MM = 20.0               # LORs counted per grid point (half on the fine grid); kept for the refit
+SEED_SAMPLE = 5_000
 FWHM_PER_SIGMA = 2 * math.sqrt(2 * math.log(2))
 GAUSSIAN_FWTM_TO_FWHM = math.sqrt(math.log(10) / math.log(2))  # 1.823
 MIN_FIT_EVENTS = 100
@@ -76,6 +79,52 @@ def converge_point(endpoint_1_mm, endpoint_2_mm, *, iterations=LOCALIZATION_ITER
         miss = np.linalg.norm(point - (p + along[:, None] * d), axis=1)
         used = miss <= max(float(np.median(miss)), floor_mm)
     return point, float(np.median(miss[used])), int(np.count_nonzero(used))
+
+
+def _near_counts(grid, p, d, radius_mm):
+    """For each grid point, the number of LORs (``p + t d``, unit ``d``) passing within ``radius_mm``."""
+    pd, pp = np.einsum("ij,ij->i", p, d), np.einsum("ij,ij->i", p, p)
+    counts = np.empty(len(grid), np.int64)
+    chunk = max(1, 4_000_000 // len(p))
+    for start in range(0, len(grid), chunk):
+        s = grid[start:start + chunk]
+        along = s @ d.T - pd
+        distance2 = np.einsum("ij,ij->i", s, s)[:, None] - 2 * s @ p.T + pp - along * along
+        counts[start:start + chunk] = np.count_nonzero(distance2 <= radius_mm * radius_mm, axis=1)
+    return counts
+
+
+def seeded_converge_point(endpoint_1_mm, endpoint_2_mm, *, radius_mm, half_length_mm,
+                          steps_mm=SEED_STEPS_MM, near_mm=SEED_NEAR_MM, sample=SEED_SAMPLE, seed=0):
+    """``converge_point`` on the LORs within ``near_mm`` of the point most LORs pass (bug-imas-ctr-localization).
+
+    For sources among scanner-wide background (natural LYSO radioactivity, a weak source), where the
+    all-LOR least-squares start of ``converge_point`` is pulled off the source. The densest point is found on
+    a coarse grid over the cylinder ``radius_mm`` x ``|z| <= half_length_mm``, then on a fine grid around it,
+    using up to ``sample`` LORs. Uses endpoints only. Returns (point, median miss, LORs used, seed point).
+    """
+    direction = endpoint_2_mm - endpoint_1_mm
+    length = np.linalg.norm(direction, axis=1)
+    ok = np.isfinite(length) & (length > 0)
+    if np.count_nonzero(ok) < 3:
+        raise CtrError("fewer than three LORs to locate the source")
+    p, q, d = endpoint_1_mm[ok], endpoint_2_mm[ok], direction[ok] / length[ok, None]
+    pick = np.random.default_rng(seed).permutation(len(p))[:sample]
+    coarse, fine = steps_mm
+    axis = np.arange(-radius_mm, radius_mm + coarse / 2, coarse)
+    x, y, z = np.meshgrid(axis, axis, np.arange(-half_length_mm, half_length_mm + coarse / 2, coarse),
+                          indexing="ij")
+    grid = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+    grid = grid[grid[:, 0] ** 2 + grid[:, 1] ** 2 <= radius_mm ** 2]
+    best = grid[np.argmax(_near_counts(grid, p[pick], d[pick], near_mm))]
+    offsets = np.arange(-coarse, coarse + fine / 2, fine)
+    grid = best + np.stack(np.meshgrid(offsets, offsets, offsets, indexing="ij"), axis=-1).reshape(-1, 3)
+    best = grid[np.argmax(_near_counts(grid, p[pick], d[pick], near_mm / 2))]
+    near = lor_distance_mm(best, p, q)[0] <= near_mm
+    if np.count_nonzero(near) < 3:
+        raise CtrError("fewer than three LORs near the densest point")
+    point, miss, used = converge_point(p[near], q[near])
+    return point, miss, used, best
 
 
 def _model(params, edges):

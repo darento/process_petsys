@@ -312,9 +312,12 @@ def localize(acquisition, spec, lookup, selection, geometry):
             break
     if not events:
         raise CtrError(f"{acquisition.name}: no LOR with valid endpoints to locate the source")
-    point, miss, used = core.converge_point(np.concatenate(p), np.concatenate(q))
+    # bug-imas-ctr-localization: seeded by a grid search over the bore (scanner-wide background)
+    point, miss, used, seed = core.seeded_converge_point(
+        np.concatenate(p), np.concatenate(q), radius_mm=geometry.ring_r - 10.0,
+        half_length_mm=max(abs(z) for z in geometry.ring_z) + geometry.local_origin[1])
     return {"method": LOCALIZE, "position_mm": [float(v) for v in point], "lors": events, "lors_used": used,
-            "median_miss_mm": miss, "geometry": geometry.name}
+            "median_miss_mm": miss, "seed_mm": [float(v) for v in seed], "geometry": geometry.name}
 
 
 def acceptance(results, paired=None):
