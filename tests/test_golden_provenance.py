@@ -26,7 +26,7 @@ RECORDS = sorted(GOLDEN.rglob("*.provenance.json"))
 SHA256 = re.compile(r"[0-9a-f]{64}")
 FORBIDDEN = {"scripts", "scripts_cornell", "scripts_imas", "gui_cornell"}
 
-pytestmark = pytest.mark.fr("007-FR-3", "008-FR-2", "008-FR-3", "bug-golden-provenance-011")
+pytestmark = pytest.mark.fr("007-FR-3", "008-FR-2", "008-FR-3", "012-FR-2", "bug-golden-provenance-011")
 
 
 def name(path):
@@ -43,8 +43,8 @@ def test_golden_file_has_matching_provenance(path):
     content = path.read_bytes()
     assert record["golden"] == name(path)
     assert (record["sha256"], record["bytes"]) == (hashlib.sha256(content).hexdigest(), len(content))
-    if path.relative_to(GOLDEN).parts[0] == "timing" and "011-FR-1" in record.get("requirements", ()):
-        # spec 011 T1/T2 regression values of the pre-move Cornell code (bug-golden-provenance-011)
+    if path.relative_to(GOLDEN).parts[0] == "timing" and {"011-FR-1", "012-FR-2"} & set(record.get("requirements", ())):
+        # spec 011 T1/T2 and spec 012 T1 regression values of pre-move Cornell code (bug-golden-provenance-011)
         assert date.fromisoformat(record["generated_utc_date"])
         assert re.fullmatch(r"[0-9a-f]{40}", record["repo_commit"])
         assert record["fixture"] and record["method"] and "not physical truth" in record["truth"]

@@ -32,6 +32,9 @@ import numpy as np
 from src.cornell import listmode as lm
 from src.cornell.calibration import CalibrationMaps, create_region_boundaries
 from src.cornell.inputs import load_calibration, load_limits, load_processing_config
+from src.timing import walk as core
+from src.timing.walk import (MIN_EVENTS, WalkError, _bin, _fill_sparse, check_pairing,  # noqa: F401
+                             compare_tables, manifest_path, quantile_edges, walk_difference)
 
 ROOT = Path(__file__).resolve().parents[3]
 INPUTS = ("charge", "share", "doi_mm", "kev")
@@ -124,134 +127,12 @@ LUT_SCHEMA = "cornell-walk-lut/1"
 CONVENTION = "per side t_corrected = t - b[TIME channel] - walk2d[charge, share] - doi[doi_mm] - kev[kev] (ps)"
 BLOCKS = {"walk2d": ("charge", "share"), "doi": ("doi_mm",), "kev": ("kev",)}
 DEFAULT_BINS = {"charge": 20, "share": 10, "doi_mm": 20, "kev": 20}
-MIN_EVENTS = 200
+MODEL = core.WalkModel(LUT_SCHEMA, CONVENTION, BLOCKS, DEFAULT_BINS)
 
 
-class WalkError(ValueError):
-    pass
-
-
-def manifest_path(path):
-    """``walk_lut.json`` -> ``walk_lut.manifest.json``."""
-    path = Path(path)
-    return path.with_name(path.stem + ".manifest.json")
-
-
-def _fill_sparse(offset, events, minimum):
-    """Bins below ``minimum`` events take the nearest populated bin (Manhattan in bin indices, first in
-    C order on ties); returns the filled offsets and the listed bins."""
-    offset = np.array(offset, np.float64)
-    populated = np.argwhere(events >= minimum)
-    if not len(populated):
-        raise WalkError(f"no bin reaches {minimum} events")
-    filled = []
-    for index in np.argwhere(events < minimum):
-        nearest = populated[np.argmin(np.abs(populated - index).sum(axis=1))]
-        offset[tuple(index)] = offset[tuple(nearest)]
-        filled.append([int(v) for v in index])
-    return offset, filled
-
-
-def _bin(edges, values):
-    """Bin index (edges clamped) and whether each value lay outside the edges; NaN -> index -1."""
-    values = np.asarray(values, np.float64)
-    index = np.clip(np.searchsorted(edges, values, side="right") - 1, 0, len(edges) - 2)
-    outside = (values < edges[0]) | (values > edges[-1])
-    return np.where(np.isnan(values), -1, index), outside & ~np.isnan(values)
-
-
-class WalkLut:
-    """Frozen walk table: per block bin edges (one array per axis), offsets (ps) and fit events per bin."""
-
-    def __init__(self, edges, offset_ps, events, filled, manifest):
-        self.edges = {b: [np.asarray(e, np.float64) for e in edges[b]] for b in BLOCKS}
-        self.offset_ps = {b: np.asarray(offset_ps[b], np.float64) for b in BLOCKS}
-        self.events = {b: np.asarray(events[b], np.int64) for b in BLOCKS}
-        self.filled = filled
-        self.manifest = manifest
-        for b, axes in BLOCKS.items():
-            shape = tuple(len(e) - 1 for e in self.edges[b])
-            if len(self.edges[b]) != len(axes) or self.offset_ps[b].shape != shape or self.events[b].shape != shape:
-                raise WalkError(f"block {b}: edges/offsets/events shapes disagree")
-            if any(np.any(np.diff(e) <= 0) for e in self.edges[b]) or not np.all(np.isfinite(self.offset_ps[b])):
-                raise WalkError(f"block {b}: edges must strictly increase and offsets be finite")
-
-    @classmethod
-    def from_fit(cls, edges, offset_ps, events, manifest, *, minimum=MIN_EVENTS):
-        """Fill sparse bins, then fix the gauge: each block zero-mean over the fit events (only side
-        differences are observable, so a constant per block is free)."""
-        offsets, filled = {}, {}
-        for b in BLOCKS:
-            value, filled[b] = _fill_sparse(offset_ps[b], np.asarray(events[b]), minimum)
-            weights = np.asarray(events[b], np.float64)
-            offsets[b] = value - (weights * value).sum() / weights.sum()
-        return cls(edges, offsets, events, filled, dict(manifest, min_events=minimum))
-
-    def table(self):
-        return {"schema": LUT_SCHEMA, "units": "ps", "convention": CONVENTION, "edges": "clamp",
-                "gauge": "each block zero-mean over the fit events (events-weighted)",
-                "blocks": {b: {"inputs": list(BLOCKS[b]), "edges": [e.tolist() for e in self.edges[b]],
-                               "offset_ps": self.offset_ps[b].tolist(), "events": self.events[b].tolist(),
-                               "filled_from_nearest": self.filled[b]} for b in BLOCKS}}
-
-    def write(self, path):
-        """Write the table and its manifest (with the table SHA-256); never overwrite."""
-        path = Path(path)
-        text = (json.dumps(self.table(), indent=1) + "\n").encode("utf-8")
-        manifest = dict(self.manifest, schema=LUT_SCHEMA, table={"name": path.name,
-                                                                 "sha256": hashlib.sha256(text).hexdigest()})
-        for target in (path, manifest_path(path)):
-            if target.exists():
-                raise WalkError(f"output exists: {target}; choose a new name")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "xb") as handle:
-            handle.write(text)
-        with open(manifest_path(path), "x", encoding="utf-8") as handle:
-            handle.write(json.dumps(manifest, indent=1) + "\n")
-        self.manifest = manifest
-        return manifest
-
-    @classmethod
-    def read(cls, path):
-        path = Path(path)
-        text = path.read_bytes()
-        manifest = json.loads(manifest_path(path).read_text(encoding="utf-8"))
-        table = json.loads(text)
-        if table.get("schema") != LUT_SCHEMA or table.get("units") != "ps" or table.get("convention") != CONVENTION:
-            raise WalkError("unknown walk LUT schema, units or sign convention")
-        if manifest.get("table", {}).get("sha256") != hashlib.sha256(text).hexdigest():
-            raise WalkError("walk LUT table does not match its manifest")
-        blocks = table["blocks"]
-        if set(blocks) != set(BLOCKS) or any(blocks[b]["inputs"] != list(BLOCKS[b]) for b in BLOCKS):
-            raise WalkError(f"walk LUT blocks must be {BLOCKS}")
-        return cls({b: blocks[b]["edges"] for b in BLOCKS}, {b: blocks[b]["offset_ps"] for b in BLOCKS},
-                   {b: blocks[b]["events"] for b in BLOCKS}, {b: blocks[b]["filled_from_nearest"] for b in BLOCKS},
-                   manifest)
-
-    @property
-    def sha256(self):
-        return self.manifest["table"]["sha256"]
-
-    def bins(self, values):
-        """Per block a flat bin index (-1 where an input is missing) and per input an outside-edges flag."""
-        index, outside = {}, {}
-        for b, axes in BLOCKS.items():
-            flat = None
-            for axis, (name, edges) in enumerate(zip(axes, self.edges[b])):
-                i, outside[name] = _bin(edges, values[name])
-                flat = i if flat is None else np.where((flat < 0) | (i < 0), -1, flat * (len(edges) - 1) + i)
-            index[b] = flat
-        return index, outside
-
-    def correction(self, values):
-        """Per-side correction (ps; NaN where an input is missing) and per-input clamp flags for
-        ``values`` = {charge, share, doi_mm, kev: arrays}."""
-        index, outside = self.bins(values)
-        total = 0.0
-        for b in BLOCKS:
-            flat = self.offset_ps[b].ravel()
-            total = total + np.where(index[b] >= 0, flat[np.maximum(index[b], 0)], np.nan)
-        return total, outside
+class WalkLut(core.WalkLut):
+    """Cornell walk table: ``src.timing.walk.WalkLut`` with ``BLOCKS`` (spec 012 T1 moved the code)."""
+    model = MODEL
 
 
 # --- Point-source fit (FR-3, FR-8) --------------------------------------------
@@ -263,93 +144,18 @@ FIT_STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied 
               "walk input missing", "outside window", "kept")
 
 
-def quantile_edges(values, bins):
-    """Strictly increasing quantile edges of ``values`` (repeated quantiles merge, so fewer bins)."""
-    values = np.asarray(values, np.float64)
-    values = values[np.isfinite(values)]
-    if len(values) < 2 * bins:
-        raise WalkError(f"too few fit events ({len(values)}) for {bins} bins")
-    edges = np.unique(np.percentile(values, np.linspace(0, 100, bins + 1)))
-    if len(edges) < 2:      # one value: a single bin, i.e. no correction from this input after the gauge
-        edges = np.array([edges[0], edges[0] + 1e-6 * max(1.0, abs(edges[0]))])
-    return edges
-
-
 def _empty(edges):
-    shapes = {b: tuple(len(e) - 1 for e in edges[b]) for b in BLOCKS}
-    return WalkLut(edges, {b: np.zeros(shapes[b]) for b in BLOCKS},
-                   {b: np.zeros(shapes[b], np.int64) for b in BLOCKS}, {b: [] for b in BLOCKS}, {})
+    return WalkLut.empty(edges)
 
 
 def design(edges, side1, side2):
-    """Sparse +1 (side 1) / -1 (side 2) bin columns per block (walk2d flat bins | doi | kev), and the
-    events per column counted over both sides."""
-    import scipy.sparse as sp
-    template = _empty(edges)
-    (i1, _), (i2, _) = template.bins(side1), template.bins(side2)
-    sizes = [template.offset_ps[b].size for b in BLOCKS]
-    starts = np.cumsum([0] + sizes[:-1])
-    n = len(side1["charge"])
-    columns = [i1[b] + s for b, s in zip(BLOCKS, starts)] + [i2[b] + s for b, s in zip(BLOCKS, starts)]
-    cols = np.concatenate(columns)
-    rows = np.tile(np.arange(n), 2 * len(BLOCKS))
-    vals = np.repeat([1.0, -1.0], len(BLOCKS) * n)
-    matrix = sp.csr_matrix((vals, (rows, cols)), shape=(n, sum(sizes)))
-    matrix.sum_duplicates()
-    return matrix, np.bincount(cols, minlength=sum(sizes)), starts, sizes
+    return core.design(edges, side1, side2, table=WalkLut)
 
 
 def fit_tables(side1, side2, residual, train, bins, *, core_ps, iterations, minimum, manifest):
-    """Joint least squares of residual = W(side 1) - W(side 2) over the blocks on ``train`` events.
+    return core.fit_tables(side1, side2, residual, train, bins, core_ps=core_ps, iterations=iterations,
+                           minimum=minimum, manifest=manifest, table=WalkLut)
 
-    Edges are quantiles of the train events (both sides pooled); iterated core window
-    |residual - model| < ``core_ps`` (first pass |residual| < core_ps); a 1e-6 relative ridge fixes the
-    per-block constants, then ``WalkLut.from_fit`` fills sparse bins and sets the gauge.
-    """
-    edges = {b: [quantile_edges(np.concatenate([side1[name][train], side2[name][train]]), bins[name])
-                 for name in BLOCKS[b]] for b in BLOCKS}
-    matrix, _, starts, sizes = design(edges, side1, side2)
-    keep = train & (np.abs(residual) < core_ps)
-    history = []
-    for _ in range(iterations):
-        rows = matrix[keep]
-        normal = (rows.T @ rows).toarray()
-        ridge = 1e-6 * max(np.trace(normal), 1.0) / len(normal)
-        solution = np.linalg.solve(normal + ridge * np.eye(len(normal)), rows.T @ residual[keep])
-        model = matrix @ solution
-        history.append({"events": int(keep.sum()), "rms_ps": float(np.sqrt(np.mean((residual - model)[keep] ** 2)))})
-        keep = train & (np.abs(residual - model) < core_ps)
-    _, counts, _, _ = design(edges, {k: v[train] for k, v in side1.items()}, {k: v[train] for k, v in side2.items()})
-    offsets, events = {}, {}
-    for b, start, size in zip(BLOCKS, starts, sizes):
-        shape = tuple(len(e) - 1 for e in edges[b])
-        offsets[b] = solution[start:start + size].reshape(shape)
-        events[b] = counts[start:start + size].reshape(shape)
-    lut = WalkLut.from_fit(edges, offsets, events, dict(manifest, iterations=history, core_ps=core_ps),
-                           minimum=minimum)
-    return lut, history
-
-
-def walk_difference(lut, side1, side2):
-    """W(side 1) - W(side 2) per event (ps) and per side the clamp flags."""
-    w1, out1 = lut.correction(side1)
-    w2, out2 = lut.correction(side2)
-    return w1 - w2, out1, out2
-
-
-def check_pairing(skew_lut, skew_sha256, walk_lut):
-    """FR-4/FR-5 pairing: a walk LUT is applied with the skew LUT it was fitted with, or with a skew LUT solved
-    with it (round trip: skew re-solved with walk 1, walk 2 refitted with that skew); a skew LUT solved with a walk
-    LUT is never applied without walk."""
-    skew_walk = (skew_lut.manifest.get("provenance") or {}).get("walk_lut_sha256")
-    if walk_lut is None:
-        if skew_walk:
-            raise WalkError(f"the skew LUT was solved with walk LUT {skew_walk[:12]}...: apply a walk LUT paired with it")
-        return
-    if walk_lut.manifest.get("skew_lut_sha256") != skew_sha256 and walk_lut.sha256 != skew_walk:
-        raise WalkError(f"walk LUT {walk_lut.sha256[:12]}... was fitted with skew LUT "
-                        f"{str(walk_lut.manifest.get('skew_lut_sha256'))[:12]}..., not with {skew_sha256[:12]}..., "
-                        "and that skew LUT was not solved with it")
 
 
 def check_files(walk_lut, files):
@@ -716,21 +522,15 @@ def run_phantom(spec, *, log=print):
     near, far = events["near_ps"].astype(np.float64), events["far_ps"].astype(np.float64)
     side1, side2 = _sides(events)
     train = events["fit"]
-    model = np.zeros(len(dt))
     manifest = {"created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "fit_kind": "phantom",
                 "fit_file": str(spec["path"]), "fit_file_sha256": spec["sha256"], "job": str(job.path),
                 "job_sha256": job.sha256, "skew_lut": str(spec["lut"]), "skew_lut_sha256": spec["lut_sha256"],
                 "config": str(job.config), "listmode_files": context.files, "events": counts,
                 "split": "fit on even record indices of train files", "bins": spec["bins"]}
-    history = []
-    for _ in range(spec["branch_iterations"]):
-        branch = np.where(np.abs(dt - model - near) <= np.abs(dt - model - far), near, far)
-        residual = dt - branch
-        walk_lut, fit_history = fit_tables(side1, side2, residual, train, spec["bins"], core_ps=float(spec["core_ps"]),
-                                           iterations=spec["iterations"], minimum=spec["min_events"],
-                                           manifest=manifest)
-        model, _, _ = walk_difference(walk_lut, side1, side2)
-        history.append({"near_fraction": float(np.mean(branch == near)), "fit": fit_history})
+    walk_lut, _, history, _ = core.fit_two_branch(side1, side2, dt, near, far, train, spec["bins"],
+                                                  rounds=spec["branch_iterations"], core_ps=float(spec["core_ps"]),
+                                                  iterations=spec["iterations"], minimum=spec["min_events"],
+                                                  manifest=manifest, table=WalkLut)
     walk_lut.manifest["branch_iterations"] = history
     walk_lut.write(output)
     report = {"schema": "cornell-walk-phantom-report/1", "walk_lut": str(output), "walk_lut_sha256": walk_lut.sha256,
@@ -738,15 +538,6 @@ def run_phantom(spec, *, log=print):
     _report_path(output).write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
     log(f"phantom walk LUT {output}: {counts['kept']:,} train events (stride {counts['stride']})")
     return report
-
-
-def compare_tables(first, second, side1, side2):
-    """Per-event difference of two walk LUTs' corrections W(1) - W(2) on the same events (ps): mean and rms."""
-    a, _, _ = walk_difference(first, side1, side2)
-    b, _, _ = walk_difference(second, side1, side2)
-    d = (a - b)[np.isfinite(a) & np.isfinite(b)]
-    return {"events": int(len(d)), "mean_ps": float(d.mean()), "rms_ps": float(np.sqrt(np.mean(d ** 2))),
-            "p95_abs_ps": float(np.percentile(np.abs(d), 95))}
 
 
 def main(argv=None):

@@ -1,0 +1,18 @@
+{
+ "requirements": [
+  "012-FR-2"
+ ],
+ "generated_utc_date": "2026-10-27",
+ "repo_commit": "2899c5e605c9d4f1c991790ef7f10a38895fe10a",
+ "sources": {
+  "src/cornell/skew/walk.py": "e4831f0db46bee5fa56d6db7ebebde984ad40c3d2ab58199576218c7d1497912",
+  "tests/timing_walk_helpers.py": "db7a80e27c0e03de7f1ddba73d6862998c2fc9510831f6a600222560f3ed2fd7",
+  "scripts/capture_012_t1.py": "6048dcc21216f929a9358dd0b98934fff8a1df312f2bd9b40caefce0d509d887"
+ },
+ "golden": "timing/012_t1_cornell_walk_fixed.json",
+ "sha256": "94dd6acbbebe4c70b5cfdb79545507dda10020f30314e8c76ca01d79695e35b1",
+ "bytes": 2752,
+ "fixture": "tests/timing_walk_helpers.py:cornell_fixed_arrays",
+ "method": "src.cornell.skew.walk.WalkLut.from_fit(...).write at HEAD before the spec 012 T1 move; the test compares the written table bytes exactly.",
+ "truth": "Regression value of the pre-move Cornell walk code, not physical truth."
+}
