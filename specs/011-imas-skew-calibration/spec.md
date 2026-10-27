@@ -1,6 +1,6 @@
 # Spec 011 — IMAS skew calibration
 
-Status: `in progress` (approved by the owner 2026-10-26; FR-7 decision recorded the same day, see [Spec changes](#spec-changes); [pending inputs](#pending-inputs) are data, not open decisions)
+Status: `shipped` (2026-10-27; approved 2026-10-26; deliverable: EM LUT of the ship job, see [Spec changes](#spec-changes) and tasks T16-T17)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 008](../008-cornell-skew-calibration/spec.md) (Cornell per-channel skew LUT, shell pair fits, global solve, native table, point-source CTR). Evidence (untracked, `docs/imas/`): manuscript `IMAS_TBPET_Dec24.docx`, poster `IMAS_IEEE2025_poster.pptx`, readout map `ModuleMap_FEM256_RR.pptx`, LDAT Inspector screenshots `image_regions_down.png` and `image_FEM_skew.png`.
 
@@ -117,9 +117,8 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
 
 ## Pending inputs
 
-- The legacy production skew file, with the acquisition and cuts it came from, and confirmation that it uses the additive `t + skew` convention of `scripts_imas/imas_listmode.py`.
-- The 22Na acquisition: name, nominal position, activity and duration (transfer from the IMAS PC in progress).
-- The ~1 TB HDD: run list and split counts.
+- Resolved: legacy file `IMAS/skew_IMAS.txt` (additive `t + skew`); 22Na acquisitions of 2026-10-19 at four positions (`1cm`/`20cm` x `cFOV`/`3d8cFOV`, five files each); HDD runs 7, 8, 9 and 11 of `20251119_Skew_400s`, 31 splits each (tasks T16).
+- Still open (not blocking): the acquisition and cuts behind the legacy file; the high-activity energy calibration usually taken with the 22Na runs.
 
 ## Out of scope
 
@@ -131,3 +130,5 @@ Compute one subtractive timing delay per IMAS TIME channel (slab) from a rotatin
 ## Spec changes
 
 - **2026-10-26, FR-7 decision (owner):** after the T7 measurement, both estimators (global EM per channel with a data-only coarse start, and spec 008's pair fits and solve) are implemented and compared; ship data may reach ~8 TB, so the feature cache becomes optional and the job streams into observation sets (FR-6); production keeps the 165 degree opening angle with a 150/135 degree side study (FR-3). Tasks T8-T15 revised accordingly.
+- **2026-10-27, deliverable (owner):** the EM LUT of the ship job is the deliverable; the pair estimator stays as the cross-check (FR-7, FR-12). FR-10 is evaluated at all four 22Na positions, not only the centre.
+- **2026-10-27, bug-imas-ctr-localization:** at the off-centre 22Na positions most LORs are scanner-wide background, and the all-LOR least-squares start of the spec 008 convergence landed 40-65 mm off. FR-10's timing-blind LOR convergence is now seeded by a grid search for the point most LORs pass (`src/timing/ctr.py:seeded_converge_point`); Cornell keeps spec 008's start.
