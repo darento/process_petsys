@@ -12,6 +12,7 @@
  },
  "golden": "timing/011_t2_cornell_cache_manifests.json",
  "sha256": "f8c4a98cd20029b1aebd2c86cb318954e7f8cf1113b8beabdd3a78b9eeaac669",
+ "bytes": 7294,
  "fixture": "tests/test_timing_core.py:cache_manifests (random_records 400, seeds 40-41, fixed mtime)",
  "method": "Cornell build_feature_cache/build_observations at HEAD after spec 011 T1, before the T2 adapter seam. sources_sha256 values are those of the listed files at that commit; the test recomputes them from today's files.",
  "truth": "Regression value of the pre-seam code, not physical truth."
