@@ -2,10 +2,11 @@
 
 Written by ``necr.run_necr`` into ``<output>/plots/`` from the report and the saved histograms:
 
-- ``timing_<frame>.png``: per table, the raw and background-subtracted NEMA timing histograms (headline line);
+- ``timing_<frame>.png``: per table, the raw and background-subtracted NEMA timing histograms (headline line),
+  titled with the model-free FWHM;
 - ``dt_vs_r_<frame>.png``: per table, Δt against the signed LOR-to-line distance r (headline line);
-- ``ctr_vs_activity.png``: background-subtracted and raw NEMA FWHM against activity, every table, with the
-  legacy ``.lm`` results when declared;
+- ``ctr_vs_activity.png``: the model-free FWHM (headline width) against activity for every corrected table, the
+  NEMA background-subtracted FWHM dotted beside it, and the legacy ``.lm`` results when declared;
 - ``line_fit.png``: the fitted line's slab points with x(z) and y(z) of every line;
 - ``photopeak.png``: the 511 keV photopeak per frame against activity.
 """
@@ -41,7 +42,8 @@ def timing_histograms(plt, out, report, saved, frame, k):
             width = _width(entry, kind)
             ax.step(nema.T_CENTERS, hist, where="mid", lw=0.9,
                     label=f"{label}: FWHM " + (f"{width:.0f} ps" if width else entry["nema"][kind]["status"]))
-        ax.set_title(name, fontsize=10)
+        free = entry["model_free"].get("model_free_fwhm_ps")
+        ax.set_title(f"{name}: model-free FWHM " + (f"{free:.0f} ps" if free else "unavailable"), fontsize=10)
         ax.set_xlabel("Δt (ps)")
         ax.legend(fontsize=7)
     axes[0][0].set_ylabel(f"events / {2 * nema.T_RANGE_PS / nema.T_BINS:g} ps")
@@ -70,34 +72,38 @@ def dt_vs_r(plt, out, report, saved, frame, k):
     plt.close(figure)
 
 
+def _model_free(entry):
+    value = entry["model_free"].get("model_free_fwhm_ps")
+    sd = entry["uncertainty"].get("model_free model_free_fwhm_ps", {}).get("sd_ps")
+    return (value, sd or 0.0) if value else (np.nan, 0.0)
+
+
 def ctr_vs_activity(plt, out, report):
     line = report["headline_line"]
     frames = report["frames"]
     activity = np.array([f["activity_kbq_ml"] for f in frames])
     order = np.argsort(activity)
-    figure, ax = plt.subplots(figsize=(7.5, 4.8))
+    figure, ax = plt.subplots(figsize=(9.5, 4.8))
     for name in report["results"]["pooled"][line]:
-        values, errors = [], []
-        for f in frames:
-            entry = report["results"][f["name"]][line][name]
-            values.append(_width(entry) or np.nan)
-            errors.append(entry["uncertainty"]["background_subtracted fwhm_ps"]["sd_ps"] or 0.0)
+        if name == "uncorrected":                     # ~2.3 ns: off the scale of the corrected tables
+            continue
+        values, errors = zip(*(_model_free(report["results"][f["name"]][line][name]) for f in frames))
         line_plot = ax.errorbar(activity[order], np.array(values)[order], yerr=np.array(errors)[order], marker="o",
-                                ms=4, capsize=2, lw=1, label=f"{name} (background-subtracted)")
-        raw = [_width(report["results"][f["name"]][line][name], "raw") or np.nan for f in frames]
-        ax.plot(activity[order], np.array(raw)[order], ls=":", lw=1, color=line_plot[0].get_color())
+                                ms=4, capsize=2, lw=1, label=f"{name}: model-free")
+        background = [_width(report["results"][f["name"]][line][name]) or np.nan for f in frames]
+        ax.plot(activity[order], np.array(background)[order], ls=":", lw=1, marker=".",
+                color=line_plot[0].get_color(), label=f"{name}: NEMA background-subtracted")
     legacy = report.get("legacy_results")
     if legacy:
         named = {f["name"]: f["activity_kbq_ml"] for f in frames}
-        points = sorted((named[n], v["fwhm_bg_ps"], v["fwhm_raw_ps"]) for n, v in legacy["frames"].items())
+        points = sorted((named[n], v["fwhm_bg_ps"]) for n, v in legacy["frames"].items() if n in named)
         if points:
-            a, bg, raw = map(np.array, zip(*points))
-            ax.plot(a, bg, "k*", ms=8, label=f"legacy .lm results ({legacy['source']}), background-subtracted")
-            ax.plot(a, raw, "k+", ms=8, label="legacy .lm results, raw")
+            a, bg = map(np.array, zip(*points))
+            ax.plot(a, bg, "k*", ms=8, label="legacy .lm results, NEMA background-subtracted")
     ax.set_xlabel("activity concentration (kBq/ml)")
-    ax.set_ylabel("NEMA FWHM (ps)")
-    ax.set_title(f"CTR against activity, line {line} (dotted: raw)")
-    ax.legend(fontsize=7)
+    ax.set_ylabel("FWHM (ps)")
+    ax.set_title(f"CTR against activity, line {line} (uncorrected not shown)")
+    ax.legend(fontsize=7, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     figure.tight_layout()
     figure.savefig(out / "ctr_vs_activity.png", dpi=110)
     plt.close(figure)

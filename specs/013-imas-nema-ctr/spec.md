@@ -80,11 +80,11 @@ This is a measurement with an explicit method, not a new calibration. No table i
 - **FR-5 — Tables, uncertainty and our width.**
   - **Tables:** on the same events per frame: uncorrected, legacy, EM, EM2 + walk3.
   - **Uncertainty:** each FR-4 width has a bootstrap uncertainty. The differences against legacy are paired on the same events.
-  - **Second width:** spec 011's model-free FWHM (10 ps bins, flat background within ±3 ns, local quadratic crossings) is reported beside the NEMA width.
+  - **Headline width:** spec 011's model-free FWHM (10 ps bins, flat background within ±3 ns, local quadratic crossings) is the width every value, gate and CTR-against-activity curve uses. The FR-4 NEMA widths (with and without background subtraction) are reported beside it (owner, 2026-10-28; see Spec changes).
 - **FR-6 — NEMA report and acceptance.**
-  - **Per frame:** CTR against activity concentration for every table. The NEMA value is the background-subtracted FWHM at 5.3 kBq/ml (frame 7).
-  - **Transfer check:** on frame 7, EM must beat legacy by more than their combined uncertainty (spec 011 FR-10 rule). Otherwise the 2025 tables do not transfer to the 2024 state; the report says so and gives no EM or EM2 + walk3 NEMA value.
-  - **Acceptance:** EM2 + walk3 against EM on frame 7, with the same rule. Pooled over frames and per frame, reported.
+  - **Per frame:** CTR against activity concentration for every table. The headline value is the model-free FWHM at 5.3 kBq/ml (frame 7), with the NEMA background-subtracted FWHM beside it.
+  - **Transfer check:** on frame 7, EM must beat legacy in model-free FWHM by more than their combined uncertainty (spec 011 FR-10 rule). Otherwise the 2025 tables do not transfer to the 2024 state; the report says so and gives no EM or EM2 + walk3 value.
+  - **Acceptance:** EM2 + walk3 against EM on frame 7, with the same rule and width. Pooled over frames and per frame, reported.
   - **Legacy check:** the legacy (`skew_IMAS.txt`) values are reported beside the Jan 2025 `.lm` results. They are not expected to be equal: the table, geometry and position estimator differ.
 - **FR-7 — Energy calibration.**
   - **Source:** the bar run 7 calibration (owner, 2026-10-28; see Spec changes). Spec 011 FR-4's calibration from NECR data was the first choice; its coverage was too low.
@@ -111,12 +111,13 @@ This is a measurement with an explicit method, not a new calibration. No table i
 
 1. **Line position:** both lines are evaluated: the line fitted from the data and the legacy image P1/P2 (FR-3). The fitted line is in the tables' frame, so it gives the NEMA value; the image line is a sensitivity.
 2. **Energy calibration:** from the NECR data (FR-7); changed to the run-7 bar calibration at T8 (Spec changes).
-3. **NEMA value:** frame 7 (5.31 kBq/ml), background-subtracted FWHM, as measured (no interpolation).
-4. **Gates:** FR-6's transfer check (EM against legacy) and acceptance (EM2 + walk3 against EM), both on frame 7 with the spec 011 FR-10 rule.
+3. **NEMA value:** frame 7 (5.31 kBq/ml), background-subtracted FWHM, as measured (no interpolation). Superseded at T9: the headline is the model-free FWHM (Spec changes).
+4. **Gates:** FR-6's transfer check (EM against legacy) and acceptance (EM2 + walk3 against EM), both on frame 7 with the spec 011 FR-10 rule; judged on the model-free FWHM since T9 (Spec changes).
 
 ## Spec changes
 
 - **2026-10-28, FR-7 calibration (owner, T8):** the NECR CTR uses the run-7 bar calibration (`job_walk/skew_20251119_run7/encal/encal.tsv`, the calibration walk3's keV axis was fitted with). The per-slab NECR calibration (`encal_necr_f7`: frame 7, 9,842 of 15,360 slabs fitted; `encal_necr_all`: every split present, 12,281) leaves too many slabs without a 511 keV peak, and the selection rejects their events. The photopeak per frame (FR-7 rate check) is still reported with the run-7 calibration.
+- **2026-10-28, FR-5/FR-6 headline width (owner, T9):** "use always the model-free". The headline value, both gates and the CTR-against-activity curves use the model-free FWHM; the NEMA widths stay reported beside (and against the `.lm` results). Reason: on frame 7 the NEMA background-subtracted FWHM has a bootstrap SD of about 35 ps and moved 31 ps when the fitted line moved 0.3 mm (frame 7 alone against all frames), flipping the transfer check; the model-free FWHM has an SD of about 5 ps and moved 1 ps. This replaces the T9 decision to wait for more frame-7 splits.
 - **2026-10-28, plan:** FR-4 states the legacy script's kept band (`|r| ≤ 22.0644 mm`) for the histogram without background subtraction; the summary said 20 mm.
 
 ## Out of scope (possible follow-up: method improvements)

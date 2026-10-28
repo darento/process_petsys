@@ -217,10 +217,17 @@ def test_report_fields_and_gates(necr_run):
         verdict = gates[gate]["verdict"]
         assert gates[gate]["accepted"] and verdict["accepted"]
         entry = report["results"]["frame1"]["fitted"]
-        assert verdict["table_ps"] == entry[candidate]["nema"]["background_subtracted"]["fwhm_ps"]
+        assert verdict["judged_on"] == "model_free model_free_fwhm_ps"      # spec change at T9
+        assert verdict["table_ps"] == entry[candidate]["model_free"]["model_free_fwhm_ps"]
         assert verdict["improvement_ps"] > verdict["combined_uncertainty_ps"] > 0
         assert verdict["paired"]["sd_ps"] > 0 and set(gates[gate]["per_scope"]) == {"frame1", "frame2", "pooled"}
-    assert set(gates["nema_value"]["values"]) == {"uncorrected", "legacy", "em", "em_walk"}
+    values = gates["headline_value"]["values"]
+    assert set(values) == {"uncorrected", "legacy", "em", "em_walk"}
+    for name in ("legacy", "em", "em_walk"):
+        entry = report["results"]["frame1"]["fitted"][name]
+        assert values[name]["fwhm_ps"] == entry["model_free"]["model_free_fwhm_ps"] and values[name]["sd_ps"] > 0
+        assert values[name]["nema_background_subtracted"]["fwhm_ps"] == entry["nema"]["background_subtracted"][
+            "fwhm_ps"]
     paired = report["paired_against_legacy"]["pooled"]["fitted"]["em_walk"]["background_subtracted fwhm_ps"]
     assert paired["improvement_ps"] > 0 and paired["replicates"] == spec.bootstrap
     with np.load(spec.output / "necr_histograms.npz") as saved:
@@ -239,7 +246,7 @@ def test_transfer_failure_withholds_frozen_tables(tmp_path):
     report = necr.run_necr(spec, log=lambda *a: None)
     gates = report["gates"]
     assert gates["transfer_passed"] is False and not gates["transfer"]["accepted"]
-    values = gates["nema_value"]["values"]
+    values = gates["headline_value"]["values"]
     assert values["em"]["status"].startswith("withheld") and values["em_walk"]["status"].startswith("withheld")
     assert values["legacy"]["fwhm_ps"] > 0
     with np.load(spec.output / "necr_histograms.npz") as saved:
@@ -298,7 +305,7 @@ def test_command_writes_the_report(necr_run, capsys):
     path = h.necr_file(case, case["frames"], "command.json", bootstrap=4)
     assert main(["necr", str(path)]) == 0
     printed = capsys.readouterr().out
-    assert "NEMA value (frame1, line fitted" in printed and "acceptance: em_walk vs em" in printed
+    assert "Headline value (frame1, line fitted, model-free FWHM" in printed and "acceptance: em_walk vs em" in printed
     assert json.loads((case["base"] / "out" / "command" / "necr_ctr.json").read_text(encoding="utf-8"))["plots"]
     assert main(["necr", str(path)]) == 2            # the output exists: refused, never overwritten
 

@@ -237,7 +237,27 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
       - frame 7: not accepted (EM 720 against legacy 740: 20 vs 48), so the EM and EM2 + walk3 NEMA values are withheld;
       - accepted on frames 20, 25 and 30 and pooled (71 vs 15).
     - **Finding: the frame-7 gate is unstable.** The pooled-frame line moves about 0.3 mm from the T8 frame-7-only line. That moves frame-7 legacy from 771 to 740 ps and flips transfer from accepted (47 vs 40) to not accepted. Frame 7 has about 114 k NEMA-band events, so its bootstrap SD (about 35 ps) is the size of the gain under test.
-    - **Owner decision (2026-10-28):** keep the frame-7 gate. The owner transfers 2–3 more frame-7 splits, and T9 re-runs when they arrive. Until then, the EM and EM2 + walk3 values at frame 7 stay withheld.
+    - **Owner decision (2026-10-28):** keep the frame-7 gate and wait for 2–3 more frame-7 splits. Superseded the same day by the next entry.
+  - **Spec change, 2026-10-28 (owner: "use always the model-free"):** FR-5/FR-6 and Spec changes are updated.
+    - **What changed:**
+      - The headline value, both gates and the CTR-against-activity curves use the model-free FWHM.
+      - The NEMA widths are reported beside.
+      - The report goes to schema `imas-necr-ctr-report/2`: `gates.headline_value` replaces `gates.nema_value`. Each value carries `nema_background_subtracted` and `nema_raw_fwhm_ps`.
+      - The CLI prints the model-free value with the NEMA value beside.
+    - **Plots:**
+      - `ctr_vs_activity.png` shows model-free (solid) and NEMA background-subtracted (dotted).
+      - Uncorrected is left out, off the scale at about 2.3 ns.
+      - The legend sits outside the axes.
+      - Timing-panel titles give the model-free FWHM.
+    - **Verified:**
+      - `tests/test_imas_necr.py` + `test_timing_nema.py` + `test_timing_line.py` with `-n 0 --slow-limit 5`: 49 passed, including `real_data` with `PETSYS_DATA_DIR` set.
+      - The gate test asserts `judged_on` is model-free, and that the headline value equals the model-free FWHM, with the NEMA width beside.
+    - **Rerun** of `necr_present.json`: 3 min 28 s, 1.43 GB. The previous output is kept as `IMAS_work/necr_present_nemagate`.
+      - Frame 7, model-free: legacy 734 ± 6, EM 693 ± 5, EM2 + walk3 667 ± 5 ps.
+      - Transfer accepted: 41 vs 8. Acceptance accepted: 26 vs 7.
+      - Every frame and pooled accepted: pooled 600 / 539 / 493 ps.
+      - Frame 7 on the image line: 741 / 696 / 667 ps.
+    - **Frame-7 splits:** more are no longer needed for the gate. T9 still waits on frames 1, 5, 10 and 15.
     - **Results:** `docs/imas/IMAS_NECR_CTR/` (untracked).
 
 ## Validation

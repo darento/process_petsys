@@ -3,7 +3,8 @@
 ``python -m src.imas.skew necr FILE``: per frame of a NECR acquisition, the NEMA
 line-source timing resolution (``src.timing.nema``) for the uncorrected data,
 the legacy skew table and the frozen spec 011/012 tables, on the same events.
-The line is fitted from LOR convergence (``src.timing.line``) or declared.
+The headline width and the gates use spec 011's model-free FWHM (owner, T9);
+the NEMA widths are reported beside it. The line is fitted from LOR convergence (``src.timing.line``) or declared.
 Inputs are frozen as in the point-source CTR file (``src.imas.skew.ctr``).
 """
 from __future__ import annotations
@@ -26,7 +27,7 @@ from src.timing.cache import _sha256
 from src.timing.ctr import CtrError
 
 SCHEMA = "imas-necr-ctr/1"
-REPORT_SCHEMA = "imas-necr-ctr-report/1"
+REPORT_SCHEMA = "imas-necr-ctr-report/2"
 FITTED = "lor_convergence"
 _REQUIRED = {"schema", "job_work", "encal", "luts", "legacy", "output", "frames", "lines", "headline_line"}
 _OPTIONAL = {"walks": {}, "gates": None, "legacy_results": None, "bootstrap": 200, "seed": 0, "max_records": None,
@@ -40,7 +41,7 @@ STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied dela
           "same events")
 LINE_HALF_LENGTH_MM = 356.109009      # legacy P1/P2 z; fitted lines are written with the same end points
 FRAME_LINE_FLAG_MM = 1.0              # plan: a frame line farther than this from the pooled line is flagged
-GATE_KIND, GATE_KEY = "background_subtracted", "fwhm_ps"     # spec FR-6: the NEMA value
+GATE_KIND, GATE_KEY = "model_free", "model_free_fwhm_ps"     # spec FR-6 (T9): the headline width
 
 
 def _positive(value, label):
@@ -511,7 +512,8 @@ def judge(candidate, reference, kind=GATE_KIND, key=GATE_KEY):
 
 def evaluate_gates(spec, results):
     """FR-6 on the headline line: the transfer check and the acceptance on the gate frame (per frame and pooled
-    reported), and the NEMA value per table (withheld for the frozen tables when the transfer check fails)."""
+    reported), and the headline (model-free) value per table with the NEMA widths beside it (withheld for the
+    frozen tables when the transfer check fails)."""
     line = spec.headline_line
     frame = spec.gates.frame if spec.gates else None
     out = {"line": line, "frame": frame, "judged_on": f"{GATE_KIND} {GATE_KEY}"}
@@ -534,11 +536,15 @@ def evaluate_gates(spec, results):
             values[name] = {"status": "withheld: the transfer check failed; the frozen tables do not transfer to "
                                       "this acquisition's hardware state"}
             continue
-        width = entry["nema"][GATE_KIND]
-        values[name] = {"status": width["status"], "fwhm_ps": width["fwhm_ps"], "fwtm_ps": width["fwtm_ps"],
-                        "sd_ps": entry["uncertainty"][f"{GATE_KIND} {GATE_KEY}"]["sd_ps"],
-                        "raw_fwhm_ps": entry["nema"]["raw"]["fwhm_ps"]}
-    out["nema_value"] = {"frame": scope, "line": line, "values": values}
+        fit, background = entry["model_free"], entry["nema"]["background_subtracted"]
+        status = fit["status"] if fit["status"] != "fitted" or fit.get(GATE_KEY) else "no crossing"
+        values[name] = {"status": status, "fwhm_ps": fit.get(GATE_KEY), "fwtm_ps": fit.get("model_free_fwtm_ps"),
+                        "sd_ps": entry["uncertainty"].get(f"{GATE_KIND} {GATE_KEY}", {}).get("sd_ps"),
+                        "nema_background_subtracted": {
+                            "status": background["status"], "fwhm_ps": background["fwhm_ps"],
+                            "sd_ps": entry["uncertainty"]["background_subtracted fwhm_ps"]["sd_ps"]},
+                        "nema_raw_fwhm_ps": entry["nema"]["raw"]["fwhm_ps"]}
+    out["headline_value"] = {"frame": scope, "line": line, "width": f"{GATE_KIND} {GATE_KEY}", "values": values}
     return out
 
 
@@ -649,12 +655,17 @@ def main(argv=None):
     except CtrError as error:
         print(f"necr refused: {error}", file=sys.stderr)
         return 2
-    value = report["gates"]["nema_value"]
-    print(f"NEMA value ({value['frame']}, line {value['line']}, background-subtracted FWHM):")
-    for name, entry in value["values"].items():
+    headline = report["gates"]["headline_value"]
+    print(f"Headline value ({headline['frame']}, line {headline['line']}, model-free FWHM; NEMA "
+          "background-subtracted FWHM beside):")
+    for name, entry in headline["values"].items():
         value = (f"{entry['fwhm_ps']:.0f} +- {entry['sd_ps']:.0f} ps" if entry.get("fwhm_ps")
                  and entry.get("sd_ps") is not None else "")
-        print(f"  {name}: {value}" + ("" if entry["status"] == nema.FITTED else f" ({entry['status']})"))
+        background = entry.get("nema_background_subtracted", {})
+        beside = (f" (NEMA {background['fwhm_ps']:.0f} +- {background['sd_ps']:.0f} ps)"
+                  if background.get("status") == nema.FITTED and background.get("sd_ps") is not None
+                  else f" (NEMA: {background.get('status', 'unavailable')})")
+        print(f"  {name}: {value}" + ("" if entry["status"] == nema.FITTED else f" ({entry['status']})") + beside)
     for gate in ("transfer", "acceptance"):
         if gate in report["gates"]:
             g = report["gates"][gate]
