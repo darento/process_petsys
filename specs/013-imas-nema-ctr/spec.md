@@ -1,6 +1,6 @@
 # Spec 013 — IMAS NEMA NU 2-2018 CTR on the NECR phantom
 
-Status: `clarified` (2026-10-28)
+Status: `approved` (2026-10-28; clarified the same day). [Plan](plan.md), [tasks](tasks.md).
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md).
 Builds on two shipped specs:
@@ -70,7 +70,8 @@ This is a measurement with an explicit method, not a new calibration. No table i
   - **r:** the signed shortest distance between the LOR and the line.
   - **I:** the point on the LOR closest to the line.
   - **Timing error:** `Δt = dt_corrected − (|L1 − I| − |L2 − I|) / c`, with c = 0.299792 mm/ps.
-  - Events with `|r| ≤ 20 mm` form the signal band; the histogram in r spans ±23 mm in 150 bins. Events with `|Δt| > 2 ns` are rejected.
+  - Events with `|r| ≤ 20 + 2.0644 mm` and `|Δt| ≤ 2 ns` are kept; the histogram in r spans ±23 mm in 150 bins, and the signal band is `|r| ≤ 20 mm`.
+  - The width without background subtraction uses every kept event (`|r| ≤ 22.0644 mm`), as the legacy script does (plan, 2026-10-28).
   - **Histogram:** 100 bins of 40 ps over ±2 ns.
   - **Background per time bin:** the counts in the r bins nearest ±20 mm, linearly interpolated across the band and summed over its bins.
   - **Width:** FWHM and FWTM from a parabola through the peak bin and its two neighbours, with linear interpolation at half and tenth of the parabola's maximum.
@@ -112,6 +113,10 @@ This is a measurement with an explicit method, not a new calibration. No table i
 2. **Energy calibration:** from the NECR data (FR-7).
 3. **NEMA value:** frame 7 (5.31 kBq/ml), background-subtracted FWHM, as measured (no interpolation).
 4. **Gates:** FR-6's transfer check (EM against legacy) and acceptance (EM2 + walk3 against EM), both on frame 7 with the spec 011 FR-10 rule.
+
+## Spec changes
+
+- **2026-10-28, plan:** FR-4 states the legacy script's kept band (`|r| ≤ 22.0644 mm`) for the histogram without background subtraction; the summary said 20 mm.
 
 ## Out of scope (possible follow-up: method improvements)
 
