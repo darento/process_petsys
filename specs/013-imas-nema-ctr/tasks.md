@@ -215,6 +215,30 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
     - missing frames are listed;
     - timings and memory are recorded.
   - **Owner reviews the verdicts.**
+  - **Progress, 2026-10-28 (partial: frames present):**
+    - **Run file:** `IMAS_work/necr_present.json`:
+      - frame 7 (split 24), frame 20 (53), frame 25 (22, 23), frame 26 (22) and frame 30 (22–24);
+      - frame 26 is outside the owner's set, kept as an extra point;
+      - missing frames: 1, 5, 10, 15.
+    - **Run:** 3 min 43 s wall, peak RSS 1.43 GB.
+    - **Fitted line (headline), background-subtracted FWHM in ps:**
+
+      | Frame | legacy | EM2 + walk3 |
+      | --- | --- | --- |
+      | 7 | 740 ± 34 | 649 ± 37 |
+      | 20 | 609 | 484 |
+      | 25 | 612 | 477 |
+      | 30 | 553 | 445 |
+      | pooled | 622 ± 12 | 486 ± 7 |
+
+    - **Photopeak:** 494.7–498.9 keV.
+    - **Acceptance:** accepted on frame 7 (71 vs 50) and pooled.
+    - **Transfer check:**
+      - frame 7: not accepted (EM 720 against legacy 740: 20 vs 48), so the EM and EM2 + walk3 NEMA values are withheld;
+      - accepted on frames 20, 25 and 30 and pooled (71 vs 15).
+    - **Finding: the frame-7 gate is unstable.** The pooled-frame line moves about 0.3 mm from the T8 frame-7-only line. That moves frame-7 legacy from 771 to 740 ps and flips transfer from accepted (47 vs 40) to not accepted. Frame 7 has about 114 k NEMA-band events, so its bootstrap SD (about 35 ps) is the size of the gain under test.
+    - **Owner decision (2026-10-28):** keep the frame-7 gate. The owner transfers 2–3 more frame-7 splits, and T9 re-runs when they arrive. Until then, the EM and EM2 + walk3 values at frame 7 stay withheld.
+    - **Results:** `docs/imas/IMAS_NECR_CTR/` (untracked).
 
 ## Validation
 
