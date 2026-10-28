@@ -8,7 +8,7 @@ is read::
                                          {"path": ".../x_00000009.ldat", "roles": ["train"]},
                                          {"path": ".../x_00000010.ldat", "roles": ["heldout"]}]}],
      "estimators": ["em", "pairs"], "per_run_solves": false, "workers": 4,
-     "legacy": ".../skew_IMAS.txt", "transverse_sign": 1, "axial_sign": -1}
+     "legacy": ".../skew_IMAS.txt", "transverse_sign": 1, "axial_sign": -1, "walk_lut": null}
 
 Roles:
 
@@ -36,6 +36,15 @@ the job):
    * optionally, a solve per run compared with the pooled delays, so a
      run-dependent offset stays visible (FR-6).
 
+Walk (spec 012 FR-4): the observation sets carry the raw walk ingredients.
+``walk_lut`` names an IMAS walk LUT; stage 3 and the checks then read every
+partition through ``walk.WalkCorrected`` (rows without every walk input
+dropped and counted). ``walk_lut`` is not part of the job fingerprint, which
+identifies the streamed events, so a walk solve reuses the work directory;
+its outputs are ``lut_<estimator>_walk-<sha12>.csv`` and
+``job_report_walk-<sha12>.json``, never overwritten. ``run --observe-only``
+stops after stage 2 (``job_report_observe.json``).
+
 A disk preflight checks the free space in ``DIR`` against the expected
 observation-set size (6.3 GB per TB of LDAT, T8) with a 2x margin.
 ``job_report.json`` holds stage timings, throughput and peak memory.
@@ -54,16 +63,19 @@ import time
 import numpy as np
 
 from src.imas.skew import cache as ic, encal, outputs, solve
+from src.imas.skew import walk as iw
 from src.imas.skew.geometry import SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, ImasGeometry
 from src.imas.skew.setup import ImasSetup
+from src.timing.cache import OBSERVATION_DTYPE, OBSERVATION_WALK_DTYPE
 from src.timing.report import peak_memory
 
 SCHEMA = "imas-skew-job/1"
 ROLES = ("encal", "train", "heldout")
-OBSERVATION_BYTES_PER_LDAT_BYTE = 6.3e-3        # T8: 313 MB from 49.6 GB
+# T8: 313 MB from 49.6 GB without walk inputs; rows carry them since spec 012 (FR-4)
+OBSERVATION_BYTES_PER_LDAT_BYTE = 6.3e-3 * OBSERVATION_WALK_DTYPE.itemsize / OBSERVATION_DTYPE.itemsize
 DISK_MARGIN = 2.0
 JOB_KEYS = {"schema", "config", "runs", "estimators", "per_run_solves", "workers", "max_records", "legacy",
-            "transverse_sign", "axial_sign"}
+            "transverse_sign", "axial_sign", "walk_lut"}
 
 
 class JobError(ValueError):
@@ -97,6 +109,7 @@ class Job:
     transverse_sign: int = SELECTED_TRANSVERSE_SIGN
     axial_sign: int = SELECTED_AXIAL_SIGN
     source: dict | None = None
+    walk_lut: Path | None = None        # spec 012 FR-4: applied before the solves; not in the fingerprint
 
 
 def load_job(path):
@@ -141,7 +154,8 @@ def load_job(path):
                bool(data.get("per_run_solves", False)), int(data.get("workers", 1)), data.get("max_records"),
                Path(data["legacy"]) if data.get("legacy") else None,
                int(data.get("transverse_sign", SELECTED_TRANSVERSE_SIGN)),
-               int(data.get("axial_sign", SELECTED_AXIAL_SIGN)), data)
+               int(data.get("axial_sign", SELECTED_AXIAL_SIGN)), data,
+               Path(data["walk_lut"]) if data.get("walk_lut") else None)
 
 
 def _identity(path):
@@ -156,6 +170,8 @@ def preflight(job, work):
         raise JobError(f"declared files not found: {missing[:5]}")
     if job.legacy is not None and not job.legacy.is_file():
         raise JobError(f"legacy LUT not found: {job.legacy}")
+    if job.walk_lut is not None and not job.walk_lut.is_file():
+        raise JobError(f"walk LUT not found: {job.walk_lut}")
     ldat = sum(s.path.stat().st_size for r in job.runs for s in r.splits if s.roles & {"train", "heldout"})
     need = DISK_MARGIN * OBSERVATION_BYTES_PER_LDAT_BYTE * ldat
     probe = Path(work)
@@ -214,9 +230,13 @@ def _observations(run, directory, job, encal_path, geometry):
     holdout = {"qualified": True, "roles_frozen_before_fitting": True,
                "partitions": [{"index": k, "role": "test" if "heldout" in s.roles else "train",
                                "anchor_start_ps": -2 ** 62, "anchor_end_ps": 2 ** 62} for k, s in enumerate(splits)]}
+    if (directory / "fingerprint.json").is_file() and "walk_inputs" not in json.loads(
+            (directory / "fingerprint.json").read_text(encoding="utf-8")):
+        raise JobError(f"{directory}: observation set streamed without walk inputs (before spec 012); this job "
+                       "streams them: use a new work directory")
     return ic.stream_observations(directory, inputs, geometry, config_path=job.config, encal_path=encal_path,
                                   holdout=holdout, energy_calibration_prefix={k: 0 for k in range(len(splits))},
-                                  max_records=job.max_records, workers=job.workers)
+                                  max_records=job.max_records, workers=job.workers, carry_walk=True)
 
 
 class PooledObservations:
@@ -255,12 +275,34 @@ def _mu(path, setup):
     return np.array([values.get(int(c), np.nan) for c in setup.time_channels])
 
 
-def run_job(job, work, *, progress=print):
+def _walk(job, work, setup, stamp):
+    """The job's walk LUT (checked against the map and fitted on this job's events) and its output suffix; outputs
+    that exist are refused."""
+    if job.walk_lut is None:
+        return None, ""
+    try:
+        table = iw.WalkLut.read(job.walk_lut)
+    except (iw.core.WalkError, OSError, ValueError, KeyError) as error:
+        raise JobError(f"walk LUT {job.walk_lut}: {error}") from None
+    if table.manifest.get("map_sha256") != setup.provenance["map_sha256"]:
+        raise JobError(f"walk LUT {job.walk_lut}: fitted for another map (map SHA-256 differs)")
+    if table.manifest.get("job_sha256") != stamp["sha256"]:
+        raise JobError(f"walk LUT {job.walk_lut}: fitted on another job's events (job SHA-256 differs)")
+    suffix = f"_walk-{table.sha256[:12]}"
+    existing = [p for p in [work / f"job_report{suffix}.json", *(work / f"lut_{e}{suffix}.csv" for e in job.estimators)]
+                if p.exists()]
+    if existing:
+        raise JobError(f"outputs of this walk solve exist: {[p.name for p in existing]}; never overwritten")
+    return table, suffix
+
+
+def run_job(job, work, *, progress=print, observe_only=False):
     work = Path(work)
     started = time.perf_counter()
     disk = preflight(job, work)
     stamp = _claim(work, job)
     setup = ImasSetup.from_files(job.config)
+    walk_lut, suffix = (None, "") if observe_only else _walk(job, work, setup, stamp)
     geometry = ImasGeometry.from_setup(setup, transverse_sign=job.transverse_sign, axial_sign=job.axial_sign)
     report = {"schema_version": 1, "scanner": "imas", "requirement": "011-FR-6/FR-12",
               "created_utc": datetime.now(timezone.utc).isoformat(), "job": stamp, "preflight": disk,
@@ -284,10 +326,26 @@ def run_job(job, work, *, progress=print):
                 "observations", "first_failure", "geometry", "files")}, "seconds": stream_seconds,
                 "ldat_bytes": ldat, "bytes_per_second": ldat / stream_seconds if stream_seconds > 0 else None}}
         progress(f"{run.name}: {observations.manifest['observations']} observations")
+    if observe_only:
+        report["stages"]["total_seconds"] = time.perf_counter() - started
+        report["peak_memory"] = peak_memory()
+        (work / "job_report_observe.json").write_text(json.dumps(report, indent=1, default=float) + "\n",
+                                                      encoding="utf-8")
+        return report
     pooled = PooledObservations(sets.values())
     provenance = {"job_sha256": stamp["sha256"], "setup": setup.provenance, "geometry": geometry.describe(),
                   "runs": {name: {"encal_sha256": r["encal"]["sha256"], "observations": r["observations"]["path"]}
                            for name, r in report["runs"].items()}}
+    if walk_lut is not None:
+        plain = [name for name, s in sets.items() if not s.carries_walk]
+        if plain:
+            raise JobError(f"observation sets without walk inputs: {plain}; stream them again in a new work directory")
+        pooled = iw.WalkCorrected(pooled, walk_lut)
+        sets = {name: iw.WalkCorrected(s, walk_lut) for name, s in sets.items()}
+        provenance |= {"walk_lut": str(job.walk_lut), "walk_lut_sha256": walk_lut.sha256}
+        report["walk"] = {"walk_lut": str(job.walk_lut), "walk_lut_sha256": walk_lut.sha256,
+                          "skew_lut_sha256_at_fit": walk_lut.manifest.get("skew_lut_sha256"),
+                          "note": "every solve and check (legacy included) reads walk-corrected dt"}
     solutions, tables = {}, {}
     for name in job.estimators:
         clock = time.perf_counter()
@@ -296,7 +354,7 @@ def run_job(job, work, *, progress=print):
         else:
             solution, _ = solve.pair_estimator(pooled, setup)
         report["stages"][f"solve_{name}_seconds"] = time.perf_counter() - clock
-        outputs.write_imas_lut(work / f"lut_{name}.csv", solution, {**provenance, "estimator": name}, setup)
+        outputs.write_imas_lut(work / f"lut_{name}{suffix}.csv", solution, {**provenance, "estimator": name}, setup)
         solutions[name], tables[name] = solution, solve.applied_table(solution)
         report.setdefault("estimators", {})[name] = solve.summary(solution)
         progress(f"pooled {name}: {solution.diagnostics['status_counts']}")
@@ -322,9 +380,12 @@ def run_job(job, work, *, progress=print):
                 alone, _ = solve.em_estimator(sets[run.name], setup)
                 entry["alone_versus_pooled"] = solve.compare(solve.applied_table(alone), pooled_table)
             report["per_run"][run.name] = entry
+    if walk_lut is not None:
+        report["walk"]["pooled_counts"] = pooled.counts()
     report["stages"]["total_seconds"] = time.perf_counter() - started
     report["peak_memory"] = peak_memory()
-    (work / "job_report.json").write_text(json.dumps(report, indent=1, default=float) + "\n", encoding="utf-8")
+    (work / f"job_report{suffix}.json").write_text(json.dumps(report, indent=1, default=float) + "\n",
+                                                   encoding="utf-8")
     return report
 
 
@@ -333,15 +394,19 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("job", type=Path, help="job file (schema imas-skew-job/1)")
     parser.add_argument("--work", type=Path, required=True, help="work directory (resumed when it is this job's)")
+    parser.add_argument("--observe-only", action="store_true",
+                        help="stop after the energy calibrations and observation sets (spec 012 round-trip step 0)")
     args = parser.parse_args(argv)
     try:
-        report = run_job(load_job(args.job), args.work)
+        report = run_job(load_job(args.job), args.work, observe_only=args.observe_only)
     except JobError as error:
         print(f"job refused: {error}")
         return 2
-    print(json.dumps({k: report[k] for k in ("estimators", "comparisons", "held_out", "stages") if k in report},
+    print(json.dumps({k: report[k] for k in ("estimators", "comparisons", "held_out", "walk", "stages") if k in report},
                      indent=1, default=float))
-    print(f"-> {args.work / 'job_report.json'}")
+    name = "job_report_observe.json" if args.observe_only else \
+        f"job_report{'' if 'walk' not in report else '_walk-' + report['walk']['walk_lut_sha256'][:12]}.json"
+    print(f"-> {args.work / name}")
     return 0
 
 

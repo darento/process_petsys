@@ -1,6 +1,6 @@
 # Plan 012 — IMAS time-walk correction
 
-Status: draft plan for approved [spec 012](spec.md), 2026-10-27. Constitution: [AGENTS.md](../../AGENTS.md). [Ordered tasks](tasks.md).
+Status: implemented; [spec 012](spec.md) shipped 2026-10-27. Constitution: [AGENTS.md](../../AGENTS.md). [Ordered tasks](tasks.md).
 
 ## Inputs seen at planning (2026-10-27)
 

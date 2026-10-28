@@ -99,19 +99,22 @@ def build_feature_cache(directory, inputs, *, config_path, encal_path, root=".",
 
 
 def build_observations(feature_cache, geometry, directory, *, partitions=16, buffer_rows=250_000,
-                       slice_rows=250_000):
+                       slice_rows=250_000, carry_walk=False):
     """``src.timing.cache.build_observations`` for an ``ImasGeometry``."""
     return core_cache.build_observations(feature_cache, ImasObservations(geometry), directory,
-                                         partitions=partitions, buffer_rows=buffer_rows, slice_rows=slice_rows)
+                                         partitions=partitions, buffer_rows=buffer_rows, slice_rows=slice_rows,
+                                         carry_walk=carry_walk)
 
 
 def stream_observations(directory, inputs, geometry, *, config_path, encal_path, root=".", holdout,
                         energy_calibration_prefix, window_ps=sel.COINCIDENCE_WINDOW_PS, kev_window=sel.KEV_WINDOW,
-                        max_records=None, workers=1, partitions=16, buffer_rows=250_000, progress=None):
-    """``src.timing.stream.stream_observations`` with the IMAS selection and an ``ImasGeometry`` (no feature cache)."""
+                        max_records=None, workers=1, partitions=16, buffer_rows=250_000, progress=None,
+                        carry_walk=False):
+    """``src.timing.stream.stream_observations`` with the IMAS selection and an ``ImasGeometry`` (no feature cache);
+    ``carry_walk`` keeps the walk ingredients (spec 012 FR-4)."""
     adapter = ImasFeatures(str(config_path), str(encal_path), str(Path(root)), int(window_ps),
                            tuple(float(v) for v in kev_window))
     return core_stream.stream_observations(directory, inputs, adapter, ImasObservations(geometry), holdout=holdout,
                                            energy_calibration_prefix=energy_calibration_prefix, seed=0,
                                            max_records=max_records, workers=workers, partitions=partitions,
-                                           buffer_rows=buffer_rows, progress=progress)
+                                           buffer_rows=buffer_rows, progress=progress, carry_walk=carry_walk)

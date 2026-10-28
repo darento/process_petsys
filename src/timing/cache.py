@@ -58,6 +58,11 @@ OBSERVATION_DTYPE = np.dtype([
     ("sm_i", "<i2"), ("mm_i", "<i2"), ("sm_j", "<i2"), ("mm_j", "<i2"), ("slab_i", "i1"), ("slab_j", "i1"),
     ("module_tie", "i1"), ("energy_kev_i", "<f4"), ("energy_kev_j", "<f4"),
     ("endpoint_i_mm", "<f8", (3,)), ("endpoint_j_mm", "<f8", (3,)), ("shell_tof_ps", "<f8", (4,))])
+# spec 012 FR-4: raw walk ingredients per canonical side (keV is energy_kev_*), only in sets built with
+# ``carry_walk``; their fingerprint records ``walk_inputs`` and this dtype, so a set without them is never reused.
+WALK_OBSERVATION = ("q_top", "q_time", "doi_ratio")
+OBSERVATION_WALK_DTYPE = np.dtype(OBSERVATION_DTYPE.descr + [(f"{name}_{s}", "<f4") for s in ("i", "j")
+                                                             for name in WALK_OBSERVATION])
 PAIR_COUNT_DTYPE = np.dtype([("channel_i", "<i4"), ("channel_j", "<i4"), ("role", "i1"), ("count", "<u8")])
 ROLES = ("train", "validation", "test")
 _INT_COLUMNS = {"time_channel_1", "time_channel_2", "sm_1", "mm_1", "sm_2", "mm_2", "slab_1", "slab_2",
@@ -245,13 +250,25 @@ class FeatureCache:
                 yield index, done["role"], rows
 
 
-def canonical_observations(rows, result, role):
-    """Accepted rows of one geometry result, lower TIME channel first as ``i``."""
+def observation_dtype(carry_walk=False):
+    return OBSERVATION_WALK_DTYPE if carry_walk else OBSERVATION_DTYPE
+
+
+def walk_fingerprint(fingerprint, carry_walk):
+    """Fingerprint entries of a set carrying walk inputs (none otherwise, so other fingerprints keep their value)."""
+    if carry_walk:
+        fingerprint["walk_inputs"] = [f"{name}_{s}" for s in ("i", "j") for name in WALK_OBSERVATION]
+    return fingerprint
+
+
+def canonical_observations(rows, result, role, carry_walk=False):
+    """Accepted rows of one geometry result, lower TIME channel first as ``i``; ``carry_walk`` keeps the
+    walk ingredients per side (spec 012 FR-4)."""
     accepted = result.codes == 0
     rows = rows[accepted]
     endpoints, tof = result.endpoints_mm[accepted], result.shell_tof_ps[accepted]
     swap = rows["time_channel_1"] > rows["time_channel_2"]
-    out = np.empty(len(rows), OBSERVATION_DTYPE)
+    out = np.empty(len(rows), observation_dtype(carry_walk))
     out["file"], out["record"], out["role"] = rows["file"], rows["record"], ROLES.index(role)
     out["swapped"], out["module_tie"] = swap, rows["module_tie"]
     for i_name, j_name, first, second in (("channel_i", "channel_j", "time_channel_1", "time_channel_2"),
@@ -260,6 +277,9 @@ def canonical_observations(rows, result, role):
                                           ("energy_kev_i", "energy_kev_j", "energy_kev_1", "energy_kev_2")):
         out[i_name] = np.where(swap, rows[second], rows[first])
         out[j_name] = np.where(swap, rows[first], rows[second])
+    for name in WALK_OBSERVATION if carry_walk else ():
+        out[f"{name}_i"] = np.where(swap, rows[f"{name}_2"], rows[f"{name}_1"])
+        out[f"{name}_j"] = np.where(swap, rows[f"{name}_1"], rows[f"{name}_2"])
     out["dt_ps"] = np.where(swap, -rows["dt_ps"], rows["dt_ps"])
     out["endpoint_i_mm"] = np.where(swap[:, None], endpoints[:, 3:], endpoints[:, :3])
     out["endpoint_j_mm"] = np.where(swap[:, None], endpoints[:, :3], endpoints[:, 3:])
@@ -287,11 +307,12 @@ def _merge_counts(keys, counts, new_keys, new_counts):
 
 
 def build_observations(feature_cache, geometry, directory, *, partitions=16, buffer_rows=250_000,
-                       slice_rows=250_000, walk=None):
+                       slice_rows=250_000, walk=None, carry_walk=False):
     """Level 2 for one geometry hypothesis from cached features only (zero LDAT reads).
 
     ``walk`` (walk adapter, spec 009 FR-4) corrects each row's ``t_1 - t_2`` for
     walk before geometry; rows without every walk input are dropped and counted.
+    ``carry_walk`` keeps the raw walk ingredients in the rows (spec 012 FR-4).
 
     At most ``buffer_rows`` observations are held before the largest partition
     buffer is spilled; pair counts are merged per partition (memory grows with
@@ -304,8 +325,9 @@ def build_observations(feature_cache, geometry, directory, *, partitions=16, buf
                    "features_sha256": feature_cache.manifest["fingerprint_sha256"],
                    "hypothesis": geometry.describe(), "partitions": partitions,
                    "sources_sha256": {name: _sha256(path) for name, path in geometry.sources().items()},
-                   "observation_dtype": OBSERVATION_DTYPE.descr,
+                   "observation_dtype": observation_dtype(carry_walk).descr,
                    "walk": None if walk is None else walk.fingerprint()}
+    walk_fingerprint(fingerprint, carry_walk)
     if walk is not None:
         fingerprint["sources_sha256"]["walk"] = _sha256(walk.source)
     fingerprint = _plain(fingerprint)
@@ -348,7 +370,7 @@ def build_observations(feature_cache, geometry, directory, *, partitions=16, buf
             result = geometry.apply(_Columns(rows))
             for label, n in result.counts().items():
                 labels[role][label] += n
-            observations = canonical_observations(rows, result, role)
+            observations = canonical_observations(rows, result, role, carry_walk)
             part = pair_partition(observations["channel_i"], observations["channel_j"], partitions)
             for p in np.unique(part).tolist():
                 selected = observations[part == p]
@@ -405,7 +427,12 @@ class ObservationSet:
         paths = (self.manifest["chunk_paths"][p] if "chunk_paths" in self.manifest     # streamed sets (spec 011 T8)
                  else [f"p{p:03d}_c{c:05d}.npy" for c in range(self.manifest["chunks"][p])])
         chunks = [np.load(self.directory / path) for path in paths]
-        return np.concatenate(chunks) if chunks else np.empty(0, OBSERVATION_DTYPE)
+        return np.concatenate(chunks) if chunks else np.empty(0, observation_dtype(self.carries_walk))
+
+    @property
+    def carries_walk(self):
+        """Rows hold the raw walk ingredients per side (spec 012 FR-4)."""
+        return "walk_inputs" in self.manifest["fingerprint"]
 
     def pair_counts(self):
         return np.load(self.directory / "pair_counts.npy")

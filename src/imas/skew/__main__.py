@@ -56,6 +56,21 @@ def _export(argv):
     return outputs.main(argv)
 
 
+def _walk(argv):
+    from src.imas.skew import walk
+    return walk.main(argv)
+
+
+def _walk_export(argv):
+    from src.imas.skew import walk
+    return walk.export_main(argv)
+
+
+def _walk_plot(argv):
+    from src.imas.skew import walkplots
+    return walkplots.main(argv)
+
+
 COMMANDS = {
     "inventory": (_inventory, "raw hits per TIME channel, SM and minimodule of skew splits"),
     "encal": (_encal, "per-TIME-channel 511 keV calibration from dedicated skew splits"),
@@ -66,6 +81,9 @@ COMMANDS = {
     "run": (_run, "pooled job: energy calibration, streamed observations, both estimators, checks"),
     "plot": (_plot, "diagnostics of an IMAS LUT: per ASIC, ring x azimuth, legacy, train/held-out"),
     "ctr": (_ctr, "point-source CTR: uncorrected, legacy and new LUTs on the same 22Na events (FR-10)"),
+    "walk": (_walk, "time-walk LUT fitted on the bar runs of a job with a frozen skew LUT (spec 012)"),
+    "walk-export": (_walk_export, "walk LUT with its manifest, a per-bin TSV and export.json (spec 012)"),
+    "walk-plot": (_walk_plot, "diagnostics of an IMAS walk LUT, residual profiles and CTR per position (spec 012)"),
     "export": (_export, "PETsys native table and/or legacy skew file from a canonical IMAS LUT"),
 }
 

@@ -1,53 +1,18 @@
 """Pooled IMAS skew job: declared files only, resume, per-run comparison (spec 011 T13)."""
 import json
 
-import numpy as np
 import pytest
 
-from imas_skew_helpers import CONFIG, T0, side, write
+from imas_skew_helpers import CONFIG, job_file, job_splits
 from src.imas.skew import job as ij
 from src.imas.skew.setup import ImasSetup
 
 pytestmark = pytest.mark.fr("011-FR-6", "011-FR-8")
 
-SIDES = [(mm, slab) for mm in (5, 6) for slab in range(4)]     # 8 TIME channels per SM, SMs 50 and 62
-
 
 @pytest.fixture(scope="module")
 def splits(tmp_path_factory):
-    """Two runs x three splits of diametric ring-2 coincidences with a 60 a.u. photopeak."""
-    base = tmp_path_factory.mktemp("job")
-    setup = ImasSetup.from_files(CONFIG)
-    rng = np.random.default_rng(13)
-
-    def energy():
-        return rng.normal(60.0, 4.0) if rng.random() < 0.85 else rng.uniform(5.0, 120.0)
-
-    paths = []
-    for index in range(6):
-        records = []
-        for _ in range(3200):
-            (mm_a, slab_a), (mm_b, slab_b) = SIDES[rng.integers(8)], SIDES[rng.integers(8)]
-            sm_a, sm_b = 50, 62
-            ea, eb = energy(), energy()
-            records.append((side(setup, sm_a, mm_a, time={slab_a: 9.0}, energy=[ea / 5] * 5),
-                            side(setup, sm_b, mm_b, time={slab_b: 9.0}, energy=[eb / 5] * 5,
-                                 stamp=T0 - int(rng.integers(-900, 900)))))
-        paths.append(write(base / f"run{index // 3}_s{index % 3}.ldat", records))
-    return paths
-
-
-def job_file(path, splits, **changes):
-    runs = []
-    for r in range(2):
-        a, b, c = splits[3 * r:3 * r + 3]
-        runs.append({"name": f"r{r + 1}", "splits": [{"path": str(a), "roles": ["encal", "train"]},
-                                                      {"path": str(b), "roles": ["train"]},
-                                                      {"path": str(c), "roles": ["heldout"]}]})
-    data = {"schema": ij.SCHEMA, "config": str(CONFIG), "runs": runs, "estimators": ["em", "pairs"],
-            "per_run_solves": True, **changes}
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return path
+    return job_splits(tmp_path_factory.mktemp("job"))
 
 
 def test_job_file_refusals(tmp_path, splits):

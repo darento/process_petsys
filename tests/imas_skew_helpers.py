@@ -7,7 +7,8 @@ import numpy as np
 import yaml
 
 from src.mapping_generator import ChannelType
-from src.timing.cache import OBSERVATION_DTYPE, PAIR_COUNT_DTYPE, ObservationSet, pair_partition
+from src.timing.cache import (OBSERVATION_DTYPE, OBSERVATION_WALK_DTYPE, PAIR_COUNT_DTYPE, ObservationSet,
+                              pair_partition, walk_fingerprint)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs/imas_2DAQ.yaml"
@@ -139,10 +140,15 @@ def skew_events(ci, cj, tof, delays, rng, *, noise=200.0, background=0.1, window
     return ci[inside], cj[inside], dt[inside], tof[inside]
 
 
-def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None):
+def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None, walk=None, roles=None):
     """Minimal canonical ``ObservationSet`` (train role) from arrays with ``channel_i < channel_j``; ``files``
-    gives each row its input-file index (default 0)."""
-    rows = np.zeros(len(ci), OBSERVATION_DTYPE)
+    gives each row its input-file index (default 0); ``walk`` ({column: array}, spec 012) makes a walk-carrying
+    set; ``roles`` gives each row its role code."""
+    rows = np.zeros(len(ci), OBSERVATION_DTYPE if walk is None else OBSERVATION_WALK_DTYPE)
+    for name, values in (walk or {}).items():
+        rows[name] = values
+    if roles is not None:
+        rows["role"] = roles
     rows["record"] = np.arange(len(ci))
     rows["channel_i"], rows["channel_j"], rows["dt_ps"] = ci, cj, np.round(dt)
     rows["shell_tof_ps"] = tof
@@ -156,6 +162,48 @@ def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None):
     table = np.zeros(keys.shape[1], PAIR_COUNT_DTYPE)
     table["channel_i"], table["channel_j"], table["count"] = keys[0], keys[1], counts
     np.save(directory / "pair_counts.npy", table)
-    (directory / "manifest.json").write_text(json.dumps({"fingerprint": {"partitions": partitions},
+    (directory / "manifest.json").write_text(json.dumps({"fingerprint": walk_fingerprint({"partitions": partitions},
+                                                                                         walk is not None),
                                                          "chunks": [1] * partitions}), encoding="utf-8")
     return ObservationSet(directory)
+
+
+SIDES = [(mm, slab) for mm in (5, 6) for slab in range(4)]     # 8 TIME channels per SM, SMs 50 and 62
+
+
+def job_splits(base):
+    """Two runs x three splits of diametric ring-2 coincidences with a 60 a.u. photopeak (spec 011 job tests)."""
+    from src.imas.skew.setup import ImasSetup
+    setup = ImasSetup.from_files(CONFIG)
+    rng = np.random.default_rng(13)
+
+    def energy():
+        return rng.normal(60.0, 4.0) if rng.random() < 0.85 else rng.uniform(5.0, 120.0)
+
+    paths = []
+    for index in range(6):
+        records = []
+        for _ in range(3200):
+            (mm_a, slab_a), (mm_b, slab_b) = SIDES[rng.integers(8)], SIDES[rng.integers(8)]
+            sm_a, sm_b = 50, 62
+            ea, eb = energy(), energy()
+            records.append((side(setup, sm_a, mm_a, time={slab_a: 9.0}, energy=[ea / 5] * 5),
+                            side(setup, sm_b, mm_b, time={slab_b: 9.0}, energy=[eb / 5] * 5,
+                                 stamp=T0 - int(rng.integers(-900, 900)))))
+        paths.append(write(base / f"run{index // 3}_s{index % 3}.ldat", records))
+    return paths
+
+
+def job_file(path, splits, **changes):
+    """Job file over ``job_splits``: per run encal+train, train, heldout."""
+    from src.imas.skew import job as ij
+    runs = []
+    for r in range(2):
+        a, b, c = splits[3 * r:3 * r + 3]
+        runs.append({"name": f"r{r + 1}", "splits": [{"path": str(a), "roles": ["encal", "train"]},
+                                                      {"path": str(b), "roles": ["train"]},
+                                                      {"path": str(c), "roles": ["heldout"]}]})
+    data = {"schema": ij.SCHEMA, "config": str(CONFIG), "runs": runs, "estimators": ["em", "pairs"],
+            "per_run_solves": True, **changes}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path

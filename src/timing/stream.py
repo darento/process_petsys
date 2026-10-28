@@ -25,14 +25,15 @@ import shutil
 
 import numpy as np
 
-from src.timing.cache import (FEATURE_DTYPE, OBSERVATION_DTYPE, PAIR_COUNT_DTYPE, ROLES, SCHEMA_VERSION,
-                              CacheMismatch, ObservationSet, _Columns, _digest, _merge_counts, _pair_key, _plain,
-                              _sha256, canonical_observations, feature_rows, pair_partition)
+from src.timing.cache import (FEATURE_DTYPE, PAIR_COUNT_DTYPE, ROLES, SCHEMA_VERSION, CacheMismatch, ObservationSet,
+                              _Columns, _digest, _merge_counts, _pair_key, _plain, _sha256, canonical_observations,
+                              feature_rows, observation_dtype, pair_partition, walk_fingerprint)
 from src.timing.kernels import ACCEPTED, Partition
 from src.timing.shell import GEOMETRY_REJECTIONS
 
 
-def _stream_file(directory, item, adapter, geometry, partition, seed, max_records, partitions, buffer_rows):
+def _stream_file(directory, item, adapter, geometry, partition, seed, max_records, partitions, buffer_rows,
+                 carry_walk=False):
     """Worker: one input file into ``files/fNNN``; returns its small ``done`` record."""
     partition = Partition(**partition)
     index, path = item["index"], Path(item["path"])
@@ -72,7 +73,7 @@ def _stream_file(directory, item, adapter, geometry, partition, seed, max_record
         result = geometry.apply(_Columns(rows))
         for label, n in result.counts().items():
             geometry_counts[label] += n
-        observations = canonical_observations(rows, result, partition.role)
+        observations = canonical_observations(rows, result, partition.role, carry_walk)
         part = pair_partition(observations["channel_i"], observations["channel_j"], partitions)
         for p in np.unique(part).tolist():
             selected = observations[part == p]
@@ -98,24 +99,27 @@ def _stream_file(directory, item, adapter, geometry, partition, seed, max_record
     return done
 
 
-def stream_fingerprint(items, adapter, geometry, partitions_by_file, *, seed, max_records, partitions):
+def stream_fingerprint(items, adapter, geometry, partitions_by_file, *, seed, max_records, partitions,
+                       carry_walk=False):
     features = {"schema_version": SCHEMA_VERSION, "kind": adapter.kind,
                 "inputs": [{k: item[k] for k in ("index", "name", "size_bytes", "mtime_ns")} for item in items],
                 **adapter.fingerprint(),
                 "partitions": {str(k): v for k, v in partitions_by_file.items()}, "seed": seed,
                 "max_records": max_records, "feature_dtype": FEATURE_DTYPE.descr}
-    return _plain({"schema_version": SCHEMA_VERSION, "kind": geometry.kind + " (streamed)",
-                   "features": features, "features_sha256": _digest(_plain(features)),
-                   "hypothesis": geometry.describe(), "partitions": partitions,
-                   "sources_sha256": {name: _sha256(path) for name, path in geometry.sources().items()},
-                   "observation_dtype": OBSERVATION_DTYPE.descr, "walk": None})
+    return _plain(walk_fingerprint({
+        "schema_version": SCHEMA_VERSION, "kind": geometry.kind + " (streamed)", "features": features,
+        "features_sha256": _digest(_plain(features)), "hypothesis": geometry.describe(), "partitions": partitions,
+        "sources_sha256": {name: _sha256(path) for name, path in geometry.sources().items()},
+        "observation_dtype": observation_dtype(carry_walk).descr, "walk": None}, carry_walk))
 
 
 def stream_observations(directory, inputs, adapter, geometry, *, holdout, energy_calibration_prefix, seed=0,
-                        max_records=None, workers=1, partitions=16, buffer_rows=250_000, progress=None):
+                        max_records=None, workers=1, partitions=16, buffer_rows=250_000, progress=None,
+                        carry_walk=False):
     """Build (or resume) a streamed observation set; returns the completed ``ObservationSet``.
 
-    ``progress(done_record)`` is called in the parent as each file completes.
+    ``progress(done_record)`` is called in the parent as each file completes. ``carry_walk`` keeps the raw
+    walk ingredients in the rows (spec 012 FR-4).
     """
     directory = Path(directory)
     items = []
@@ -126,7 +130,7 @@ def stream_observations(directory, inputs, adapter, geometry, *, holdout, energy
     roles = {item["index"]: asdict(Partition.from_holdout(holdout, item["index"], energy_calibration_prefix))
              for item in items}
     fingerprint = stream_fingerprint(items, adapter, geometry, roles, seed=seed, max_records=max_records,
-                                     partitions=partitions)
+                                     partitions=partitions, carry_walk=carry_walk)
     marker = directory / "fingerprint.json"
     if marker.exists():
         if json.loads(marker.read_text(encoding="utf-8")) != fingerprint:
@@ -146,7 +150,7 @@ def stream_observations(directory, inputs, adapter, geometry, *, holdout, energy
             done[item["index"]] = json.loads(record.read_text(encoding="utf-8"))
     pending = [item for item in items if item["index"] not in done]
     arguments = [(str(directory), item, adapter, geometry, roles[item["index"]], seed, max_records, partitions,
-                  buffer_rows) for item in pending]
+                  buffer_rows, carry_walk) for item in pending]
     if workers > 1 and len(pending) > 1:
         with ProcessPoolExecutor(max_workers=min(workers, len(pending))) as pool:
             for result in pool.map(_stream_file, *zip(*arguments)):

@@ -34,6 +34,16 @@ bootstrap and systematic uncertainty (source +- sigma per axis, depth
 variants), LOR-distance sensitivity and the TOF dependence. The bootstrap
 draws one weight per event, shared by all tables.
 
+Walk (spec 012 FR-5): ``walks`` = {name: {"skew": <luts name>, "path", "sha256"}} adds a table per entry:
+that skew LUT's delays plus the walk LUT's correction (``walk.correct_features``), the pairing checked
+(``walk.check_tables``). A skew LUT solved with walk is evaluated only inside a walk table. With walk
+tables, an event also needs every walk input on both sides (stage ``walk input missing``), so every table
+keeps the same events. ``walk_acceptance`` = [[reference, candidate], ...] judges each candidate against its
+reference with the FR-10 rule, pooled (the gate) and per declared position (reported). FR-7: per pair, the
+median residual (dt - TOF, |residual| < ``PROFILE_CORE_PS``) per bin of each walk input, both sides pooled
+(side 2 with the residual negated), before (reference) and after (candidate), pooled and per position
+(``profiles``, ``profiles_by_position``; bins of the first walk table's LUT). Diagnostics, not acceptance.
+
 Acceptance (FR-10): a LUT passes when its model-free FWHM is below the
 legacy one by more than their uncertainties added in quadrature
 (conservative: the tables share events). The Gaussian FWHM is reported for
@@ -57,6 +67,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.imas.skew import outputs, select as sel
+from src.imas.skew import walk as iw
 from src.imas.skew.geometry import ImasGeometry
 from src.imas.skew.setup import ImasSetup
 from src.timing import ctr as core
@@ -72,10 +83,12 @@ LEGACY = "legacy"
 _REQUIRED = {"schema", "job_work", "encal", "luts", "legacy", "output", "acquisitions"}
 _OPTIONAL = {"lor_distance_mm": 15.0, "sensitivity_lor_mm": [10.0, 25.0], "window_ps": 3000.0, "bin_ps": 10.0,
              "bootstrap": 200, "seed": 0, "depth_variants_mm": [4.0, 10.0], "max_records": None,
-             "localization_events": 500_000}
+             "localization_events": 500_000, "walks": {}, "walk_acceptance": []}
 _ACQUISITION_KEYS = {"name", "ldat", "source_mm", "source_sigma_mm"}
 STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied delay", "LOR outside distance",
           "near source")
+WALK_STAGE = "walk input missing"       # spec 012: only with walk tables, after "no applied delay"
+PROFILE_CORE_PS, PROFILE_BIN_PS = 600.0, 2.0   # spec 012 FR-7 profiles: the bar fit's core window
 FWHM_KEYS = ("model_free_fwhm_ps", "fwhm_ps")
 MODEL_FREE = core.local_crossings      # owner 2026-10-26: local quadratic crossings (spec 011 FR-10)
 ACCEPTANCE_KEY = "model_free_fwhm_ps"   # owner 2026-10-26: the peak is not Gaussian; Gaussian FWHM reported only
@@ -129,6 +142,21 @@ def load_ctr(path):
         raise CtrError("bootstrap: 0 (none) or at least 2 replicates")
     if not float(options["lor_distance_mm"]) > 0 or not all(float(d) > 0 for d in options["sensitivity_lor_mm"]):
         raise CtrError("LOR distances must be positive")
+    walks = {}
+    if not isinstance(options["walks"], dict):
+        raise CtrError("walks: {name: {skew, path, sha256}}")
+    for name, entry in options["walks"].items():
+        if name in (UNCORRECTED, LEGACY) or name in raw["luts"]:
+            raise CtrError(f"walk table name {name!r} is reserved or a LUT name")
+        if not isinstance(entry, dict) or entry.get("skew") not in raw["luts"]:
+            raise CtrError(f"walks.{name}: 'skew' must name one of the luts")
+        path, sha = _frozen({k: v for k, v in entry.items() if k != "skew"}, f"walks.{name}", base)
+        walks[name] = SimpleNamespace(skew=entry["skew"], path=path, sha256=sha)
+    names = {UNCORRECTED, LEGACY} | set(raw["luts"]) | set(walks)
+    pairs = options["walk_acceptance"]
+    if not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) != 2 or not set(pair) <= names
+                                          or pair[0] == pair[1] for pair in pairs):
+        raise CtrError("walk_acceptance: [[reference, candidate], ...] of table names")
     return SimpleNamespace(
         path=path, sha256=_sha256(path), job_work=local(raw["job_work"]), encal=local(raw["encal"]),
         luts={name: _frozen(entry, f"luts.{name}", base) for name, entry in raw["luts"].items()},
@@ -137,8 +165,8 @@ def load_ctr(path):
         sensitivity_lor_mm=tuple(float(d) for d in options["sensitivity_lor_mm"]), window_ps=window, bin_ps=width,
         bootstrap=bootstrap, seed=int(options["seed"]),
         depth_variants_mm=tuple(float(d) for d in options["depth_variants_mm"]), max_records=options["max_records"],
-        localization_events=int(options["localization_events"]),
-        edges_ps=np.linspace(-window, window, int(round(bins)) + 1))
+        localization_events=int(options["localization_events"]), walks=walks,
+        walk_acceptance=[tuple(pair) for pair in pairs], edges_ps=np.linspace(-window, window, int(round(bins)) + 1))
 
 
 def _vector(value, label, *, nonnegative=False):
@@ -163,7 +191,7 @@ def frozen_inputs(spec):
     inputs = {"job_work": str(spec.job_work), "job_sha256": job["sha256"], "config": str(config),
               "config_sha256": setup.provenance["config_sha256"], "map_sha256": setup.provenance["map_sha256"],
               "signs": declared["signs"], "luts": {}}
-    tables, encal_job = {}, set()
+    tables, canonical, encal_job = {}, {}, set()
     for name, (path, sha) in spec.luts.items():
         if _sha256(path) != sha:
             raise CtrError(f"LUT {name}: SHA-256 of {path} is not the frozen {sha}")
@@ -177,9 +205,18 @@ def frozen_inputs(spec):
         if table.input_correction != {"state": "uncorrected"}:
             raise CtrError(f"LUT {name}: solved from corrected data; offline application needs an uncorrected LUT")
         encal_job |= {run["encal_sha256"] for run in provenance.get("runs", {}).values()}
-        tables[name] = DelayTable.from_lut(table)
+        tables[name], canonical[name] = DelayTable.from_lut(table), table
         inputs["luts"][name] = {"path": str(path), "sha256": sha, "table_sha256": table.manifest["table"]["sha256"],
-                                "estimator": provenance.get("estimator"), "applied": len(tables[name].delays)}
+                                "estimator": provenance.get("estimator"), "applied": len(tables[name].delays),
+                                "solved_with_walk_lut_sha256": provenance.get("walk_lut_sha256")}
+    walk_tables = _walk_tables(spec, setup, tables, canonical, inputs)
+    for name in list(tables):
+        walk_sha = inputs["luts"][name]["solved_with_walk_lut_sha256"]
+        if walk_sha:
+            if not any(w.skew == name for w in spec.walks.values()):
+                raise CtrError(f"LUT {name}: solved with walk LUT {walk_sha[:12]}...; evaluate it in a walks entry "
+                               "with its walk LUT")
+            del tables[name]           # evaluated only inside its walk table(s)
     legacy_path, legacy_sha = spec.legacy
     if _sha256(legacy_path) != legacy_sha:
         raise CtrError(f"legacy: SHA-256 of {legacy_path} is not the frozen {legacy_sha}")
@@ -208,7 +245,39 @@ def frozen_inputs(spec):
                 or (acquisition.ldat.name, acquisition.ldat.stat().st_size) in names):
             raise CtrError(f"{acquisition.name}: {acquisition.ldat} is an input of the LUT job")
     zero = DelayTable({int(c): 0.0 for c in setup.time_channels})
-    return inputs, setup, {UNCORRECTED: zero, LEGACY: legacy, **tables}
+    tables = {UNCORRECTED: zero, LEGACY: legacy, **tables, **walk_tables}
+    named = {name for pair in spec.walk_acceptance for name in pair}
+    if named - set(tables):
+        raise CtrError(f"walk_acceptance names tables that are not evaluated: {sorted(named - set(tables))} (a LUT "
+                       "solved with walk is evaluated only inside its walk table)")
+    return inputs, setup, tables
+
+
+class WalkTable:
+    """A skew ``DelayTable`` with a walk LUT: corrected through ``walk.correct_features`` (spec 012 FR-5)."""
+
+    def __init__(self, delays, walk):
+        self.skew, self.walk = delays, walk
+        self.delays = delays.delays
+
+
+def _walk_tables(spec, setup, tables, canonical, inputs):
+    """``spec.walks`` as ``WalkTable``s, each walk LUT checked (SHA-256, map, pairing with its skew LUT)."""
+    out = {}
+    inputs["walks"] = {}
+    for name, entry in spec.walks.items():
+        if _sha256(entry.path) != entry.sha256:
+            raise CtrError(f"walk {name}: SHA-256 of {entry.path} is not the frozen {entry.sha256}")
+        try:
+            walk = iw.WalkLut.read(entry.path)
+            iw.check_tables(canonical[entry.skew], spec.luts[entry.skew][1], walk, setup)
+        except (iw.core.WalkError, OSError, KeyError) as error:
+            raise CtrError(f"walk {name}: {error}") from None
+        out[name] = WalkTable(tables[entry.skew], walk)
+        inputs["walks"][name] = {"skew": entry.skew, "path": str(entry.path), "sha256": entry.sha256,
+                                 "walk_lut_sha256": walk.sha256, "fitted_with_skew_lut_sha256":
+                                 walk.manifest.get("skew_lut_sha256"), "fit_kind": walk.manifest.get("fit_kind")}
+    return out
 
 
 class Accumulator:
@@ -223,9 +292,21 @@ class Accumulator:
         self.hist = np.zeros((t, len(self.variants), n, bins))
         self.boot = np.zeros((t, spec.bootstrap, n, bins))
         self.tof = np.zeros((t, n, len(core.TOF_EDGES_PS) - 1, bins))
-        self.stages = [dict.fromkeys(STAGES, 0) | {"in window": dict.fromkeys(self.names, 0)} for _ in range(n)]
+        self.walked = any(isinstance(table, WalkTable) for table in self.tables)
+        stages = STAGES[:4] + (WALK_STAGE,) + STAGES[4:] if self.walked else STAGES
+        self.stages = [dict.fromkeys(stages, 0) | {"in window": dict.fromkeys(self.names, 0)} for _ in range(n)]
         self.pre_geometry = [{} for _ in range(n)]
         self.channels_seen = set()
+        self.profile = None
+        if self.walked:                         # FR-7: residual histograms per walk-input bin, per position
+            walk = next(table.walk for table in self.tables if isinstance(table, WalkTable))
+            self.profile_edges = {name: np.asarray(walk.edges[block][k], np.float64)
+                                  for block, names in walk.model.blocks.items() for k, name in enumerate(names)}
+            self.groups = positions(spec)
+            self.group_of = {k: g for g, index in enumerate(self.groups.values()) for k in index}
+            self.profile_bins = int(round(2 * PROFILE_CORE_PS / PROFILE_BIN_PS))
+            self.profile = {name: np.zeros((t, len(self.groups), len(e) - 1, self.profile_bins))
+                            for name, e in self.profile_edges.items()}
 
     def add(self, index, features, endpoints):
         """``endpoints``: (codes, endpoints) per depth (nominal first)."""
@@ -241,12 +322,23 @@ class Accumulator:
         ch1, ch2 = features.column("time_channel_1"), features.column("time_channel_2")
         dt = features.column("dt_ps").astype(np.float64)
         applied = np.ones(len(dt), bool)
+        walk_missing = np.zeros(len(dt), bool)
         corrected = []
-        for table in self.tables:
+        for name, table in zip(self.names, self.tables):
+            if isinstance(table, WalkTable):
+                values, status, counts = iw.correct_features(features, table.skew, table.walk, policy="drop")
+                clamped = stages.setdefault("walk clamped", {}).setdefault(name, dict.fromkeys(iw.INPUTS, 0))
+                for key in iw.INPUTS:
+                    clamped[key] += counts[f"clamped {key}"]
+                applied &= status != 1
+                walk_missing |= status == 2
+                corrected.append(values)
+                continue
             b1, f1 = table.lookup(ch1)
             b2, f2 = table.lookup(ch2)
             applied &= f1 & f2
             corrected.append(dt - b1 + b2)       # t_1 - t_2 exact in integers, then - b_1 + b_2
+        delayed, applied = applied, applied & ~walk_missing
         bins = len(self.edges) - 1
         sigma = np.array(spec.acquisitions[index].source_sigma_mm)
         for v, variant in enumerate(self.variants):
@@ -267,9 +359,13 @@ class Accumulator:
             if v:
                 continue
             stages["invalid endpoint"] += int(np.count_nonzero(~valid))
-            stages["no applied delay"] += int(np.count_nonzero(valid & ~applied))
+            stages["no applied delay"] += int(np.count_nonzero(valid & ~delayed))
+            if self.walked:
+                stages[WALK_STAGE] += int(np.count_nonzero(valid & delayed & walk_missing))
             stages["LOR outside distance"] += int(np.count_nonzero(valid & applied & ~near))
             stages["near source"] += int(np.count_nonzero(near))
+            if self.profile is not None:
+                self._profile(index, features, near, tof, corrected)
             self.channels_seen.update(np.unique(np.concatenate((ch1[near], ch2[near]))).tolist())
             k = np.searchsorted(core.TOF_EDGES_PS, tof, side="right") - 1
             in_tof = (k >= 0) & (k < len(core.TOF_EDGES_PS) - 1)
@@ -284,6 +380,21 @@ class Accumulator:
                     weights = rng.poisson(1.0, len(tof))
                     for t, (b, inside) in enumerate(binned):
                         self.boot[t, r, index] += np.bincount(b[inside], weights=weights[inside], minlength=bins)
+
+    def _profile(self, index, features, near, tof, corrected):
+        g, bins = self.group_of[index], self.profile_bins
+        sides = [(iw.side_inputs(features.column, s)[0], sign) for s, sign in (("1", 1.0), ("2", -1.0))]
+        for t, values in enumerate(corrected):
+            residual = values[near] - tof
+            for inputs, sign in sides:
+                r = np.floor((sign * residual + PROFILE_CORE_PS) / PROFILE_BIN_PS).astype(np.int64)
+                core_window = (r >= 0) & (r < bins)
+                for name, edges in self.profile_edges.items():
+                    x = inputs[name][near]
+                    ok = core_window & np.isfinite(x)
+                    k = np.clip(np.searchsorted(edges, x[ok], side="right") - 1, 0, len(edges) - 2)
+                    self.profile[name][t, g] += np.bincount(k * bins + r[ok], minlength=(len(edges) - 1) * bins
+                                                            ).reshape(len(edges) - 1, bins)
 
     def view(self, t):
         """One table's histograms in the layout ``src.timing.ctr.summarize`` reads."""
@@ -350,15 +461,16 @@ def acceptance(results, paired=None):
     return out
 
 
-def paired_differences(accumulator):
-    """Legacy-minus-LUT FWHM on the same events: bootstrap SD (shared event weights) and systematic shifts."""
+def paired_differences(accumulator, reference=LEGACY, names=None):
+    """Reference-minus-table FWHM on the same events (default: legacy minus each LUT): bootstrap SD (shared event
+    weights) and systematic shifts."""
     pooled = accumulator.hist.sum(axis=2)                       # (table, variant, bins)
     boot = accumulator.boot.sum(axis=2)                          # (table, replicate, bins)
-    legacy = accumulator.names.index(LEGACY)
+    legacy = accumulator.names.index(reference)
     edges = accumulator.edges
     out = {}
     for t, name in enumerate(accumulator.names):
-        if name in (UNCORRECTED, LEGACY):
+        if name in (UNCORRECTED, reference) or (names is not None and name not in names):
             continue
         fits = {k: core.fit_histogram(pooled[k, 0], edges, crossings=MODEL_FREE) for k in (t, legacy)}
         if any(f["status"] != "fitted" for f in fits.values()):
@@ -389,6 +501,59 @@ def paired_differences(accumulator):
                           else bool(nominal > combined["total"])}
         out[name] = entry
     return out
+
+
+def positions(spec):
+    """Acquisition indices per declared position (the acquisition name when none is declared), in file order."""
+    groups = {}
+    for k, acquisition in enumerate(spec.acquisitions):
+        groups.setdefault(acquisition.declared or acquisition.name, []).append(k)
+    return groups
+
+
+def by_position(accumulator, t, groups):
+    """One table's results with each position's acquisitions summed (``core.summarize`` per position)."""
+    def merge(array):
+        return np.stack([array[..., index, :].sum(axis=-2) for index in groups.values()], axis=-2)
+    spec = SimpleNamespace(**{**vars(accumulator.spec), "acquisitions": tuple(SimpleNamespace(name=name)
+                                                                             for name in groups)})
+    view = SimpleNamespace(spec=spec, edges=accumulator.edges, variants=accumulator.variants,
+                           hist=merge(accumulator.hist[t]), boot=merge(accumulator.boot[t]),
+                           tof=np.stack([accumulator.tof[t][index].sum(axis=0) for index in groups.values()]))
+    results = core.summarize(view, crossings=MODEL_FREE)
+    results.pop("pooled")
+    return results
+
+
+def _judge(new, old):
+    """FR-10 rule on ``ACCEPTANCE_KEY`` between two results entries (fit + uncertainty)."""
+    value, reference = new["fit"].get(ACCEPTANCE_KEY), old["fit"].get(ACCEPTANCE_KEY)
+    u_new = ((new.get("uncertainty") or {}).get(ACCEPTANCE_KEY) or {}).get("total")
+    u_old = ((old.get("uncertainty") or {}).get(ACCEPTANCE_KEY) or {}).get("total")
+    if None in (value, reference, u_new, u_old):
+        return {"status": "unavailable"}
+    combined = math.hypot(u_new, u_old)
+    return {"table_ps": value, "reference_ps": reference, "improvement_ps": reference - value,
+            "combined_uncertainty_ps": combined, "accepted": bool(reference - value > combined)}
+
+
+def walk_acceptance(spec, accumulator, results):
+    """Spec 012 FR-5: each [reference, candidate] pair, pooled (the gate, with the paired same-event uncertainty)
+    and per declared position (reported)."""
+    groups = positions(spec)
+    cache, out = {}, []
+    for reference, candidate in spec.walk_acceptance:
+        for name in (reference, candidate):
+            if name not in cache:
+                cache[name] = by_position(accumulator, accumulator.names.index(name), groups)
+        paired = paired_differences(accumulator, reference, [candidate]).get(candidate, {}).get(ACCEPTANCE_KEY)
+        pooled = _judge(results[candidate]["pooled"], results[reference]["pooled"])
+        out.append({"reference": reference, "candidate": candidate, "judged_on": ACCEPTANCE_KEY,
+                    "pooled": pooled | {"paired": paired}, "accepted": bool(pooled.get("accepted")),
+                    "per_position": {name: _judge(cache[candidate][name], cache[reference][name]) for name in groups},
+                    "positions": {name: [spec.acquisitions[k].name for k in index] for name, index in groups.items()}})
+    return out, {name: {p: {"fit": r["fit"], "uncertainty": r.get("uncertainty")} for p, r in by_pos.items()}
+                 for name, by_pos in cache.items()}
 
 
 def run_ctr(spec, *, log=print):
@@ -435,7 +600,8 @@ def run_ctr(spec, *, log=print):
         "cuts": {"pre_geometry": selection.describe(), "geometry": hypotheses[0].name,
                  "lor_distance_mm": spec.lor_distance_mm, "lor_between_endpoints": True,
                  "window_ps": spec.window_ps, "bin_ps": spec.bin_ps, "max_records": spec.max_records,
-                 "same_events": "both TIME channels with an applied delay in every compared table"},
+                 "same_events": "both TIME channels with an applied delay in every compared table"
+                 + (", and every walk input on both sides" if accumulator.walked else "")},
         "model": "Gaussian + flat background, binned Poisson likelihood (reported only); model-free FWHM/FWTM "
                  "above the fitted background from local quadratic fits (peak within +-"
                  f"{core.PEAK_WINDOW:g} x rough FWHM, crossings within +-{core.EDGE_WINDOW:g} x rough FWHM); "
@@ -449,6 +615,7 @@ def run_ctr(spec, *, log=print):
         "coverage": {name: {"applied_channels": len(table.delays)} for name, table in tables.items()}
         | {"channels_near_source": len(accumulator.channels_seen)},
         "results": results, "acceptance": acceptance(results, paired_differences(accumulator)),
+        **_walk_report(spec, accumulator, results),
         "interpretation": "system CTR at these cuts (includes residual offset errors and endpoint blur); not an "
                           "intrinsic detector CTR; the acceptance adds uncertainties in quadrature although the "
                           "tables share events (conservative)",
@@ -459,6 +626,49 @@ def run_ctr(spec, *, log=print):
     _write_histograms(spec, accumulator)
     _plot(spec, accumulator, results)
     return report
+
+
+def _median(hist):
+    """Median residual (ps) of histograms over the profile core window (last axis); None when empty."""
+    out = []
+    for counts in hist:
+        total = counts.sum()
+        if not total:
+            out.append(None)
+            continue
+        cumulative = np.cumsum(counts)
+        k = int(np.searchsorted(cumulative, total / 2))
+        below = cumulative[k] - counts[k]
+        out.append(float(-PROFILE_CORE_PS + PROFILE_BIN_PS * (k + (total / 2 - below) / counts[k])))
+    return out
+
+
+def walk_profiles(spec, accumulator):
+    """FR-7: per ``walk_acceptance`` pair, residual-vs-input profiles before (reference) and after (candidate),
+    pooled and per position, in ``walkplots.plot_profiles``'s layout."""
+    pooled, by_position = {}, {}
+    for reference, candidate in spec.walk_acceptance:
+        label = f"22Na {reference} -> {candidate}"
+        a, b = accumulator.names.index(reference), accumulator.names.index(candidate)
+
+        def row(name, select):
+            before, after = select(accumulator.profile[name][a]), select(accumulator.profile[name][b])
+            return {"edges": accumulator.profile_edges[name].tolist(),
+                    "events": after.sum(axis=-1).astype(int).tolist(),
+                    "before_median_ps": _median(before), "after_median_ps": _median(after)}
+        pooled[label] = {name: row(name, lambda h: h.sum(axis=0)) for name in accumulator.profile}
+        by_position[label] = {position: {name: row(name, lambda h, g=g: h[g]) for name in accumulator.profile}
+                              for g, position in enumerate(accumulator.groups)}
+    return {"profiles": pooled, "profiles_by_position": by_position,
+            "profiles_note": f"median of dt - TOF within |residual| < {PROFILE_CORE_PS:g} ps per input bin, both "
+                             "sides pooled (side 2 negated); before = reference, after = candidate; diagnostics"}
+
+
+def _walk_report(spec, accumulator, results):
+    if not spec.walk_acceptance:
+        return {}
+    judged, by_pos = walk_acceptance(spec, accumulator, results)
+    return {"walk_acceptance": judged, "results_by_position": by_pos, **walk_profiles(spec, accumulator)}
 
 
 def _write_histograms(spec, accumulator):

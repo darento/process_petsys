@@ -1,6 +1,6 @@
 # Tasks — IMAS time-walk correction
 
-Status: in progress, 2026-10-27 (T1 done). [Approved spec](spec.md), [plan](plan.md).
+Status: shipped, 2026-10-27 (T1-T11 done; reopened after T10 for T11, the FR-7 22Na profiles). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `012-FR-n` and names its check before coding.
@@ -32,15 +32,17 @@ Status: in progress, 2026-10-27 (T1 done). [Approved spec](spec.md), [plan](plan
     - Before the change: `tests/test_cornell_walk.py tests/test_manager_listmode.py tests/test_manager_timing_luts.py tests/test_cornell_timing_job.py -m "not real_data"`: 64 passed. After: 64 passed, no test edited.
     - `tests/test_timing_walk.py tests/test_golden_provenance.py -n 0 --slow-limit 5`: 46 passed.
     - `py_compile src/timing/walk.py src/cornell/skew/walk.py` OK.
-- [ ] **T2 — IMAS walk inputs and model** (FR-1, FR-2).
+- [x] **T2 — IMAS walk inputs and model** (FR-1, FR-2).
   - `src/imas/skew/walk.py`: `IMAS_MODEL` (`imas-walk-lut/1`; inputs charge, share, doi_ratio, kev; 20 × 10, 20, 20 bins) and `walk_inputs(q_top, q_time, doi_ratio, kev)`.
   - **Done when** `tests/test_imas_walk.py`:
     - each missing input gives its status (first missing wins) and NaN, never 0;
     - values from `select_batch` on a synthetic IMAS LDAT match hand-computed charge, share, ratio and keV.
+  - Deviations: `side_inputs(column, suffix)` reads one side from features (`1`/`2`) or walk-carrying observations (`i`/`j`), keV from `energy_kev_*`; `count_status` for reports. A zero timing-hit charge with positive summed TIME charge is a value (share 0), as in spec 009.
+  - Verified 2026-10-27 (Windows, this PC). Selection: the new module only (no existing caller). `tests/test_imas_walk.py -n 0 --slow-limit 5`: 3 passed.
 
 ## Observations and job
 
-- [ ] **T3 — Observations carry walk inputs** (FR-4).
+- [x] **T3 — Observations carry walk inputs** (FR-4).
   - `OBSERVATION_WALK_DTYPE`, `canonical_observations(..., walk=True)`, `stream_observations(..., carry_walk=True)`; IMAS `stream_observations` and the job always carry walk.
   - **Done when:**
     - `tests/test_imas_walk.py`:
@@ -48,7 +50,15 @@ Status: in progress, 2026-10-27 (T1 done). [Approved spec](spec.md), [plan](plan
       - a stream directory created without walk is refused when reopened with walk, and the other way round;
       - IMAS stream rows hold the features' walk ingredients.
     - Cornell: `tests/test_timing_core.py tests/test_cornell_timing_cache.py tests/test_imas_skew_cache.py tests/test_imas_skew_job.py -m "not real_data"` pass unchanged. This includes the Cornell cache fingerprint golden; the IMAS stream fingerprint tests are updated only where the fingerprint now records the walk columns.
-- [ ] **T4 — Walk-corrected view and job `walk_lut`** (FR-4).
+  - Deviations:
+    - `carry_walk` is an option (default off) of `canonical_observations`, `build_observations` and `stream_observations`, so fingerprints of sets without walk are unchanged and no existing test needed an edit. A walk-carrying fingerprint adds `walk_inputs` and records `OBSERVATION_WALK_DTYPE`; `ObservationSet.carries_walk` reads it.
+    - The IMAS job streams with `carry_walk=True`; its disk preflight scales the T8 ratio by the dtype sizes (151/127 bytes).
+  - Verified 2026-10-27 (Windows, this PC).
+    - Selection: consumers of the changed cache/stream code — core, Cornell cache/walk/job, IMAS cache/stream/job/solve/CTR/pairstats.
+    - Before: `tests/test_timing_core.py tests/test_cornell_timing_cache.py tests/test_imas_skew_cache.py tests/test_imas_skew_job.py tests/test_imas_skew_solve.py tests/test_timing_stream.py tests/test_imas_skew_ctr.py -m "not real_data"`: 19 passed. After, the same plus `test_imas_skew_pairstats.py test_cornell_walk.py test_cornell_timing_job.py`: 55 passed, no test edited.
+    - `tests/test_imas_walk.py -n 0 --slow-limit 5`: 6 passed (slowest call 1.4 s).
+    - `py_compile` of the 4 edited modules OK.
+- [x] **T4 — Walk-corrected view and job `walk_lut`** (FR-4).
   - `WalkCorrected`; job key `walk_lut` (outside the fingerprint); outputs `lut_<est>_walk-<sha12>.csv` and `job_report_walk-<sha12>.json`, never overwritten; provenance `walk_lut_sha256`; `run --observe-only`.
   - **Done when** `tests/test_imas_walk.py`:
     - a synthetic job with injected delays and injected walk gives EM delays whose error RMS with the true walk LUT is below half the error RMS without it;
@@ -57,42 +67,179 @@ Status: in progress, 2026-10-27 (T1 done). [Approved spec](spec.md), [plan](plan
     - a second run with the same walk LUT is refused (output exists);
     - `--observe-only` writes the observation sets and no LUT;
     - a set without walk inputs is refused.
+  - Deviations:
+    - The delay-recovery check runs at EM level, on a synthetic set (`walk_set`): 4 SMs x 8 TIME channels, bar-like branches, 5 % background. A per-channel charge gain makes the walk bias the delays; 2 % of rows miss an input; 10 % are held out.
+      - The "true" walk LUT is fitted on the exact injected `W_i - W_j`.
+      - Gauge-free delay error RMS: 21.1 ps without walk, 5.3 ps with it (median σ 4.9 ps).
+    - The job test (`slow`, 6 s) checks the mechanics on spec 011's job fixture:
+      - `--observe-only`;
+      - same fingerprint with and without `walk_lut`;
+      - suffixed outputs and provenance;
+      - rerun refused;
+      - a walk LUT of another map refused.
+    - In a walk solve every check reads walk-corrected `dt`, the legacy held-out comparison and the per-run checks included (recorded in the report).
+    - The walk LUT manifest must carry `map_sha256` (T5 writes it).
+    - `tests/imas_skew_helpers.py:observation_set` gained optional `walk` and `roles` arguments; its default is unchanged.
+  - Verified 2026-10-27 (Windows, this PC).
+    - Selection: the job and its consumers.
+    - `tests/test_imas_walk.py -m "not real_data" -n 0 --slow-limit 5`: 9 passed.
+    - `tests/test_imas_skew_job.py tests/test_imas_skew_solve.py tests/test_imas_skew_ctr.py tests/test_timing_stream.py tests/test_imas_skew_cache.py -m "not real_data"`: 12 passed, no test edited.
+    - `py_compile` of job/walk OK.
 
 ## Fit, correction, CTR
 
-- [ ] **T5 — Bar walk fit command** (FR-3).
+- [x] **T5 — Bar walk fit command** (FR-3).
   - `python -m src.imas.skew walk WALK.json` (`imas-walk-fit/1`): frozen inputs, stride to `max_events`, `fit_two_branch`, held-out before/after, LUT + manifest + report.
   - **Done when** `tests/test_imas_walk.py`:
     - the synthetic job's observation set with injected walk: the fitted LUT's per-event correction matches the injected one (RMS below 20 % of the injected RMS);
     - the held-out core RMS drops;
     - held-out rows never enter the fit (a change in held-out `dt` leaves the LUT bytes unchanged);
     - refused: a skew LUT from another job, an output that exists, unknown keys.
-- [ ] **T6 — Correction function and export** (FR-6).
+  - Deviations:
+    - The command is `python -m src.imas.skew walk FIT.json` (`imas-walk-fit/1`). The functions are `load_fit`, `bar_events`, `fit_bar`, `run_fit`; the report is `<output>_report.json`, as for Cornell.
+    - Frozen inputs:
+      - the work directory's job fingerprint;
+      - the skew LUT file SHA-256, map, `job_sha256`, and uncorrected state;
+      - each run's encal SHA-256 equal to the LUT's;
+      - `walk_lut` given exactly when the skew LUT was solved with walk, and equal to it.
+    - The recovery check compares the fitted LUT with a LUT fitted on the exact injected walk. On held-out events, the per-event correction differs by less than 20 % of the injected RMS. The held-out core RMS drops by more than 10 ps.
+    - Held-out isolation: shifting every held-out `dt` by 3 ns leaves `table()` identical.
+    - The command test uses spec 011's synthetic job (constant charges, so the table is trivial) and checks the mechanics only.
+  - Verified 2026-10-27 (Windows, this PC).
+    - Selection: the new command and the spec 012 modules.
+    - `tests/test_imas_walk.py tests/test_imas_walk_plots.py tests/test_timing_walk.py -m "not real_data" -n 0 --slow-limit 5`: 25 passed (the command test is `slow`: 6.8 s fixture).
+    - `tests/test_imas_skew_job.py`: 2 passed.
+    - `py_compile` OK.
+- [x] **T6 — Correction function and export** (FR-6).
   - `correct_dt`, `correct_features`, pairing and map checks, `export --walk-lut`.
   - **Done when** `tests/test_imas_walk.py`:
     - the corrected `dt` equals skew + walk computed by hand;
     - `keep` / `drop` counts for no applied delay and missing input;
     - a skew LUT solved with walk is refused without its walk LUT, and a walk LUT fitted with another skew is refused;
     - the export copies verify by SHA-256 and the TSV reads back to the table's offsets.
-- [ ] **T7 — CTR with walk** (FR-5).
+  - Deviations:
+    - `correct_dt` returns a status per event (`corrected`, `no applied delay`, `walk input missing`) besides the counts, so the CTR can count stages.
+    - `check_tables(skew_lut, skew_sha256, walk_lut, setup)` = map check + `core.check_pairing`.
+    - The export is its own command, `python -m src.imas.skew walk-export WALK.json --out DIR`, not `export --walk-lut`: `export` takes a skew LUT as its positional argument. Files: `imas_walk_lut.json`, `imas_walk_lut.manifest.json`, `imas_walk_curves.tsv`, `export.json`.
+  - Verified 2026-10-27 (Windows, this PC). Selection: the new functions and command. `tests/test_imas_walk.py -n 0 --slow-limit 5 -k "correct or pairing or export"`: 5 passed. `py_compile` OK.
+- [x] **T7 — CTR with walk** (FR-5).
   - CTR file `walks`; same events with walk inputs; acceptance pair; round-trip summary.
   - **Done when** `tests/test_imas_skew_ctr.py`:
     - a synthetic 22Na point source with injected walk: skew + walk beats skew-only by more than the combined uncertainty;
     - the CTR's corrected `dt` equals `correct_features`;
     - a pairing mismatch is refused;
     - existing spec 011 CTR tests pass unchanged.
-- [ ] **T8 — Diagnostics** (FR-7).
+  - Deviations:
+    - CTR file keys:
+      - `walks` = {name: {skew, path, sha256}};
+      - `walk_acceptance` = [[reference, candidate], ...], judged pooled (the gate, with the paired same-event uncertainty) and per declared position (`results_by_position`).
+    - A skew LUT solved with walk is evaluated only inside a walk table; listed alone, it is refused.
+    - The walk tests are in `tests/test_imas_walk.py` (cited `012-FR-5`), with a CTR fixture built like spec 011's.
+    - Same-events check: all tables see the same event count. The skew + walk Gaussian FWHM equals the injected noise's (within 15 %), below skew-only.
+  - Verified 2026-10-27 (Windows, this PC). Selection: CTR and spec 012 modules.
+    - `tests/test_imas_walk.py -k ctr -n 0 --slow-limit 5`: 2 passed (the CTR run is `slow`, 21 s).
+    - `tests/test_imas_skew_ctr.py`: 2 passed, unchanged.
+    - Together with `test_imas_walk*.py test_timing_walk.py test_imas_skew_job.py -m "not real_data"`: 35 passed.
+- [x] **T8 — Diagnostics** (FR-7).
   - `python -m src.imas.skew walk-plot`.
   - **Done when** `tests/test_imas_walk.py`: the PNGs are written headless from a synthetic LUT and report.
+  - Deviations:
+    - Done by a delegated agent out of task order (independent files), checked by the lead.
+    - The code is in `src/imas/skew/walkplots.py`; the tests are in their own file, `tests/test_imas_walk_plots.py`.
+    - `residual_profiles(values, before_ps, after_ps, edges, core_ps)` gives JSON-safe per-bin medians for the T5/T7 reports.
+    - `plot_ctr` groups acquisitions `<position>_<nn>` by position and returns positions, pooled, skipped tables and warnings.
+    - `walk-plot` refuses existing outputs (exit 1) and bad inputs (exit 2).
+  - Verified 2026-10-27 (Windows, this PC). Selection: the new module and its CLI entry (no other caller).
+    - `tests/test_imas_walk_plots.py -n 0 --slow-limit 5`: 8 passed (3.4 s), re-run by the lead.
+    - `py_compile src/imas/skew/walkplots.py src/imas/skew/__main__.py` OK.
+    - `plot_ctr` on the spec 011 four-position report (`IMAS_work/ctr_ship_4pos_auto/ctr.json`) gave a legible PNG.
+- Review of T1-T8 (independent agent, 2026-10-27). No sign or bookkeeping errors. Fixed:
+  - Native and legacy exports refuse a skew LUT solved with walk (`outputs._without_walk`; FR-4, FR-6).
+  - A spec 011 work directory (observations without walk inputs) gives a `JobError`, not a cache traceback.
+  - The job refuses a walk LUT fitted on another job's events (`job_sha256` in its manifest).
+  - CTR: `walk_acceptance` naming a table that is not evaluated (a LUT solved with walk outside its walk table) is refused in `frozen_inputs`, before any data is read; per walk table clamp counts are reported under `stages["walk clamped"]`.
+  - `walk` command log tolerates an empty held-out core window.
+  - Not changed: the CTR walk-missing path is unreachable with the production selection (the inputs are always present); covered at unit level by `correct_dt`.
+  - Verified 2026-10-27 (Windows, this PC). Selection: the changed modules and their consumers (job, CTR, IMAS solve, LUT outputs).
+    - `tests/test_imas_walk.py tests/test_imas_skew_ctr.py tests/test_imas_skew_job.py tests/test_imas_skew_solve.py tests/test_timing_lut_outputs.py -m "not real_data" -n 0 --slow-limit 5`: 29 passed, 1 deselected (65 s).
 
 ## Real data and validation
 
-- [ ] **T9 — Round trip on the bar runs and 22Na** (FR-3, FR-4, FR-5; Windows, this PC, HDD attached).
+- [x] **T9 — Round trip on the bar runs and 22Na** (FR-3, FR-4, FR-5; Windows, this PC, HDD attached).
   - Steps 0–4 of the plan; record timings, peak memory, counts and the change at each step.
   - **Done when:**
     - step 0 per-run accepted counts equal `job_ship`'s;
     - steps 1–3 complete;
     - FR-5 acceptance passes pooled over the four positions, reported per position.
-- [ ] **T10 — Validation** (all).
+  - Inputs under `IMAS_work/` (not tracked); timings and peak working set by a local PowerShell wrapper.
+  - Step 0, `run job_ship.json --work job_walk --observe-only`: 3172 s.
+    - Per run train/test observations equal `job_ship`'s: run7 12,953,160/419,217, run8 12,228,903/403,833, run9 11,575,076/385,780, run11 10,375,008/326,613.
+    - Re-fitted energy calibrations byte-identical to `job_ship`'s (run7 `5180ede5`, run8 `3c455c8c`, run9 `d09ab5f6`, run11 `1b81beb6`).
+  - Step 1, `walk walk/walk1_fit.json` (skew `job_ship/lut_em.csv` `8eadd8c7`): walk1 `dd68b558604c`; 146 s, peak 1.64 GiB.
+    - Train 15,709,887 events (stride 3 of 47,132,147 train rows; 852 without applied delay, 0 walk input missing); held-out 1,535,348.
+    - Bar residual core RMS (|r| < 600 ps): train 245.4 → 226.9 ps, held-out 245.3 → 227.0 ps; robust sigma held-out 363.2 → 318.8 ps.
+    - Branch rounds: near fraction 0.5091, 0.5092, 0.5092; flips –, 45,700, 0.
+      - The round fits are identical: flipping events lie near the branch midpoint (~1.07 ns from both), outside the core window.
+    - Held-out median residual flat within ~10 ps against every input after correction.
+      - Before correction it varied by ~140 ps (charge), ~200 ps (share), ~55 ps (DOI ratio) and ~38 ps (keV).
+      - Charge walk is concentrated below ~12 a.u.; walk2d offset spans ~−110 to +280 ps.
+    - `walk-plot` → `walk/plots1b/`.
+      - Fixed in `walkplots.py` from this run: log charge axis (quantile edges crowd at low charge), and a linear events axis when the bins hold equal counts.
+      - `tests/test_imas_walk_plots.py -n 0 --slow-limit 5`: 8 passed; `py_compile` OK.
+  - Step 2, `run job_ship_walk1.json --work job_walk` (em + pairs, walk1): 6809 s, peak working set 1.68 GiB (report's parent peak 9.16 GB, as `job_ship`'s 9.19 GB).
+    - Same job SHA-256 as `job_ship` (`walk_lut` outside the fingerprint); observations and calibrations reused.
+    - Walk counts: train 47,132,147 rows, 0 walk input missing, clamped charge 11 / share 1 / DOI 7 / keV 5; test 1,535,443 rows, none clamped.
+    - em2 `lut_em_walk-dd68b558604c.csv` (`daa3b251`): calibrated 14,531, low statistics 18, ambiguous 1 (`job_ship` em: 14,516 / 33 / 1).
+    - Held-out common-event EM sigma: em 271.8 → 232.4 ps, pairs 271.9 → 232.5 ps, legacy 281.8 → 245.0 ps (both read walk-corrected dt).
+      - Per run held-out EM sigma 234.1, 233.6, 232.3, 229.4 ps (was 272.9, 272.7, 272.0, 269.3).
+    - em2 − em delays (median-centred, 14,547 channels applied in both): rms 17.5 ps, p95 33.7, p99 46.6, max 245.5 ps; median delay sigma 4.36 → 3.71 ps.
+    - Excluded: channel 657421 moves −2.6 ns. It was already anomalous before walk: legacy `9999`, `job_ship` em −3068 ps against ~−550 ps for its neighbours, pairs low statistics with residual RMS 20.
+  - Step 3, `walk walk/walk3_fit.json` (skew em2, `walk_lut` walk1): walk3 `5e8ac0101269`; 137 s, peak 1.63 GiB.
+    - Held-out core RMS 245.9 → 226.0 ps (walk1: 245.3 → 227.0); branch flips –, 48,330, 0.
+    - walk3 − walk1 offsets, event-weighted rms: walk2d 11.0 ps (max 37.6; edges moved slightly, as the train events differ by em2's applied channels), DOI 0.5 ps, keV 1.7 ps.
+  - Step 4, `ctr ctr_walk_4pos.json`: 20 acquisitions, 4 positions; 466 s, peak 0.71 GiB.
+    - Inputs: job work `job_walk`, encal run7 (`5180ede5`), the 22Na acquisitions of `ctr_ship_4pos_auto.json`.
+    - Tables: em (`8eadd8c7`); em+walk1; em2+walk1; em2+walk3. em2 is evaluated only inside its walk tables.
+    - Same events: both TIME channels with an applied delay in every table and every walk input present (0 missing, 0 clamped).
+    - Pooled model-free FWHM: uncorrected 2398.7, legacy 532.3, em 468.1, em+walk1 407.5, em2+walk1 403.0, em2+walk3 402.8 ps.
+      - Gaussian FWHM: em 555.0 → em2+walk3 454.8 ps.
+    - em reproduces the spec 011 report (468.09 ps there, 468.11 ps here; +221 events, since em2 replaces pairs in the common channel set).
+    - FR-5 acceptance:
+      - em → em2+walk3: −65.3 ps, combined uncertainty 2.0 ps, paired significant; accepted.
+      - em → em+walk1: −60.6 ps (1.9 ps); accepted.
+    - Per position, em → em2+walk3:
+      - 1cm_3d8cFOV 463.5 → 401.5 ps (−61.9 ± 5.0);
+      - 1cm_cFOV 463.2 → 400.0 ps (−63.3 ± 2.4);
+      - 20cm_3d8cFOV 471.1 → 405.2 ps (−65.9 ± 4.7);
+      - 20cm_cFOV 474.9 → 404.5 ps (−70.4 ± 3.5).
+      - All accepted.
+    - `walk-plot --ctr` → `ctr_walk_4pos/plots/`.
+- [x] **T10 — Validation** (all).
   - Full non-real suite; `-m real_data` (results touched); spec Status `shipped`.
   - **Done when** both suites pass and the spec, plan and tasks record the delivered pair.
+  - Deliverable (owner, 2026-10-27): em2 skew + walk3 (spec [Spec changes](spec.md#spec-changes)).
+    - `walk-export walk/walk3.json --out walk/export_walk3`: `imas_walk_lut.json` (`5e8ac010`), manifest, `imas_walk_curves.tsv`, `export.json` (skew `daa3b251`, solved with walk `dd68b558`; no native table).
+    - em2 native/legacy exports are refused by design; the IMAS native/legacy skew stays spec 011's EM export.
+  - Suite failure found here and fixed: `tests/test_infra.py` refuses a test file importing another (`test_imas_walk.py` imported `splits`/`job_file` from `test_imas_skew_job.py`).
+    - Both now live in `tests/imas_skew_helpers.py` (`job_splits`, `job_file`), unchanged; each test file keeps its own module fixture.
+  - Verified 2026-10-27 (Windows, this PC).
+    - `-m "not real_data"`: 1464 passed, 24 skipped (Linux-only, as before), 4 xfailed in 264 s.
+    - `-m real_data` with `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `PETSYS_CAL_DIR=<repo>/encal_files`: 33 passed, 0 skipped in 1,434 s (Cornell run7 pipeline bytes and caches unchanged after the observation dtype change).
+    - `tests/data/` changes: only T1's `012_t1_cornell_walk_{fixed,fit}.json` goldens with provenance (012-FR-2).
+    - `--fr` selection counts (not real): 012-FR-1 2, FR-2 46, FR-3 4, FR-4 6, FR-5 2, FR-6 4, FR-7 8; real 0 (real-data evidence: T9).
+- [x] **T11 — 22Na residual-vs-input profiles** (FR-7; found after T10: FR-7 asks for profiles on the bar held-out data *and* 22Na, and only the bar ones existed).
+  - `src/imas/skew/ctr.py`: with walk tables, per table and declared position, histograms of the residual (dt − TOF, |r| < 600 ps, 2 ps bins) per bin of each walk input (the first walk table's edges), both sides (side 2 negated).
+  - Report keys `profiles` (pooled) and `profiles_by_position`, per `walk_acceptance` pair: before = reference, after = candidate, in `walkplots.plot_profiles`'s layout, so `walk-plot --profiles` draws them beside the bar ones.
+  - **Done when** the synthetic CTR test shows the injected charge walk before and a flat profile after, and the real four-position CTR report gives the profiles.
+  - Tests: `test_ctr_walk_table_beats_skew_only` (now also 012-FR-7) checks the injected charge walk in the before profile (low − high charge within 30 ps of the truth, ~165 ps) and a flat after profile (< 25 ps); `test_profile_median_from_histogram` checks the histogram median.
+  - Real: `ctr ctr_walk_4pos_fr7.json` (as T9 step 4, new output): 475 s, peak 0.72 GiB; every FWHM identical to T9's.
+    - 22Na em → em2+walk3, range of the per-bin median before → after: charge 163.9 → 9.1, share 216.8 → 7.6, DOI ratio 63.5 → 6.2, keV 76.8 → 17.0 ps (2,856,264 photons in the core window).
+    - The remaining keV tilt (+6 to −9 ps) is on the 22Na only; its energy calibration is bar run 7's.
+    - `walk-plot --profiles walk/walk3_report.json ctr_walk_4pos_fr7/profiles_22na.json` → `ctr_walk_4pos_fr7/plots/walk_profiles.png` (bar and 22Na).
+  - Other diagnostics added at the owner's request (not FR evidence):
+    - `plot` of em2 against legacy (`job_walk/lut_em_walk-dd68b558604c_*.png`; correlation 0.9886, robust SD 91.0 ps, as em's 0.9886/91.7);
+    - a zoomed `walk-plot --ctr --tables legacy em em+walk1 em2+walk3`;
+    - the report `docs/imas/IMAS_timing/index.html` (untracked) and the updated `docs/imas/timing_lut_animation.html`.
+  - Verified 2026-10-27 (Windows, this PC). Selection: CTR, walk and plot modules, infra.
+    - `tests/test_imas_walk.py tests/test_imas_walk_plots.py tests/test_imas_skew_ctr.py tests/test_infra.py -m "not real_data" -n 0 --slow-limit 5`: 156 passed.
+    - `--fr 012-FR-7`: 10 (was 8). `py_compile src/imas/skew/ctr.py` OK.

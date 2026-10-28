@@ -1,6 +1,6 @@
 # Spec 012 — IMAS time-walk correction
 
-Status: `in progress` (approved by owner 2026-10-27; T1 started 2026-10-27)
+Status: `shipped` (2026-10-27; approved 2026-10-27; deliverable: em2 skew + walk3, see [Spec changes](#spec-changes) and tasks T9-T11)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 011](../011-imas-skew-calibration/spec.md) (IMAS skew LUT from the rotating bar, global EM, four-position 22Na CTR) and follows shipped [spec 009](../009-cornell-timing-walk/spec.md) (Cornell walk LUT; its phantom fit, FR-7, is the model for a fit without a known source). Evidence (untracked): `docs/imas/IMAS_CTR/index.html` (spec 011 CTR report: 468 ps with the EM skew LUT, flat over four positions).
 
@@ -74,6 +74,15 @@ Reduce the IMAS system CTR beyond the per-channel skew LUT by correcting each si
 2. **Acceptance:** model-free FWHM only, as spec 011 FR-10 (Gaussian reported). Spec 009 required both.
 3. **DOI input:** the raw DOI ratio with global quantile bins (no per-slab normalisation; IMAS has no DOI-limits file).
 4. **Table model:** spec 009's (20 × 10 charge × share, 20 DOI, 20 keV bins).
+
+## Spec changes
+
+- **2026-10-27, deliverable (owner):**
+  - The round-trip pair is the deliverable:
+    - em2 skew `job_walk/lut_em_walk-dd68b558604c.csv` (SHA-256 `daa3b251…`, solved with walk1 `dd68b558…`);
+    - walk3 `walk/walk3.json` (`5e8ac010…`, fitted with em2).
+  - Pooled 22Na model-free FWHM 402.8 ps, against 468.1 ps for spec 011's EM alone.
+  - em2's native and legacy exports are refused (FR-4): walk is applied in software (`correct_dt`), and the IMAS native/legacy skew table stays spec 011's EM LUT.
 
 ## Out of scope
 

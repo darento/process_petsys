@@ -67,9 +67,18 @@ def delay_table(path, setup):
     return lut.DelayTable.from_lut(read_imas_lut(path, setup))
 
 
+def _without_walk(table, path):
+    """Spec 012 FR-4: a skew LUT solved with walk-corrected data is valid only with its walk LUT; the native
+    and legacy forms carry no walk, so they are refused."""
+    walk = (table.manifest.get("provenance") or {}).get("walk_lut_sha256")
+    if walk:
+        raise lut.LutError(f"{Path(path).name} was solved with walk LUT {walk[:12]}...; the native and legacy forms "
+                           "carry no walk (apply it with src.imas.skew.walk.correct_dt)")
+
+
 def write_native(lut_path, table_path, setup):
     """PETsys native table of the applied delays (one table, both DAQ boards)."""
-    read_imas_lut(lut_path, setup)
+    _without_walk(read_imas_lut(lut_path, setup), lut_path)
     manifest = lut.write_native_table(lut_path, table_path)
     manifest.update({"scanner": SCANNER, "map_sha256": setup.provenance["map_sha256"]})
     Path(table_path).with_suffix(".json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
@@ -84,6 +93,7 @@ def write_legacy(lut_path, out_path, setup):
         if path.exists():
             raise lut.LutError(f"legacy output exists: {path}; choose a new name")
     table = read_imas_lut(lut_path, setup)
+    _without_walk(table, lut_path)
     rows = table.rows[table.rows["apply"]]
     rows = rows[np.argsort(rows["time_channel"], kind="stable")]
     out_path.write_text("".join(f"{int(r['time_channel'])} {repr(-float(r['delay_ps']))}\n" for r in rows),
