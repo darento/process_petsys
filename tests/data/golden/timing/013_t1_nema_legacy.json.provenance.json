@@ -1,0 +1,18 @@
+{
+ "requirements": [
+  "013-FR-4"
+ ],
+ "generated_utc_date": "2026-10-28",
+ "repo_commit": "b3ca109720aa249ed53ea7529ea6dbfe274d369c",
+ "sources": {
+  "scripts_imas/imas_NEMA_CTR_multiprocess.py": "bde71d1f1b431a626ae5da3a235fdc4ad66e43eee8504bbf9d8f425e425a354a",
+  "tests/necr_helpers.py": "14f786de07282911e3592fdc0017405138455da0e7f33cb9f92d341ee82ff577",
+  "scripts/capture_013_t1.py": "33de60b966f749e5e2a875f26031c584b496f87927465c53ec61fa05e56e591e"
+ },
+ "golden": "timing/013_t1_nema_legacy.json",
+ "sha256": "b514411b1cb7ceb0f5e6ee0babf14fff86acd3d1e7dea656e5dd6e1b300a980d",
+ "bytes": 101567,
+ "fixture": "tests/necr_helpers.py: line_lors (seed 13, n 500, legacy P1/P2) and dt_r_events (seed 17, n 200000, flat background), cut as ctr_correction_per_event",
+ "method": "scripts_imas/imas_NEMA_CTR_multiprocess.py functions compute_distance_r, closest_point_on_line_source, compute_timing_error, background_correction and find_widths; np.histogram as plot_CTR (raw, and re-histogrammed background-subtracted counts).",
+ "truth": "Output of the legacy NEMA script, not physical truth."
+}

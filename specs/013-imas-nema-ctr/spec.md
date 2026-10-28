@@ -87,7 +87,7 @@ This is a measurement with an explicit method, not a new calibration. No table i
   - **Acceptance:** EM2 + walk3 against EM on frame 7, with the same rule. Pooled over frames and per frame, reported.
   - **Legacy check:** the legacy (`skew_IMAS.txt`) values are reported beside the Jan 2025 `.lm` results. They are not expected to be equal: the table, geometry and position estimator differ.
 - **FR-7 — Energy calibration.**
-  - **Source:** spec 011 FR-4's calibration from NECR data (the highest-activity transferred frame), recorded; the bar run 7 calibration is the fallback.
+  - **Source:** the bar run 7 calibration (owner, 2026-10-28; see Spec changes). Spec 011 FR-4's calibration from NECR data was the first choice; its coverage was too low.
   - **Rate check:** the 511 keV photopeak position per frame is reported, against a gain shift with rate.
 - **FR-8 — Diagnostics.**
   - **Per frame and table:** the timing histogram with and without background subtraction, and the `Δt` against r 2D histogram (as the legacy plots).
@@ -110,12 +110,13 @@ This is a measurement with an explicit method, not a new calibration. No table i
 ## Clarify answers (owner, 2026-10-28)
 
 1. **Line position:** both lines are evaluated: the line fitted from the data and the legacy image P1/P2 (FR-3). The fitted line is in the tables' frame, so it gives the NEMA value; the image line is a sensitivity.
-2. **Energy calibration:** from the NECR data (FR-7).
+2. **Energy calibration:** from the NECR data (FR-7); changed to the run-7 bar calibration at T8 (Spec changes).
 3. **NEMA value:** frame 7 (5.31 kBq/ml), background-subtracted FWHM, as measured (no interpolation).
 4. **Gates:** FR-6's transfer check (EM against legacy) and acceptance (EM2 + walk3 against EM), both on frame 7 with the spec 011 FR-10 rule.
 
 ## Spec changes
 
+- **2026-10-28, FR-7 calibration (owner, T8):** the NECR CTR uses the run-7 bar calibration (`job_walk/skew_20251119_run7/encal/encal.tsv`, the calibration walk3's keV axis was fitted with). The per-slab NECR calibration (`encal_necr_f7`: frame 7, 9,842 of 15,360 slabs fitted; `encal_necr_all`: every split present, 12,281) leaves too many slabs without a 511 keV peak, and the selection rejects their events. The photopeak per frame (FR-7 rate check) is still reported with the run-7 calibration.
 - **2026-10-28, plan:** FR-4 states the legacy script's kept band (`|r| ≤ 22.0644 mm`) for the histogram without background subtraction; the summary said 20 mm.
 
 ## Out of scope (possible follow-up: method improvements)

@@ -51,6 +51,11 @@ def _ctr(argv):
     return ctr.main(argv)
 
 
+def _necr(argv):
+    from src.imas.skew import necr
+    return necr.main(argv)
+
+
 def _export(argv):
     from src.imas.skew import outputs
     return outputs.main(argv)
@@ -81,6 +86,7 @@ COMMANDS = {
     "run": (_run, "pooled job: energy calibration, streamed observations, both estimators, checks"),
     "plot": (_plot, "diagnostics of an IMAS LUT: per ASIC, ring x azimuth, legacy, train/held-out"),
     "ctr": (_ctr, "point-source CTR: uncorrected, legacy and new LUTs on the same 22Na events (FR-10)"),
+    "necr": (_necr, "NEMA NU 2-2018 CTR on the NECR phantom: a line source, all tables on the same events (spec 013)"),
     "walk": (_walk, "time-walk LUT fitted on the bar runs of a job with a frozen skew LUT (spec 012)"),
     "walk-export": (_walk_export, "walk LUT with its manifest, a per-bin TSV and export.json (spec 012)"),
     "walk-plot": (_walk_plot, "diagnostics of an IMAS walk LUT, residual profiles and CTR per position (spec 012)"),
