@@ -36,7 +36,7 @@ def test_file_loads_with_relative_paths(tables):
     path = h.necr_file(tables, {"frame7": ["frame7_00000024.ldat"]}, "relative.json")
     spec = necr.load_necr(path)
     assert spec.frames[0].ldat == (tables["base"] / "frame7_00000024.ldat",)
-    assert spec.frames[0].activity_kbq_ml == 5.0 and spec.headline_line == "fitted"
+    assert spec.frames[0].activity_kbq_ml == 8.0 and spec.headline_line == "fitted"
     assert spec.lines["fitted"].method == necr.FITTED and spec.lines["image"].p1 == tuple(h.LEGACY_P1)
     assert (spec.gates.frame, spec.gates.transfer, spec.gates.acceptance) == ("frame7", ("legacy", "em"),
                                                                               ("em", "em_walk"))
@@ -177,7 +177,10 @@ def test_accumulate_counts_and_widths(necr_run):
                                                  + stages["walk input missing"] + stages["same events"])
         assert stages["no applied delay"] > 0          # the legacy table has no delay for SM 50
         for line in ("fitted", "image"):                # the same events for every table and line
-            assert stages["kept (NEMA)"][line]["em"] <= stages["same events"]
+            outside = stages["outside central 65 cm"][line]  # NEMA section 8.3.5; signal reaches |z| = 350 mm
+            assert outside > 0
+            assert stages["kept (NEMA)"][line]["em"] <= (stages["same events"] - outside
+                                                         - stages["parallel to line"][line])
     pooled = report["results"]["pooled"]["fitted"]
     bg = {name: entry["nema"]["background_subtracted"] for name, entry in pooled.items()}
     assert bg["legacy"]["fwhm_ps"] > bg["em"]["fwhm_ps"] > bg["em_walk"]["fwhm_ps"]
@@ -210,7 +213,7 @@ def test_report_fields_and_gates(necr_run):
             "paired_against_legacy", "gates", "legacy_results", "energy", "seconds", "peak_memory"} <= set(report)
     assert set(report["energy"]["frames"]) == {"frame1", "frame2"}
     assert report["energy"]["calibration"]["origin"] == "job"
-    assert report["frames"][0]["splits"][0]["sha256"] and report["frames"][0]["activity_kbq_ml"] == 5.0
+    assert report["frames"][0]["splits"][0]["sha256"] and report["frames"][0]["activity_kbq_ml"] == 8.0
     gates = report["gates"]
     assert gates["frame"] == "frame1" and gates["line"] == "fitted" and gates["transfer_passed"]
     for gate, (reference, candidate) in (("transfer", ("legacy", "em")), ("acceptance", ("em", "em_walk"))):
@@ -221,13 +224,23 @@ def test_report_fields_and_gates(necr_run):
         assert verdict["table_ps"] == entry[candidate]["model_free"]["model_free_fwhm_ps"]
         assert verdict["improvement_ps"] > verdict["combined_uncertainty_ps"] > 0
         assert verdict["paired"]["sd_ps"] > 0 and set(gates[gate]["per_scope"]) == {"frame1", "frame2", "pooled"}
-    values = gates["headline_value"]["values"]
+    value = gates["nema_value"]                    # section 8.5b: frames 1 (8 kBq/ml) and 2 (4 kBq/ml)
+    assert (value["status"], value["above"], value["below"]) == ("interpolated", "frame1", "frame2")
+    w = value["weight_above"]
+    assert w == pytest.approx((5.3 - 4.0) / (8.0 - 4.0))
+    values = value["values"]
     assert set(values) == {"uncorrected", "legacy", "em", "em_walk"}
     for name in ("legacy", "em", "em_walk"):
-        entry = report["results"]["frame1"]["fitted"][name]
-        assert values[name]["fwhm_ps"] == entry["model_free"]["model_free_fwhm_ps"] and values[name]["sd_ps"] > 0
-        assert values[name]["nema_background_subtracted"]["fwhm_ps"] == entry["nema"]["background_subtracted"][
-            "fwhm_ps"]
+        a, b = (report["results"][f]["fitted"][name] for f in ("frame1", "frame2"))
+        width = "background_subtracted fwhm_ps"
+        assert values[name]["fwhm_ps"] == pytest.approx(w * a["nema"]["background_subtracted"]["fwhm_ps"] + (
+            1 - w) * b["nema"]["background_subtracted"]["fwhm_ps"])
+        assert values[name]["sd_ps"] == pytest.approx(np.hypot(w * a["uncertainty"][width]["sd_ps"],
+                                                               (1 - w) * b["uncertainty"][width]["sd_ps"]))
+        assert values[name]["model_free"]["fwhm_ps"] == pytest.approx(
+            w * a["model_free"]["model_free_fwhm_ps"] + (1 - w) * b["model_free"]["model_free_fwhm_ps"])
+    conformance = report["nema_conformance"]
+    assert conformance["standard"].startswith("NEMA NU 2-2018") and len(conformance["deviations"]) >= 3
     paired = report["paired_against_legacy"]["pooled"]["fitted"]["em_walk"]["background_subtracted fwhm_ps"]
     assert paired["improvement_ps"] > 0 and paired["replicates"] == spec.bootstrap
     with np.load(spec.output / "necr_histograms.npz") as saved:
@@ -246,11 +259,31 @@ def test_transfer_failure_withholds_frozen_tables(tmp_path):
     report = necr.run_necr(spec, log=lambda *a: None)
     gates = report["gates"]
     assert gates["transfer_passed"] is False and not gates["transfer"]["accepted"]
-    values = gates["headline_value"]["values"]
+    values = gates["nema_value"]["values"]
     assert values["em"]["status"].startswith("withheld") and values["em_walk"]["status"].startswith("withheld")
     assert values["legacy"]["fwhm_ps"] > 0
     with np.load(spec.output / "necr_histograms.npz") as saved:
         assert {"em", "em_walk"} <= set(saved["tables"]) and saved["band"].sum() > 0
+
+
+@pytest.mark.fr("013-FR-6")
+@pytest.mark.parametrize("frames, expected", [
+    ([(7, 5.311), (8, 4.669)], ("interpolated", "frame7", "frame8", (5.3 - 4.669) / (5.311 - 4.669))),
+    ([(7, 5.3), (20, 0.996)], ("interpolated", "frame7", "frame7", 1.0)),
+    ([(7, 5.311), (20, 0.996)], ("missing frame 8", None, None, None)),
+    ([(7, 5.311)], ("missing frame 8", None, None, None)),
+    ([(8, 4.669), (20, 0.996)], ("missing frame 7", None, None, None)),
+])
+def test_nema_interpolation_needs_consecutive_frames(frames, expected):
+    """NEMA section 8.5b: the value at 5.3 kBq/ml from the frames immediately above and below it."""
+    from types import SimpleNamespace
+    where = necr.nema_interpolation([SimpleNamespace(name=f"frame{n}", frame=n, activity_kbq_ml=a)
+                                     for n, a in frames])
+    status, above, below, weight = expected
+    assert status in where["status"] and where.get("above") == above and where.get("below") == below
+    if weight is not None:
+        assert where["weight_above"] == pytest.approx(weight)
+    assert where["nearest"] == f"frame{min(frames, key=lambda f: abs(f[1] - 5.3))[0]}"
 
 
 # --- T6: energy check (FR-7) -------------------------------------------------------------------------------------
@@ -305,7 +338,8 @@ def test_command_writes_the_report(necr_run, capsys):
     path = h.necr_file(case, case["frames"], "command.json", bootstrap=4)
     assert main(["necr", str(path)]) == 0
     printed = capsys.readouterr().out
-    assert "Headline value (frame1, line fitted, model-free FWHM" in printed and "acceptance: em_walk vs em" in printed
+    assert "NEMA value (5.3 kBq/ml, frame1/frame2 interpolated, line fitted, background-subtracted FWHM" in printed
+    assert "acceptance (model-free): em_walk vs em" in printed
     assert json.loads((case["base"] / "out" / "command" / "necr_ctr.json").read_text(encoding="utf-8"))["plots"]
     assert main(["necr", str(path)]) == 2            # the output exists: refused, never overwritten
 

@@ -258,6 +258,52 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
       - Every frame and pooled accepted: pooled 600 / 539 / 493 ps.
       - Frame 7 on the image line: 741 / 696 / 667 ps.
     - **Frame-7 splits:** more are no longer needed for the gate. T9 still waits on frames 1, 5, 10 and 15.
+  - **Revised the same day (owner):** the reported value is the NEMA width; the gates stay on model-free.
+    - The NEMA value and the CTR-against-activity curves use the NEMA background-subtracted FWHM.
+    - `gates.nema_value` carries `model_free` beside it.
+    - The CLI labels the gates "(model-free)".
+    - The plot shows NEMA solid and model-free dotted.
+    - Verified: `tests/test_imas_necr.py` with `-n 0 --slow-limit 5`, 27 passed. Earlier in the same edit, the 49-test selection passed with 1 CLI-label failure, which is now fixed.
+    - The real run's report has not been regenerated (same numbers); it will be rerun after the NEMA conformance decisions.
+  - **NEMA NU 2-2018 §8 check** (owner's copy in `docs/imas/NEMA NU-2 2018c.pdf`, pp. 30–34):
+    - **Matches:**
+      - r, I and t as in §8.4.1;
+      - background per t bin from the strip edges at ±20 mm, interpolated linearly (§8.4.2);
+      - parabola through the peak and its 2 neighbours, then linear interpolation at half maximum (§8.4.3);
+      - bins under 1/4 of the expected FWHM;
+      - FWHM(j) against a_ave(j) (§8.5a).
+    - **Gaps:**
+      - (a) The AFOV is over 65 cm (line endpoints at ±356 mm), so §8.3.5 allows only the central 65 cm. Neither the legacy script nor our port cuts on z.
+      - (b) §8.4.2a takes C_L and C_R interpolated at exactly r = ±20 mm. The port, like the legacy script, uses the nearest bins, whose centres sit 0.087 mm outside.
+      - (c) §8.5b reports the value at 5.3 kBq/ml by linear interpolation between the frames just above and below. That needs frame 8 (4.67 kBq/ml); frame 7 is 5.31.
+      - (d) §8.3.5.1 locates the line from image centroids of the first frame below peak NECR. The headline uses the LOR-convergence fit instead.
+      - (e) §8.4 analyses whole frames. We use some splits per frame.
+      - The raw width, FWTM and the bootstrap are not NEMA quantities. c = 0.3 against 0.299792 mm/ps is negligible.
+    - **Owner decisions (2026-10-29):**
+      - (a) cut |z_I| ≤ 325 mm;
+      - (b) interpolate the strip-edge counts, keeping the legacy nearest-bin variant for parity only;
+      - (c) use the §8.5b interpolation; the owner transfers frame 8;
+      - (d) keep the fitted line and record the deviation.
+      - Spec FR-3, FR-4, FR-6, Clarify 3 and Spec changes are updated.
+    - **Code:**
+      - `src/timing/nema.py`: `axial_ok`, `edge_counts` and `edges=NEMA|LEGACY` on `background_subtracted` and `summarize`.
+      - `necr.py`:
+        - z cut per line, with the stage `outside central 65 cm`;
+        - `nema_interpolation` and `nema_value`: when frame 8 is missing, the value is unavailable and the nearest frame's values are given;
+        - `nema_conformance` report block;
+        - the CLI prints the interpolation or the missing frame.
+    - **Tests:**
+      - The parity test uses `edges=LEGACY`; the sloped background is removed exactly with the NEMA edges.
+      - New: `test_edge_counts_interpolated_at_20_mm`, `test_central_axial_range`, `test_nema_interpolation_needs_consecutive_frames` (5 cases).
+      - The run tests check the 65 cm stage, the interpolated value with weight 0.325 (synthetic activities are now 8 and 4 kBq/ml) and the conformance block.
+      - `tests/test_timing_nema.py`, `test_imas_necr.py`, `test_timing_line.py` and `test_golden_provenance.py` with `-n 0 --slow-limit 5`, real data included: 99 passed and 1 CLI-label failure. After the fix, the CLI test passed on its own. The golden file is unchanged.
+    - **Rerun** of `necr_present.json`: 3 min 34 s, 1.43 GB; the previous output is now `IMAS_work/necr_present_v2_nocut`.
+      - The NEMA value is unavailable: frame 8 is missing.
+      - Frame 7, NEMA legacy / EM / EM2+walk3: 734 ± 27 / 733 ± 28 / 668 ± 24 ps (was 740 / 720 / 649).
+      - Frame 7, model-free: 736 / 695 / 672 ps.
+      - Both gates accepted on every frame and pooled.
+      - 7,935 of 650 k frame-7 same events fall outside the central 65 cm.
+    - **T9 waits on** frames 8, 1, 5, 10 and 15.
     - **Results:** `docs/imas/IMAS_NECR_CTR/` (untracked).
 
 ## Validation

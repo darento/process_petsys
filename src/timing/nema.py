@@ -1,7 +1,8 @@
 """NEMA NU 2-2018 timing resolution with a line source (spec 013 FR-4), scanner-neutral.
 
-A port of the legacy IMAS script ``scripts_imas/imas_NEMA_CTR_multiprocess.py``
-(untracked), checked against its output by a golden file:
+NEMA NU 2-2018 section 8, ported from the legacy IMAS script
+``scripts_imas/imas_NEMA_CTR_multiprocess.py`` (untracked) and checked against
+its output by a golden file:
 
 - per LOR, the signed shortest distance ``r`` to the line, the point ``I`` on
   the LOR closest to it, and the timing error ``Δt = dt - (|L1 - I| - |L2 - I|) / c``;
@@ -10,7 +11,11 @@ A port of the legacy IMAS script ``scripts_imas/imas_NEMA_CTR_multiprocess.py``
 - raw histogram: every kept event, 100 bins over +-2 ns;
 - background-subtracted histogram: r x Δt counts (150 x 100 bins over +-23 mm,
   +-2 ns); per Δt bin, the r bins with centres in [-20, 20] mm minus a linear
-  interpolation between the r bins nearest -20 and +20 mm;
+  interpolation between the strip-edge counts at r = -20 and +20 mm, each
+  interpolated between its neighbouring r bins (section 8.4.2a; the legacy
+  script takes the nearest r bins: ``edges=LEGACY``, kept for parity);
+- with an axial field of view over 65 cm, only LORs whose point I lies in the
+  central 65 cm are used (section 8.3.5, ``axial_ok``);
 - width: a parabola through the peak bin and its neighbours, then linear
   interpolation at a fraction of its maximum.
 
@@ -33,6 +38,8 @@ T_EDGES = np.linspace(-T_RANGE_PS, T_RANGE_PS, T_BINS + 1)
 R_CENTERS = (R_EDGES[:-1] + R_EDGES[1:]) / 2
 T_CENTERS = (T_EDGES[:-1] + T_EDGES[1:]) / 2
 FITTED, EDGE_PEAK, NO_PEAK, NO_CROSSING = "fitted", "peak at edge", "no parabola peak", "no crossing"
+NEMA, LEGACY = "nema", "legacy"    # strip-edge counts: interpolated at +-20 mm (section 8.4.2a) or nearest r bin
+NEMA_AXIAL_HALF_MM = 325.0         # section 8.3.5: an AFOV over 65 cm uses only the central 65 cm
 
 
 def line_frame(endpoint_1_mm, endpoint_2_mm, p1_mm, p2_mm):
@@ -62,6 +69,12 @@ def kept(dt_error_ps, r_mm):
     """The legacy per-event cuts: ``|r| <= R_KEEP_MM`` and ``|Δt| <= T_RANGE_PS`` (NaN never kept)."""
     with np.errstate(invalid="ignore"):
         return (np.abs(r_mm) <= R_KEEP_MM) & (np.abs(dt_error_ps) <= T_RANGE_PS)
+
+
+def axial_ok(z_mm, half_mm=NEMA_AXIAL_HALF_MM):
+    """Section 8.3.5: ``|z| <= half_mm`` (NaN never)."""
+    with np.errstate(invalid="ignore"):
+        return np.abs(np.asarray(z_mm, np.float64)) <= half_mm
 
 
 def bin_index(dt_error_ps, r_mm):
@@ -94,14 +107,32 @@ class NemaHistograms:
         return int(np.count_nonzero(ok))
 
 
-def background_subtracted(band):
-    """Per Δt bin: signal r bins minus the edge-interpolated background (legacy ``background_correction``)."""
+def edge_counts(band, edges=NEMA):
+    """Per Δt bin, the counts per r bin at the strip edges r = -20 and +20 mm: interpolated linearly between the
+    two neighbouring r bins (section 8.4.2a), or the nearest r bin (``LEGACY``, the legacy script)."""
+    if edges not in (NEMA, LEGACY):
+        raise ValueError(f"edges must be {NEMA!r} or {LEGACY!r}, not {edges!r}")
+    band = np.asarray(band, np.float64)
+    out = []
+    for r0 in (-R_SIGNAL_MM, R_SIGNAL_MM):
+        if edges == LEGACY:
+            out.append(band[..., np.argmin(np.abs(R_CENTERS - r0)), :])
+            continue
+        i = int(np.searchsorted(R_CENTERS, r0)) - 1
+        f = (r0 - R_CENTERS[i]) / (R_CENTERS[i + 1] - R_CENTERS[i])
+        out.append((1 - f) * band[..., i, :] + f * band[..., i + 1, :])
+    return out
+
+
+def background_subtracted(band, edges=NEMA):
+    """Per Δt bin: signal r bins minus the background interpolated linearly between the strip-edge counts
+    (section 8.4.2; ``edges=LEGACY`` is the legacy ``background_correction``)."""
     band = np.asarray(band, np.float64)
     signal = (R_CENTERS >= -R_SIGNAL_MM) & (R_CENTERS <= R_SIGNAL_MM)
-    left, right = np.argmin(np.abs(R_CENTERS + R_SIGNAL_MM)), np.argmin(np.abs(R_CENTERS - R_SIGNAL_MM))
+    left, right = edge_counts(band, edges)
     r = R_CENTERS[signal]
     w_left, w_right = np.sum((R_SIGNAL_MM - r) / (2 * R_SIGNAL_MM)), np.sum((r + R_SIGNAL_MM) / (2 * R_SIGNAL_MM))
-    return band[..., signal, :].sum(axis=-2) - w_left * band[..., left, :] - w_right * band[..., right, :]
+    return band[..., signal, :].sum(axis=-2) - w_left * left - w_right * right
 
 
 def nema_width(hist, centers=T_CENTERS, fraction=0.5):
@@ -133,6 +164,6 @@ def widths(hist, centers=T_CENTERS):
             "events": float(np.sum(hist))}
 
 
-def summarize(raw, band):
+def summarize(raw, band, edges=NEMA):
     """NEMA widths without and with background subtraction."""
-    return {"raw": widths(raw), "background_subtracted": widths(background_subtracted(band))}
+    return {"raw": widths(raw), "background_subtracted": widths(background_subtracted(band, edges))}

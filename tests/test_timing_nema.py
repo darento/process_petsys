@@ -38,8 +38,8 @@ def test_batched_histograms_match_legacy():
     assert kept == expected["kept"]
     assert hist.raw.tolist() == expected["raw"]
     assert hist.band.tolist() == expected["band"]
-    np.testing.assert_allclose(nema.background_subtracted(hist.band), expected["background_subtracted"],
-                               rtol=1e-9, atol=1e-9)
+    np.testing.assert_allclose(nema.background_subtracted(hist.band, edges=nema.LEGACY),
+                               expected["background_subtracted"], rtol=1e-9, atol=1e-9)
     np.testing.assert_array_equal(nema.T_CENTERS, expected["t_centers"])
 
 
@@ -64,15 +64,36 @@ def test_width_failures_are_statuses():
     assert result["status"] == nema.EDGE_PEAK and result["fwhm_ps"] is None
 
 
+@pytest.mark.parametrize("edges", [nema.NEMA, nema.LEGACY])
 @pytest.mark.parametrize("slope", [0.0, 0.8])
-def test_background_subtraction_of_expected_counts(slope):
-    """Expected counts: a Gaussian peak plus a background linear in r. A flat background is removed exactly; a
-    sloped one nearly, since the edge bins' centres sit 0.087 mm outside +-20 mm."""
+def test_background_subtraction_of_expected_counts(slope, edges):
+    """Expected counts: a Gaussian peak plus a background linear in r. The NEMA edges (interpolated at +-20 mm,
+    section 8.4.2a) remove any linear background exactly; the legacy nearest bins only a flat one exactly, since
+    their centres sit 0.087 mm outside +-20 mm."""
     peak = np.outer(np.exp(-0.5 * (nema.R_CENTERS / 2.0) ** 2), 50 * np.exp(-0.5 * (nema.T_CENTERS / 300.0) ** 2))
     background = np.outer(1 + slope * nema.R_CENTERS / 30.0, np.full(nema.T_BINS, 3.0))
     signal = (nema.R_CENTERS >= -20) & (nema.R_CENTERS <= 20)
-    residual = nema.background_subtracted(peak + background) - peak[signal].sum(axis=0)
-    assert np.abs(residual).max() <= (1e-9 if slope == 0 else 2e-3) * background[signal].sum(axis=0).max()
+    residual = nema.background_subtracted(peak + background, edges=edges) - peak[signal].sum(axis=0)
+    exact = slope == 0 or edges == nema.NEMA
+    assert np.abs(residual).max() <= (1e-9 if exact else 2e-3) * background[signal].sum(axis=0).max()
+
+
+def test_edge_counts_interpolated_at_20_mm():
+    """Section 8.4.2a: counts per bin at exactly r = -20 and +20 mm, linear between the neighbouring r bins."""
+    band = np.outer(nema.R_CENTERS, np.ones(nema.T_BINS))       # counts equal to the bin's r
+    left, right = nema.edge_counts(band)
+    np.testing.assert_allclose(left, -20.0, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(right, 20.0, rtol=0, atol=1e-12)
+    legacy = nema.edge_counts(band, edges=nema.LEGACY)
+    assert legacy[0][0] == pytest.approx(-20.087, abs=1e-3) and legacy[1][0] == pytest.approx(20.087, abs=1e-3)
+    with pytest.raises(ValueError, match="edges"):
+        nema.edge_counts(band, edges="nearest")
+
+
+def test_central_axial_range():
+    """Section 8.3.5: with an AFOV over 65 cm only the central 65 cm is used; NaN (parallel LOR) never is."""
+    z = np.array([-325.0, -325.01, 0.0, 325.0, 400.0, np.nan])
+    assert nema.axial_ok(z).tolist() == [True, False, True, True, False, False]
 
 
 @pytest.mark.parametrize("seed, slope", [(200, 0.0), (201, 0.8)])

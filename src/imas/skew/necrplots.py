@@ -5,8 +5,9 @@ Written by ``necr.run_necr`` into ``<output>/plots/`` from the report and the sa
 - ``timing_<frame>.png``: per table, the raw and background-subtracted NEMA timing histograms (headline line),
   titled with the model-free FWHM;
 - ``dt_vs_r_<frame>.png``: per table, Δt against the signed LOR-to-line distance r (headline line);
-- ``ctr_vs_activity.png``: the model-free FWHM (headline width) against activity for every corrected table, the
-  NEMA background-subtracted FWHM dotted beside it, and the legacy ``.lm`` results when declared;
+- ``ctr_vs_activity.png``: the NEMA background-subtracted FWHM (the NEMA value) against activity for every
+  corrected table, the model-free FWHM (gate width, not NEMA) dotted beside it, and the legacy ``.lm`` results
+  when declared;
 - ``line_fit.png``: the fitted line's slab points with x(z) and y(z) of every line;
 - ``photopeak.png``: the 511 keV photopeak per frame against activity.
 """
@@ -43,7 +44,7 @@ def timing_histograms(plt, out, report, saved, frame, k):
             ax.step(nema.T_CENTERS, hist, where="mid", lw=0.9,
                     label=f"{label}: FWHM " + (f"{width:.0f} ps" if width else entry["nema"][kind]["status"]))
         free = entry["model_free"].get("model_free_fwhm_ps")
-        ax.set_title(f"{name}: model-free FWHM " + (f"{free:.0f} ps" if free else "unavailable"), fontsize=10)
+        ax.set_title(f"{name} (model-free FWHM " + (f"{free:.0f} ps)" if free else "unavailable)"), fontsize=10)
         ax.set_xlabel("Δt (ps)")
         ax.legend(fontsize=7)
     axes[0][0].set_ylabel(f"events / {2 * nema.T_RANGE_PS / nema.T_BINS:g} ps")
@@ -87,12 +88,14 @@ def ctr_vs_activity(plt, out, report):
     for name in report["results"]["pooled"][line]:
         if name == "uncorrected":                     # ~2.3 ns: off the scale of the corrected tables
             continue
-        values, errors = zip(*(_model_free(report["results"][f["name"]][line][name]) for f in frames))
+        entries = [report["results"][f["name"]][line][name] for f in frames]
+        values = [_width(e) or np.nan for e in entries]
+        errors = [e["uncertainty"]["background_subtracted fwhm_ps"]["sd_ps"] or 0.0 for e in entries]
         line_plot = ax.errorbar(activity[order], np.array(values)[order], yerr=np.array(errors)[order], marker="o",
-                                ms=4, capsize=2, lw=1, label=f"{name}: model-free")
-        background = [_width(report["results"][f["name"]][line][name]) or np.nan for f in frames]
-        ax.plot(activity[order], np.array(background)[order], ls=":", lw=1, marker=".",
-                color=line_plot[0].get_color(), label=f"{name}: NEMA background-subtracted")
+                                ms=4, capsize=2, lw=1, label=f"{name}: NEMA background-subtracted")
+        free = [_model_free(e)[0] for e in entries]
+        ax.plot(activity[order], np.array(free)[order], ls=":", lw=1, marker=".",
+                color=line_plot[0].get_color(), label=f"{name}: model-free (gate width, not NEMA)")
     legacy = report.get("legacy_results")
     if legacy:
         named = {f["name"]: f["activity_kbq_ml"] for f in frames}

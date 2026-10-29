@@ -3,8 +3,9 @@
 ``python -m src.imas.skew necr FILE``: per frame of a NECR acquisition, the NEMA
 line-source timing resolution (``src.timing.nema``) for the uncorrected data,
 the legacy skew table and the frozen spec 011/012 tables, on the same events.
-The headline width and the gates use spec 011's model-free FWHM (owner, T9);
-the NEMA widths are reported beside it. The line is fitted from LOR convergence (``src.timing.line``) or declared.
+The NEMA value is the background-subtracted NEMA FWHM; the gates judge spec
+011's model-free FWHM (owner, T9), which is reported beside it as a non-NEMA
+width. The line is fitted from LOR convergence (``src.timing.line``) or declared.
 Inputs are frozen as in the point-source CTR file (``src.imas.skew.ctr``).
 """
 from __future__ import annotations
@@ -41,7 +42,9 @@ STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied dela
           "same events")
 LINE_HALF_LENGTH_MM = 356.109009      # legacy P1/P2 z; fitted lines are written with the same end points
 FRAME_LINE_FLAG_MM = 1.0              # plan: a frame line farther than this from the pooled line is flagged
-GATE_KIND, GATE_KEY = "model_free", "model_free_fwhm_ps"     # spec FR-6 (T9): the headline width
+NEMA_ACTIVITY_KBQ_ML = 5.3            # NEMA NU 2-2018 section 8.5b
+GATE_KIND, GATE_KEY = "model_free", "model_free_fwhm_ps"     # spec FR-6 (T9): the gates' width
+VALUE_KIND, VALUE_KEY = "background_subtracted", "fwhm_ps"    # spec FR-6: the NEMA value
 
 
 def _positive(value, label):
@@ -285,6 +288,7 @@ class Accumulator:
         self.pooled_mf_boot = np.zeros_like(self.mf_boot)
         self.stages = [dict.fromkeys(STAGES, 0) | {
             "parallel to line": dict.fromkeys(self.lines, 0),
+            "outside central 65 cm": dict.fromkeys(self.lines, 0),
             "kept (NEMA)": {line: dict.fromkeys(self.names, 0) for line in self.lines},
             "model-free band": {line: dict.fromkeys(self.names, 0) for line in self.lines}} for _ in spec.frames]
         self.pre_geometry = [{} for _ in spec.frames]
@@ -336,8 +340,11 @@ class Accumulator:
         size, bins = nema.R_BINS * nema.T_BINS, self.mf.shape[-1]
         binned = []
         for l, (line, (p1, p2)) in enumerate(zip(self.lines, self.ends)):
-            r, _, tof = nema.line_frame(p, q, p1, p2)
+            r, intercept, tof = nema.line_frame(p, q, p1, p2)
             stages["parallel to line"][line] += int(np.count_nonzero(np.isnan(r)))
+            central = nema.axial_ok(intercept[:, 2])       # NEMA section 8.3.5: the AFOV is over 65 cm
+            stages["outside central 65 cm"][line] += int(np.count_nonzero(~central & ~np.isnan(r)))
+            r = np.where(central, r, np.nan)                # never kept by the NEMA or the model-free band
             with np.errstate(invalid="ignore"):
                 band = np.abs(r) <= nema.R_SIGNAL_MM
             for t, name in enumerate(self.names):
@@ -510,10 +517,77 @@ def judge(candidate, reference, kind=GATE_KIND, key=GATE_KEY):
             "paired": paired(candidate, reference, kind, key)}
 
 
+def nema_interpolation(frames, target=NEMA_ACTIVITY_KBQ_ML):
+    """NEMA section 8.5b: the frames immediately above and below ``target`` (consecutive frame numbers, activity
+    falling with the frame number) and the weight of the one above; otherwise ``status`` names the missing frame.
+    ``nearest`` is the frame closest in activity."""
+    nearest = min(frames, key=lambda f: abs(f.activity_kbq_ml - target)).name if frames else None
+    exact = [f for f in frames if f.activity_kbq_ml == target]
+    if exact:
+        return {"status": "interpolated", "above": exact[0].name, "below": exact[0].name, "weight_above": 1.0,
+                "nearest": nearest}
+    above = min((f for f in frames if f.activity_kbq_ml > target), key=lambda f: f.activity_kbq_ml, default=None)
+    below = max((f for f in frames if f.activity_kbq_ml < target), key=lambda f: f.activity_kbq_ml, default=None)
+    if above is not None and below is not None and below.frame == above.frame + 1:
+        weight = (target - below.activity_kbq_ml) / (above.activity_kbq_ml - below.activity_kbq_ml)
+        return {"status": "interpolated", "above": above.name, "below": below.name, "weight_above": weight,
+                "nearest": nearest}
+    missing = above.frame + 1 if above is not None else below.frame - 1 if below is not None else None
+    return {"status": f"unavailable: NEMA section 8.5b needs the frames immediately above and below {target:g} "
+                      f"kBq/ml; missing frame {missing}" if missing is not None else "unavailable: no frames",
+            "nearest": nearest}
+
+
+def _mix(a, b, w):
+    return None if a is None or b is None else w * a + (1 - w) * b
+
+
+def _mix_sd(a, b, w):
+    return None if a is None or b is None else math.hypot(w * a, (1 - w) * b)
+
+
+def _value_entry(above, below, w):
+    """One table's NEMA value from two frames' results (the same frame when ``w`` is 1)."""
+    width = [e["nema"][VALUE_KIND] for e in (above, below)]
+    if any(x["status"] != nema.FITTED for x in width):
+        status = next(x["status"] for x in width if x["status"] != nema.FITTED)
+    else:
+        status = nema.FITTED
+    sd = [e["uncertainty"][f"{VALUE_KIND} {VALUE_KEY}"]["sd_ps"] for e in (above, below)]
+    free = [e["model_free"].get(GATE_KEY) for e in (above, below)]
+    free_sd = [e["uncertainty"].get(f"{GATE_KIND} {GATE_KEY}", {}).get("sd_ps") for e in (above, below)]
+    return {"status": status, "fwhm_ps": _mix(width[0]["fwhm_ps"], width[1]["fwhm_ps"], w),
+            "fwtm_ps": _mix(width[0]["fwtm_ps"], width[1]["fwtm_ps"], w), "sd_ps": _mix_sd(*sd, w),
+            "raw_fwhm_ps": _mix(above["nema"]["raw"]["fwhm_ps"], below["nema"]["raw"]["fwhm_ps"], w),
+            "model_free": {"fwhm_ps": _mix(*free, w), "sd_ps": _mix_sd(*free_sd, w)}}
+
+
+WITHHELD = ("withheld: the transfer check failed; the frozen tables do not transfer to this acquisition's "
+            "hardware state")
+
+
+def nema_value(spec, results, line, transfer_ok):
+    """NEMA section 8.5b on the headline line: per table, the background-subtracted FWHM at 5.3 kBq/ml
+    interpolated between the frames above and below, the model-free FWHM beside; when unavailable, the values of
+    the nearest measured frame. Frozen tables are withheld when the transfer check fails."""
+    where = nema_interpolation(spec.frames)
+    out = {"activity_kbq_ml": NEMA_ACTIVITY_KBQ_ML, "line": line, "width": f"{VALUE_KIND} {VALUE_KEY}", **where}
+    if where["status"] == "interpolated":
+        pairs, key = (results[where["above"]][line], results[where["below"]][line], where["weight_above"]), "values"
+    elif where["nearest"]:
+        nearest = results[where["nearest"]][line]
+        pairs, key = (nearest, nearest, 1.0), "nearest_values"
+    else:
+        return out
+    above, below, w = pairs
+    out[key] = {name: {"status": WITHHELD} if not transfer_ok and name not in (ctr.UNCORRECTED, ctr.LEGACY)
+                else _value_entry(above[name], below[name], w) for name in above}
+    return out
+
+
 def evaluate_gates(spec, results):
     """FR-6 on the headline line: the transfer check and the acceptance on the gate frame (per frame and pooled
-    reported), and the headline (model-free) value per table with the NEMA widths beside it (withheld for the
-    frozen tables when the transfer check fails)."""
+    reported), judged on the model-free FWHM, and the NEMA value (``nema_value``)."""
     line = spec.headline_line
     frame = spec.gates.frame if spec.gates else None
     out = {"line": line, "frame": frame, "judged_on": f"{GATE_KIND} {GATE_KEY}"}
@@ -529,23 +603,29 @@ def evaluate_gates(spec, results):
         if gate == "transfer":
             transfer_ok = out[gate]["accepted"]
     out["transfer_passed"] = transfer_ok if spec.gates and spec.gates.transfer else None
-    scope = frame or "pooled"
-    values = {}
-    for name, entry in results[scope][line].items():
-        if not transfer_ok and name not in (ctr.UNCORRECTED, ctr.LEGACY):
-            values[name] = {"status": "withheld: the transfer check failed; the frozen tables do not transfer to "
-                                      "this acquisition's hardware state"}
-            continue
-        fit, background = entry["model_free"], entry["nema"]["background_subtracted"]
-        status = fit["status"] if fit["status"] != "fitted" or fit.get(GATE_KEY) else "no crossing"
-        values[name] = {"status": status, "fwhm_ps": fit.get(GATE_KEY), "fwtm_ps": fit.get("model_free_fwtm_ps"),
-                        "sd_ps": entry["uncertainty"].get(f"{GATE_KIND} {GATE_KEY}", {}).get("sd_ps"),
-                        "nema_background_subtracted": {
-                            "status": background["status"], "fwhm_ps": background["fwhm_ps"],
-                            "sd_ps": entry["uncertainty"]["background_subtracted fwhm_ps"]["sd_ps"]},
-                        "nema_raw_fwhm_ps": entry["nema"]["raw"]["fwhm_ps"]}
-    out["headline_value"] = {"frame": scope, "line": line, "width": f"{GATE_KIND} {GATE_KEY}", "values": values}
+    out["nema_value"] = nema_value(spec, results, line, transfer_ok)
     return out
+
+
+def nema_conformance(spec, lines):
+    """What follows NEMA NU 2-2018 section 8 and what does not (spec 013 Spec changes, 2026-10-29)."""
+    headline = lines[spec.headline_line]
+    deviations = [
+        f"line source (section 8.3.5.1): headline line '{spec.headline_line}' is "
+        + ("fitted from LOR convergence in the map frame, not from image centroids" if headline["method"] == FITTED
+           else f"declared ({headline.get('source', 'no source given')})"),
+        "frames (section 8.4): the declared splits of each frame, not the whole frame: "
+        + ", ".join(f"{f.name} {len(f.ldat)} split(s)" for f in spec.frames),
+        f"c = {nema.C_MM_PER_PS} mm/ps (the standard writes 0.3)"]
+    return {"standard": "NEMA NU 2-2018 section 8 (time-of-flight resolution)",
+            "followed": ["r, I and t as section 8.4.1", f"central {2 * nema.NEMA_AXIAL_HALF_MM / 10:g} cm only "
+                         "(section 8.3.5)", "strip-edge counts interpolated at +-20 mm (section 8.4.2)",
+                         "parabolic peak and linear half-maximum crossing (section 8.4.3)",
+                         f"value at {NEMA_ACTIVITY_KBQ_ML:g} kBq/ml interpolated between the frames above and below "
+                         "(section 8.5b)"],
+            "deviations": deviations,
+            "not_nema": ["raw width", "FWTM", "model-free FWHM", "bootstrap uncertainties", "transfer and "
+                         "acceptance gates (model-free)"]}
 
 
 def _public(results):
@@ -606,13 +686,15 @@ def run_necr(spec, *, log=print):
                  "same_events": "valid endpoints, both TIME channels with an applied delay in every table"
                  + (", and every walk input on both sides" if any(isinstance(t, ctr.WalkTable) for t in
                                                                    tables.values()) else ""),
-                 "max_records_per_split": spec.max_records},
+                 "max_records_per_split": spec.max_records,
+                 "axial": f"|z_I| <= {nema.NEMA_AXIAL_HALF_MM:g} mm (NEMA section 8.3.5: AFOV about "
+                          f"{2 * LINE_HALF_LENGTH_MM:.0f} mm, over 65 cm), NEMA and model-free widths"},
         "method": {"nema": "legacy imas_NEMA_CTR_multiprocess port (src.timing.nema): kept |r| <= "
                            f"{nema.R_KEEP_MM:g} mm and |dt error| <= {nema.T_RANGE_PS:g} ps; raw histogram of every "
                            f"kept event and r x dt {nema.R_BINS} x {nema.T_BINS} bins over +-{nema.R_RANGE_MM:g} mm, "
-                           f"+-{nema.T_RANGE_PS:g} ps; background per dt bin interpolated between the r bins "
-                           f"nearest +-{nema.R_SIGNAL_MM:g} mm; widths from a parabola through the peak bin and "
-                           "linear interpolation; c = 0.299792 mm/ps",
+                           f"+-{nema.T_RANGE_PS:g} ps; background per dt bin interpolated between the strip-edge "
+                           f"counts at exactly +-{nema.R_SIGNAL_MM:g} mm (NEMA section 8.4.2a); widths from a "
+                           "parabola through the peak bin and linear interpolation; c = 0.299792 mm/ps",
                    "model_free": f"|r| <= {nema.R_SIGNAL_MM:g} mm, {spec.model_free_bin_ps:g} ps bins over "
                                  f"+-{spec.model_free_window_ps:g} ps, flat background, local quadratic crossings "
                                  "(spec 011 FR-10)",
@@ -623,6 +705,7 @@ def run_necr(spec, *, log=print):
                    for k, f in enumerate(spec.frames)},
         "walk_clamped": accumulator.clamped,
         "results": _public(results), "paired_against_legacy": paired_differences(results), "gates": gates,
+        "nema_conformance": nema_conformance(spec, lines),
         "energy": energy,
         "legacy_results": spec.legacy_results,
         "interpretation": "system CTR of this acquisition with the NEMA NU 2-2018 line-source method as the legacy "
@@ -655,20 +738,25 @@ def main(argv=None):
     except CtrError as error:
         print(f"necr refused: {error}", file=sys.stderr)
         return 2
-    headline = report["gates"]["headline_value"]
-    print(f"Headline value ({headline['frame']}, line {headline['line']}, model-free FWHM; NEMA "
-          "background-subtracted FWHM beside):")
-    for name, entry in headline["values"].items():
-        value = (f"{entry['fwhm_ps']:.0f} +- {entry['sd_ps']:.0f} ps" if entry.get("fwhm_ps")
+    value = report["gates"]["nema_value"]
+    if value["status"] == "interpolated":
+        print(f"NEMA value ({value['activity_kbq_ml']:g} kBq/ml, {value['above']}/{value['below']} interpolated, "
+              f"line {value['line']}, background-subtracted FWHM; model-free beside):")
+    else:
+        print(f"NEMA value {value['status']}")
+        print(f"Nearest measured frame ({value['nearest']}, line {value['line']}, background-subtracted FWHM; "
+              "model-free beside):")
+    for name, entry in value.get("values", value.get("nearest_values", {})).items():
+        width = (f"{entry['fwhm_ps']:.0f} +- {entry['sd_ps']:.0f} ps" if entry.get("fwhm_ps")
                  and entry.get("sd_ps") is not None else "")
-        background = entry.get("nema_background_subtracted", {})
-        beside = (f" (NEMA {background['fwhm_ps']:.0f} +- {background['sd_ps']:.0f} ps)"
-                  if background.get("status") == nema.FITTED and background.get("sd_ps") is not None
-                  else f" (NEMA: {background.get('status', 'unavailable')})")
-        print(f"  {name}: {value}" + ("" if entry["status"] == nema.FITTED else f" ({entry['status']})") + beside)
+        free = entry.get("model_free", {})
+        beside = (f" (model-free {free['fwhm_ps']:.0f} +- {free['sd_ps']:.0f} ps)"
+                  if free.get("fwhm_ps") and free.get("sd_ps") is not None else "")
+        print(f"  {name}: {width}" + ("" if entry["status"] == nema.FITTED else f" ({entry['status']})") + beside)
     for gate in ("transfer", "acceptance"):
         if gate in report["gates"]:
             g = report["gates"][gate]
-            print(f"{gate}: {g['candidate']} vs {g['reference']}: {'accepted' if g['accepted'] else 'not accepted'}")
+            print(f"{gate} (model-free): {g['candidate']} vs {g['reference']}: "
+                  f"{'accepted' if g['accepted'] else 'not accepted'}")
     print(f"-> {spec.output}")
     return 0

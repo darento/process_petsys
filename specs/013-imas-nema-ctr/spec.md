@@ -25,7 +25,7 @@ This is a measurement with an explicit method, not a new calibration. No table i
 **Input:**
 - **Data:** PETsys compact **coincidence** LDAT, i.e. two detector hit populations per record, not singles.
   - Acquisition: `20241003_NECR_E0h4_120s_<frame>_coincCompact4s_<split>.ldat`, 3 Oct 2024. NECR phantom (20 cm diameter polyethylene cylinder, 70 cm long, F-18 line source about 45 mm off-axis), 30 frames of 120 s.
-  - Owner transfer to `C:\Users\dsanchez\Desktop\data\IMAS\NECR\`: at least 1 GB of splits for frames 1, 5, 7, 10, 15, 20, 25 and 30.
+  - Owner transfer to `C:\Users\dsanchez\Desktop\data\IMAS\NECR\`: at least 1 GB of splits for frames 1, 5, 7, 10, 15, 20, 25 and 30, and frame 8 for the NEMA §8.5b interpolation at 5.3 kBq/ml (added 2026-10-29).
   - On 2026-10-28 frames 7, 25, 26 and 30 are present. Frame 7 runs at about 6 M records/s, so its 3 GB split holds about 1.6 s.
 - **Config and map:** `configs/imas_2DAQ.yaml`, `maps/imas2DAQ_map.yaml`. Checked on 100,000 records of frame 7: every hit maps, and all 120 SMs are seen.
 - **Units:** timestamps in ps; hit charges in PETsys QDC units (a.u.); keV only through a recorded energy calibration; activity concentration in kBq/ml as given by the owner per frame (`CTR_vs_activity_NECR.xlsx`, column F; frame 7 = 5.31 kBq/ml).
@@ -57,7 +57,7 @@ This is a measurement with an explicit method, not a new calibration. No table i
   - Every cut is counted per frame, including events without a delay or a walk input. Events count as "same events" only when every evaluated table applies to them.
 - **FR-3 — Line-source position.**
   - **Two lines** are evaluated on the same events:
-    - the **fitted** line, which gives the NEMA value;
+    - the **fitted** line, which gives the NEMA value. NEMA §8.3.5.1 locates the line from image centroids of the first frame below peak NECR; the fit replaces it because it is in the tables' map frame. The report records this deviation (owner, 2026-10-29);
     - the **legacy image** line, `P1 (−37.18, 18.36, −356.11)` and `P2 (−36.60, 11.73, 356.11)` mm, used as given. It was found in the reconstructed image's frame, which may differ from the map frame by a few mm (legacy SM centre 48 mm against the map's 51.61 mm). The report gives its CTR as a sensitivity, with the distance between the two lines along z.
   - **The fit:** the 3D line that a frame's LORs converge to, without timing, in the map frame. It is seeded and robust to the scanner-wide background (LYSO, randoms, phantom scatter), as spec 011's `seeded_converge_point` is for points:
     1. **Seed:** a grid search over the bore for the axis-parallel line `(x0, y0)` that the most LORs pass within a few mm of.
@@ -71,18 +71,20 @@ This is a measurement with an explicit method, not a new calibration. No table i
   - **I:** the point on the LOR closest to the line.
   - **Timing error:** `Δt = dt_corrected − (|L1 − I| − |L2 − I|) / c`, with c = 0.299792 mm/ps.
   - Events with `|r| ≤ 20 + 2.0644 mm` and `|Δt| ≤ 2 ns` are kept; the histogram in r spans ±23 mm in 150 bins, and the signal band is `|r| ≤ 20 mm`.
+  - **Axial range (NEMA §8.3.5):** the IMAS axial field of view is about 712 mm, more than 65 cm, so only events whose point I lies in the central 65 cm (`|z_I| ≤ 325 mm`, map frame) are used. This applies to the NEMA and the model-free widths, on every line (owner, 2026-10-29; neither the legacy script nor the T1–T9 runs applied it).
   - The width without background subtraction uses every kept event (`|r| ≤ 22.0644 mm`), as the legacy script does (plan, 2026-10-28).
   - **Histogram:** 100 bins of 40 ps over ±2 ns.
-  - **Background per time bin:** the counts in the r bins nearest ±20 mm, linearly interpolated across the band and summed over its bins.
+  - **Background per time bin (NEMA §8.4.2):** the counts per bin at exactly r = −20 and +20 mm, each linearly interpolated between its two neighbouring r bins, then interpolated linearly across the band and summed over its bins. The legacy script takes the r bins nearest ±20 mm (centres 0.087 mm outside); that variant is kept only for the parity golden (owner, 2026-10-29).
   - **Width:** FWHM and FWTM from a parabola through the peak bin and its two neighbours, with linear interpolation at half and tenth of the parabola's maximum.
   - Reported with and without background subtraction, with the peak position.
-  - **Parity:** given the same `(Δt, r)` arrays, the port reproduces the legacy script's histogram, background and widths. The expected values are a golden file computed once by the untracked script, with provenance.
+  - **Parity:** given the same `(Δt, r)` arrays, the port's legacy variant (nearest-bin background) reproduces the legacy script's histogram, background and widths. The expected values are a golden file computed once by the untracked script, with provenance.
 - **FR-5 — Tables, uncertainty and our width.**
   - **Tables:** on the same events per frame: uncorrected, legacy, EM, EM2 + walk3.
   - **Uncertainty:** each FR-4 width has a bootstrap uncertainty. The differences against legacy are paired on the same events.
-  - **Headline width:** spec 011's model-free FWHM (10 ps bins, flat background within ±3 ns, local quadratic crossings) is the width every value, gate and CTR-against-activity curve uses. The FR-4 NEMA widths (with and without background subtraction) are reported beside it (owner, 2026-10-28; see Spec changes).
+  - **Gate width:** spec 011's model-free FWHM (10 ps bins, flat background within ±3 ns, local quadratic crossings) is reported beside every NEMA width and is the width the FR-6 gates judge (owner, 2026-10-28; see Spec changes). It is not a NEMA quantity.
 - **FR-6 — NEMA report and acceptance.**
-  - **Per frame:** CTR against activity concentration for every table. The headline value is the model-free FWHM at 5.3 kBq/ml (frame 7), with the NEMA background-subtracted FWHM beside it.
+  - **Per frame:** CTR against activity concentration for every table (NEMA §8.5a).
+  - **NEMA value (§8.5b):** the background-subtracted FWHM at 5.3 kBq/ml, linearly interpolated in activity between the frames immediately above and below it. Those must be consecutive frame numbers (frames 7 and 8), and the model-free FWHM is reported beside. Until both are present, the value is unavailable, and the report names the missing frame and gives the nearest measured frame.
   - **Transfer check:** on frame 7, EM must beat legacy in model-free FWHM by more than their combined uncertainty (spec 011 FR-10 rule). Otherwise the 2025 tables do not transfer to the 2024 state; the report says so and gives no EM or EM2 + walk3 value.
   - **Acceptance:** EM2 + walk3 against EM on frame 7, with the same rule and width. Pooled over frames and per frame, reported.
   - **Legacy check:** the legacy (`skew_IMAS.txt`) values are reported beside the Jan 2025 `.lm` results. They are not expected to be equal: the table, geometry and position estimator differ.
@@ -111,13 +113,23 @@ This is a measurement with an explicit method, not a new calibration. No table i
 
 1. **Line position:** both lines are evaluated: the line fitted from the data and the legacy image P1/P2 (FR-3). The fitted line is in the tables' frame, so it gives the NEMA value; the image line is a sensitivity.
 2. **Energy calibration:** from the NECR data (FR-7); changed to the run-7 bar calibration at T8 (Spec changes).
-3. **NEMA value:** frame 7 (5.31 kBq/ml), background-subtracted FWHM, as measured (no interpolation). Superseded at T9: the headline is the model-free FWHM (Spec changes).
+3. **NEMA value:** frame 7 (5.31 kBq/ml), background-subtracted FWHM, as measured (no interpolation). Changed 2026-10-29 to the §8.5b interpolation between frames 7 and 8 (Spec changes).
 4. **Gates:** FR-6's transfer check (EM against legacy) and acceptance (EM2 + walk3 against EM), both on frame 7 with the spec 011 FR-10 rule; judged on the model-free FWHM since T9 (Spec changes).
 
 ## Spec changes
 
 - **2026-10-28, FR-7 calibration (owner, T8):** the NECR CTR uses the run-7 bar calibration (`job_walk/skew_20251119_run7/encal/encal.tsv`, the calibration walk3's keV axis was fitted with). The per-slab NECR calibration (`encal_necr_f7`: frame 7, 9,842 of 15,360 slabs fitted; `encal_necr_all`: every split present, 12,281) leaves too many slabs without a 511 keV peak, and the selection rejects their events. The photopeak per frame (FR-7 rate check) is still reported with the run-7 calibration.
-- **2026-10-28, FR-5/FR-6 headline width (owner, T9):** "use always the model-free". The headline value, both gates and the CTR-against-activity curves use the model-free FWHM; the NEMA widths stay reported beside (and against the `.lm` results). Reason: on frame 7 the NEMA background-subtracted FWHM has a bootstrap SD of about 35 ps and moved 31 ps when the fitted line moved 0.3 mm (frame 7 alone against all frames), flipping the transfer check; the model-free FWHM has an SD of about 5 ps and moved 1 ps. This replaces the T9 decision to wait for more frame-7 splits.
+- **2026-10-28, FR-5/FR-6 gate width (owner, T9):** the transfer check and the acceptance judge the model-free FWHM; the NEMA value and the CTR-against-activity curves stay on the NEMA background-subtracted FWHM, with the model-free FWHM reported beside as a non-NEMA width. (The owner first said "use always the model-free", then kept NEMA for the reported value the same day.) Reason: on frame 7 the NEMA background-subtracted FWHM has a bootstrap SD of about 35 ps and moved 31 ps when the fitted line moved 0.3 mm (frame 7 alone against all frames), flipping the transfer check; the model-free FWHM has an SD of about 5 ps and moved 1 ps. This replaces the T9 decision to wait for more frame-7 splits.
+- **2026-10-29, NEMA NU 2-2018 §8 conformance (owner):** the standard (`docs/imas/NEMA NU-2 2018c.pdf`, pp. 30–34) was checked against FR-4 and FR-6.
+  - **Adopted:**
+    - the central-65 cm axial cut (§8.3.5);
+    - the strip-edge counts interpolated at exactly ±20 mm (§8.4.2a);
+    - the value at 5.3 kBq/ml interpolated between the frames above and below (§8.5b, needs frame 8).
+  - **Kept as recorded deviations:**
+    - the LOR-fitted line instead of image centroids (§8.3.5.1);
+    - declared splits per frame instead of whole frames (§8.4);
+    - c = 0.299792 mm/ps (the standard writes 0.3).
+  - **Not NEMA quantities:** the raw width, FWTM, the model-free width, the bootstrap and the gates.
 - **2026-10-28, plan:** FR-4 states the legacy script's kept band (`|r| ≤ 22.0644 mm`) for the histogram without background subtraction; the summary said 20 mm.
 
 ## Out of scope (possible follow-up: method improvements)

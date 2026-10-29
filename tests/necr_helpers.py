@@ -138,7 +138,7 @@ def necr_file(case, frames, name="necr.json", **changes):
             "walks": {"em_walk": {"skew": "em", **frozen(case["walk"])}},
             "output": str(case["base"] / "out" / name.removesuffix(".json")),
             "frames": [{"name": frame, "frame": k + 1, "ldat": [str(p) for p in paths],
-                        "activity_kbq_ml": 5.0 / (k + 1), "activity_source": "synthetic"}
+                        "activity_kbq_ml": 8.0 / (k + 1), "activity_source": "synthetic"}
                        for k, (frame, paths) in enumerate(frames.items())],
             "lines": {"fitted": {"method": "lor_convergence"},
                       "image": {"p1": LEGACY_P1.tolist(), "p2": LEGACY_P2.tolist(), "source": "legacy image"}},
