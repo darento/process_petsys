@@ -64,18 +64,41 @@ def test_width_failures_are_statuses():
     assert result["status"] == nema.EDGE_PEAK and result["fwhm_ps"] is None
 
 
+@pytest.mark.parametrize("r_rebin", [1, nema.NEMA_R_REBIN])
 @pytest.mark.parametrize("edges", [nema.NEMA, nema.LEGACY])
 @pytest.mark.parametrize("slope", [0.0, 0.8])
-def test_background_subtraction_of_expected_counts(slope, edges):
+def test_background_subtraction_of_expected_counts(slope, edges, r_rebin):
     """Expected counts: a Gaussian peak plus a background linear in r. The NEMA edges (interpolated at +-20 mm,
-    section 8.4.2a) remove any linear background exactly; the legacy nearest bins only a flat one exactly, since
-    their centres sit 0.087 mm outside +-20 mm."""
+    section 8.4.2a) remove any linear background exactly, on the native or summed r bins; the legacy nearest bins
+    only a flat one exactly, since their centres sit outside +-20 mm."""
     peak = np.outer(np.exp(-0.5 * (nema.R_CENTERS / 2.0) ** 2), 50 * np.exp(-0.5 * (nema.T_CENTERS / 300.0) ** 2))
     background = np.outer(1 + slope * nema.R_CENTERS / 30.0, np.full(nema.T_BINS, 3.0))
-    signal = (nema.R_CENTERS >= -20) & (nema.R_CENTERS <= 20)
-    residual = nema.background_subtracted(peak + background, edges=edges) - peak[signal].sum(axis=0)
+    coarse_peak, centers = nema.rebinned(peak, r_rebin)
+    coarse_background, _ = nema.rebinned(background, r_rebin)
+    signal = (centers >= -20) & (centers <= 20)
+    residual = (nema.background_subtracted(peak + background, edges=edges, r_rebin=r_rebin)
+                - coarse_peak[signal].sum(axis=0))
     exact = slope == 0 or edges == nema.NEMA
-    assert np.abs(residual).max() <= (1e-9 if exact else 2e-3) * background[signal].sum(axis=0).max()
+    assert np.abs(residual).max() <= (1e-9 if exact else 2e-3 * r_rebin) * coarse_background[signal].sum(axis=0).max()
+
+
+def test_r_rebin_factor():
+    """Spec 013 FR-4 (2026-10-29): factor 1 is the native (legacy) binning; the factor must divide the r bins."""
+    band = np.random.default_rng(3).poisson(5.0, (nema.R_BINS, nema.T_BINS)).astype(float)
+    np.testing.assert_array_equal(nema.background_subtracted(band, r_rebin=1), nema.background_subtracted(band))
+    coarse, centers = nema.rebinned(band, nema.NEMA_R_REBIN)
+    assert coarse.shape == (nema.R_BINS // nema.NEMA_R_REBIN, nema.T_BINS) and coarse.sum() == band.sum()
+    assert centers[1] - centers[0] == pytest.approx(3 * 46.0 / 150)
+    for bad in (4, 0, 1.0, True):
+        with pytest.raises(ValueError, match="r_rebin"):
+            nema.background_subtracted(band, r_rebin=bad)
+
+
+def test_r_profile_fwhm():
+    """Section 8.4.1 bin limit: FWHM of a Gaussian line profile in r above a flat floor."""
+    band = np.outer(1000 * np.exp(-0.5 * (nema.R_CENTERS / 2.0) ** 2) + 40, np.ones(nema.T_BINS))
+    assert nema.r_profile_fwhm(band) == pytest.approx(2.0 * 2.3548, rel=0.02)
+    assert nema.r_profile_fwhm(np.ones((nema.R_BINS, nema.T_BINS))) is None
 
 
 def test_edge_counts_interpolated_at_20_mm():
@@ -96,13 +119,15 @@ def test_central_axial_range():
     assert nema.axial_ok(z).tolist() == [True, False, True, True, False, False]
 
 
+@pytest.mark.parametrize("r_rebin", [1, nema.NEMA_R_REBIN])
 @pytest.mark.parametrize("seed, slope", [(200, 0.0), (201, 0.8)])
-def test_background_subtraction_recovers_injected_peak(seed, slope):
+def test_background_subtraction_recovers_injected_peak(seed, slope, r_rebin):
     dt, r, is_peak = h.dt_r_events(seed=seed, n=2_000_000, slope=slope)
     total, peak = nema.NemaHistograms(), nema.NemaHistograms()
     total.add((), dt, r)
     peak.add((), dt[is_peak], r[is_peak])
-    recovered, injected = nema.background_subtracted(total.band), nema.background_subtracted(peak.band)
+    recovered = nema.background_subtracted(total.band, r_rebin=r_rebin)
+    injected = nema.background_subtracted(peak.band, r_rebin=r_rebin)
     assert recovered.sum() == pytest.approx(injected.sum(), rel=0.03)
     assert nema.widths(recovered)["fwhm_ps"] == pytest.approx(nema.widths(peak.raw)["fwhm_ps"], rel=0.02)
     assert nema.widths(total.raw)["fwhm_ps"] > 1.03 * nema.widths(peak.raw)["fwhm_ps"]

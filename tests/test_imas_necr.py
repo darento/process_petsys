@@ -241,6 +241,9 @@ def test_report_fields_and_gates(necr_run):
             w * a["model_free"]["model_free_fwhm_ps"] + (1 - w) * b["model_free"]["model_free_fwhm_ps"])
     conformance = report["nema_conformance"]
     assert conformance["standard"].startswith("NEMA NU 2-2018") and len(conformance["deviations"]) >= 3
+    bins = conformance["r_bins"]                                    # FR-4 (2026-10-29): 0.92 mm, section 8.4.1
+    assert bins["r_bin_mm"] == pytest.approx(3 * 46.0 / 150) and bins["narrowest_r_profile_fwhm_mm"] > 0
+    assert bins["below_quarter_fwhm"] == (bins["r_bin_mm"] < bins["narrowest_r_profile_fwhm_mm"] / 4)
     paired = report["paired_against_legacy"]["pooled"]["fitted"]["em_walk"]["background_subtracted fwhm_ps"]
     assert paired["improvement_ps"] > 0 and paired["replicates"] == spec.bootstrap
     with np.load(spec.output / "necr_histograms.npz") as saved:

@@ -393,7 +393,7 @@ class Accumulator:
                 fit = core.fit_histogram(mf[l, t], self.mf_edges, crossings=ctr.MODEL_FREE)
                 draws = {}
                 for k in range(boot.shape[2]):
-                    replicate = nema.summarize(boot[l, t, k].sum(axis=0), boot[l, t, k])
+                    replicate = nema.summarize(boot[l, t, k].sum(axis=0), boot[l, t, k], r_rebin=nema.NEMA_R_REBIN)
                     for kind in ("raw", "background_subtracted"):
                         for key in ("fwhm_ps", "fwtm_ps"):
                             draws.setdefault((kind, key), []).append(replicate[kind][key])
@@ -402,7 +402,9 @@ class Accumulator:
                                                    crossings=ctr.MODEL_FREE)
                         draws.setdefault(("model_free", "model_free_fwhm_ps"), []).append(
                             value["model_free_fwhm_ps"] if value["status"] == "fitted" else None)
-                out[line][name] = {"nema": nema.summarize(band[l, t].sum(axis=0), band[l, t]),
+                widths = nema.summarize(band[l, t].sum(axis=0), band[l, t], r_rebin=nema.NEMA_R_REBIN)
+                widths["r_profile_fwhm_mm"] = nema.r_profile_fwhm(band[l, t])
+                out[line][name] = {"nema": widths,
                                    "model_free": core._public(fit),
                                    "uncertainty": {f"{kind} {key}": _sd(values)
                                                    for (kind, key), values in draws.items()},
@@ -607,9 +609,22 @@ def evaluate_gates(spec, results):
     return out
 
 
-def nema_conformance(spec, lines):
+def r_bin_check(spec, results):
+    """Section 8.4.1: the background-subtraction r bin against a quarter of the narrowest r-profile FWHM (headline
+    line, corrected tables, frames)."""
+    r_bin = float(nema.R_EDGES[nema.NEMA_R_REBIN] - nema.R_EDGES[0])
+    widths = [entry["nema"]["r_profile_fwhm_mm"] for scope, lines in results.items() if scope != "pooled"
+              for name, entry in lines[spec.headline_line].items()
+              if name != "uncorrected" and entry["nema"].get("r_profile_fwhm_mm")]
+    narrowest = min(widths) if widths else None
+    return {"r_bin_mm": r_bin, "narrowest_r_profile_fwhm_mm": narrowest,
+            "below_quarter_fwhm": None if narrowest is None else bool(r_bin < narrowest / 4)}
+
+
+def nema_conformance(spec, lines, results):
     """What follows NEMA NU 2-2018 section 8 and what does not (spec 013 Spec changes, 2026-10-29)."""
     headline = lines[spec.headline_line]
+    bins = r_bin_check(spec, results)
     deviations = [
         f"line source (section 8.3.5.1): headline line '{spec.headline_line}' is "
         + ("fitted from LOR convergence in the map frame, not from image centroids" if headline["method"] == FITTED
@@ -617,13 +632,20 @@ def nema_conformance(spec, lines):
         "frames (section 8.4): the declared splits of each frame, not the whole frame: "
         + ", ".join(f"{f.name} {len(f.ldat)} split(s)" for f in spec.frames),
         f"c = {nema.C_MM_PER_PS} mm/ps (the standard writes 0.3)"]
+    if not bins["below_quarter_fwhm"]:
+        deviations.append(f"r bins (section 8.4.1): {bins['r_bin_mm']:.3f} mm, not below a quarter of the narrowest "
+                          f"r-profile FWHM ({bins['narrowest_r_profile_fwhm_mm']} mm)")
     return {"standard": "NEMA NU 2-2018 section 8 (time-of-flight resolution)",
             "followed": ["r, I and t as section 8.4.1", f"central {2 * nema.NEMA_AXIAL_HALF_MM / 10:g} cm only "
                          "(section 8.3.5)", "strip-edge counts interpolated at +-20 mm (section 8.4.2)",
                          "parabolic peak and linear half-maximum crossing (section 8.4.3)",
+                         f"background-subtraction r bins {bins['r_bin_mm']:.3f} mm, below a quarter of the narrowest "
+                         f"r-profile FWHM ({bins['narrowest_r_profile_fwhm_mm']:.2f} mm; section 8.4.1)"
+                         if bins["below_quarter_fwhm"] else "background-subtraction r bins: see deviations",
                          f"value at {NEMA_ACTIVITY_KBQ_ML:g} kBq/ml interpolated between the frames above and below "
                          "(section 8.5b)"],
             "deviations": deviations,
+            "r_bins": bins,
             "not_nema": ["raw width", "FWTM", "model-free FWHM", "bootstrap uncertainties", "transfer and "
                          "acceptance gates (model-free)"]}
 
@@ -693,7 +715,9 @@ def run_necr(spec, *, log=print):
                            f"{nema.R_KEEP_MM:g} mm and |dt error| <= {nema.T_RANGE_PS:g} ps; raw histogram of every "
                            f"kept event and r x dt {nema.R_BINS} x {nema.T_BINS} bins over +-{nema.R_RANGE_MM:g} mm, "
                            f"+-{nema.T_RANGE_PS:g} ps; background per dt bin interpolated between the strip-edge "
-                           f"counts at exactly +-{nema.R_SIGNAL_MM:g} mm (NEMA section 8.4.2a); widths from a "
+                           f"counts at exactly +-{nema.R_SIGNAL_MM:g} mm (NEMA section 8.4.2a) on r bins summed "
+                           f"by {nema.NEMA_R_REBIN} ({nema.R_EDGES[nema.NEMA_R_REBIN] - nema.R_EDGES[0]:.3f} mm); "
+                           "widths from a "
                            "parabola through the peak bin and linear interpolation; c = 0.299792 mm/ps",
                    "model_free": f"|r| <= {nema.R_SIGNAL_MM:g} mm, {spec.model_free_bin_ps:g} ps bins over "
                                  f"+-{spec.model_free_window_ps:g} ps, flat background, local quadratic crossings "
@@ -705,7 +729,7 @@ def run_necr(spec, *, log=print):
                    for k, f in enumerate(spec.frames)},
         "walk_clamped": accumulator.clamped,
         "results": _public(results), "paired_against_legacy": paired_differences(results), "gates": gates,
-        "nema_conformance": nema_conformance(spec, lines),
+        "nema_conformance": nema_conformance(spec, lines, results),
         "energy": energy,
         "legacy_results": spec.legacy_results,
         "interpretation": "system CTR of this acquisition with the NEMA NU 2-2018 line-source method as the legacy "

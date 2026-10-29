@@ -375,3 +375,18 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
       - NEMA-only test report `docs/imas/IMAS_NECR_CTR/nema_report/index.html` from `scripts_imas/necr_nema_report.py` (owner request): §8.5a/b results, test conditions, §8.4 processing, r profile, bracketing-frame histograms, conformance.
       - Outputs copied to `docs/imas/IMAS_NECR_CTR/run_present4/`.
     - Spec 013 Status → `shipped`; memory updated.
+
+## Post-ship amendment
+
+- [x] **T11 — NEMA r bins and more frame-7 data** (FR-4, FR-6; Spec changes 2026-10-29).
+  - **Code:** `src/timing/nema.py` sums r bins by a factor (`NEMA_R_REBIN = 3`, 0.92 mm) for the background-subtracted width; factor 1 is the legacy binning (parity golden unchanged). `necr.py` applies it to the nominal and bootstrap widths, and reports the r-profile FWHM per frame against the §8.4.1 bin limit. `necrplots.py` draws the same histograms.
+  - **Tests:** factor 1 equals the current function; the background removal recovers an injected peak with the coarser bins; a factor that does not divide the 150 bins is refused; the NECR run tests report the bin width and the limit.
+  - **Run:** `necr_present5` = `necr_present4` plus the owner's two extra frame-7 splits.
+  - **Done when** the tests pass, the run reports the 5.3 kBq/ml value with its SD, and the NEMA report and the `IMAS_timing` NEMA section show it.
+  - **Progress, 2026-10-29 (code and tests):**
+    - `nema.rebinned`, `r_rebin` on `edge_counts`, `background_subtracted` and `summarize`, `r_profile_fwhm`.
+    - `necr.py`: `r_rebin=NEMA_R_REBIN` on the nominal and bootstrap widths; `r_profile_fwhm_mm` per table; `nema_conformance.r_bins`, a deviation if the bin is not below a quarter of the narrowest profile FWHM; the method string names the bins. `necrplots.py` draws the same histograms.
+    - Tests: `test_background_subtraction_of_expected_counts` and `test_background_subtraction_recovers_injected_peak` on both binnings, new `test_r_rebin_factor` and `test_r_profile_fwhm`; the NECR run test checks `r_bins`. The parity golden is unchanged.
+    - Selection (shared NEMA module and its only consumer): `tests/test_timing_nema.py tests/test_imas_necr.py tests/test_timing_line.py tests/test_golden_provenance.py -m "not real_data" -n 0 --slow-limit 5`: 107 passed (51 s); `tests/test_timing_nema.py -n 0 --slow-limit 5`: 23 passed after the marker cleanup; `tests/test_imas_necr.py tests/test_timing_nema.py -m real_data`: 1 passed.
+  - **Run, 2026-10-29:** `necr_present5` (frame 7 splits 24, 26, 27, 4,234,576 same events; other frames as `necr_present4`), 972 s wall, peak 3.24 GB. §8.5b frames 6/7 (weight on frame 6 0.03), NEMA value at 5.3 kBq/ml: legacy 770 ± 6, EM 711 ± 8, **EM2 + walk3 683 ± 7 ps** (T10: 723 ± 23 / 736 ± 29 / 667 ± 28; the single frame-7 split was low and noisy). Model-free 740 / 696 / 669 ps. §8.4.1: r bins 0.920 mm against the narrowest r-profile FWHM 4.07 mm, conformant. Gates pass on every frame and pooled (frame 7: transfer 44 vs 3 ps, acceptance 27 vs 3 ps; pooled 59 vs 2 and 43 vs 1). The NEMA value now separates the tables (EM − legacy 59 ps, EM2 + walk3 − EM 28 ps). NEMA report (`docs/imas/IMAS_NECR_CTR/nema_report/`), `IMAS_timing` NEMA section, `README.md` and `rate_study.html` updated; run copy `docs/imas/IMAS_NECR_CTR/run_present5/`.
+

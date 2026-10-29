@@ -1,6 +1,6 @@
 # Spec 013 — IMAS NEMA NU 2-2018 CTR on the NECR phantom
 
-Status: `shipped` (2026-10-29; approved 2026-10-28; NEMA value at 5.3 kBq/ml, EM2 + walk3: 667 ± 28 ps, see tasks T9–T10). [Plan](plan.md), [tasks](tasks.md).
+Status: `shipped` (2026-10-29: 683 ± 7 ps at 5.3 kBq/ml, EM2 + walk3, after the post-ship amendment T11 (0.92 mm r bins, three frame-7 splits); first shipped with 667 ± 28 ps, tasks T9–T10). [Plan](plan.md), [tasks](tasks.md).
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md).
 Builds on two shipped specs:
@@ -74,6 +74,7 @@ This is a measurement with an explicit method, not a new calibration. No table i
   - **Axial range (NEMA §8.3.5):** the IMAS axial field of view is about 712 mm, more than 65 cm, so only events whose point I lies in the central 65 cm (`|z_I| ≤ 325 mm`, map frame) are used. This applies to the NEMA and the model-free widths, on every line (owner, 2026-10-29; neither the legacy script nor the T1–T9 runs applied it).
   - The width without background subtraction uses every kept event (`|r| ≤ 22.0644 mm`), as the legacy script does (plan, 2026-10-28).
   - **Histogram:** 100 bins of 40 ps over ±2 ns.
+  - **r bins of the background-subtracted width (NEMA §8.4.1, owner 2026-10-29):** the 150 histogram bins are summed in threes (0.92 mm), below a quarter of the line's r-profile FWHM (about 4.3 mm), which the report records per frame. The native 0.307 mm bins remain for the width without background subtraction and the legacy parity golden.
   - **Background per time bin (NEMA §8.4.2):** the counts per bin at exactly r = −20 and +20 mm, each linearly interpolated between its two neighbouring r bins, then interpolated linearly across the band and summed over its bins. The legacy script takes the r bins nearest ±20 mm (centres 0.087 mm outside); that variant is kept only for the parity golden (owner, 2026-10-29).
   - **Width:** FWHM and FWTM from a parabola through the peak bin and its two neighbours, with linear interpolation at half and tenth of the parabola's maximum.
   - Reported with and without background subtraction, with the peak position.
@@ -134,6 +135,7 @@ This is a measurement with an explicit method, not a new calibration. No table i
   - The frame-start activity comes from `docs/imas/CTR_NECR_legacy/20241003_NECR_E0h4_120s.actlog`. LDAT frame j is actlog entry j − 1, as in the xlsx.
   - It is averaged over T_acq = 120 s (× 0.99371, T½ 6586.2 s) and divided by V = 22,000 ml.
   - The xlsx equals the undecayed value, so the activities fall by 0.63 %. Frame 7 becomes 5.278 kBq/ml, so §8.5b uses frames 6 and 7 (frame 6 transferred).
+- **2026-10-29, FR-4 r bins (owner, post-ship, T11):** the strip-edge background used single 0.307 mm r bins (the legacy script's), scaled about 65× over the band, which dominated the NEMA width's noise: SD 27 ps for EM2 + walk3 at 5.3 kBq/ml from one frame-7 split. NEMA §8.4.1 only asks for bins below a quarter of the expected FWHM. Resampling the saved histograms (`scripts_imas/necr_nema_binning.py`) gave SD 20 / 15 / 17 ps (EM2 + walk3 / legacy / EM) with 0.92 mm bins; 80 ps time bins moved every value up 7–37 ps and are not adopted. The owner also transfers two more frame-7 splits.
 - **2026-10-28, plan:** FR-4 states the legacy script's kept band (`|r| ≤ 22.0644 mm`) for the histogram without background subtraction; the summary said 20 mm.
 
 ## Out of scope (possible follow-up: method improvements)

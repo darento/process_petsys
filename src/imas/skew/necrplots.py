@@ -39,7 +39,8 @@ def timing_histograms(plt, out, report, saved, frame, k):
         band = saved["band"][l, t, k]
         entry = report["results"][frame][line][name]
         for hist, kind, label in ((band.sum(axis=0), "raw", "raw"),
-                                  (nema.background_subtracted(band), "background_subtracted", "background-subtracted")):
+                                  (nema.background_subtracted(band, r_rebin=nema.NEMA_R_REBIN), "background_subtracted",
+                                   "background-subtracted")):
             width = _width(entry, kind)
             ax.step(nema.T_CENTERS, hist, where="mid", lw=0.9,
                     label=f"{label}: FWHM " + (f"{width:.0f} ps" if width else entry["nema"][kind]["status"]))

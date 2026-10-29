@@ -14,6 +14,9 @@ its output by a golden file:
   interpolation between the strip-edge counts at r = -20 and +20 mm, each
   interpolated between its neighbouring r bins (section 8.4.2a; the legacy
   script takes the nearest r bins: ``edges=LEGACY``, kept for parity);
+- the background-subtracted width sums the r bins by ``NEMA_R_REBIN`` (0.92 mm; section 8.4.1 asks only for
+  bins below a quarter of the r-profile FWHM, and single 0.307 mm edge bins dominated its noise); factor 1 is
+  the legacy binning;
 - with an axial field of view over 65 cm, only LORs whose point I lies in the
   central 65 cm are used (section 8.3.5, ``axial_ok``);
 - width: a parabola through the peak bin and its neighbours, then linear
@@ -40,6 +43,7 @@ T_CENTERS = (T_EDGES[:-1] + T_EDGES[1:]) / 2
 FITTED, EDGE_PEAK, NO_PEAK, NO_CROSSING = "fitted", "peak at edge", "no parabola peak", "no crossing"
 NEMA, LEGACY = "nema", "legacy"    # strip-edge counts: interpolated at +-20 mm (section 8.4.2a) or nearest r bin
 NEMA_AXIAL_HALF_MM = 325.0         # section 8.3.5: an AFOV over 65 cm uses only the central 65 cm
+NEMA_R_REBIN = 3                   # 0.92 mm r bins for the background subtraction (spec 013 FR-4, 2026-10-29)
 
 
 def line_frame(endpoint_1_mm, endpoint_2_mm, p1_mm, p2_mm):
@@ -107,32 +111,54 @@ class NemaHistograms:
         return int(np.count_nonzero(ok))
 
 
-def edge_counts(band, edges=NEMA):
+def rebinned(band, r_rebin=1):
+    """(band with every ``r_rebin`` r bins summed, the new r-bin centres); the factor must divide ``R_BINS``."""
+    if isinstance(r_rebin, bool) or not isinstance(r_rebin, int) or r_rebin < 1 or R_BINS % r_rebin:
+        raise ValueError(f"r_rebin must be a whole divisor of {R_BINS}, not {r_rebin!r}")
+    band = np.asarray(band, np.float64)
+    if r_rebin == 1:
+        return band, R_CENTERS
+    shape = band.shape[:-2] + (R_BINS // r_rebin, r_rebin, band.shape[-1])
+    edges = R_EDGES[::r_rebin]
+    return band.reshape(shape).sum(axis=-2), (edges[:-1] + edges[1:]) / 2
+
+
+def edge_counts(band, edges=NEMA, r_rebin=1):
     """Per Δt bin, the counts per r bin at the strip edges r = -20 and +20 mm: interpolated linearly between the
-    two neighbouring r bins (section 8.4.2a), or the nearest r bin (``LEGACY``, the legacy script)."""
+    two neighbouring r bins (section 8.4.2a), or the nearest r bin (``LEGACY``, the legacy script); r bins summed
+    by ``r_rebin`` first."""
     if edges not in (NEMA, LEGACY):
         raise ValueError(f"edges must be {NEMA!r} or {LEGACY!r}, not {edges!r}")
-    band = np.asarray(band, np.float64)
+    band, centers = rebinned(band, r_rebin)
     out = []
     for r0 in (-R_SIGNAL_MM, R_SIGNAL_MM):
         if edges == LEGACY:
-            out.append(band[..., np.argmin(np.abs(R_CENTERS - r0)), :])
+            out.append(band[..., np.argmin(np.abs(centers - r0)), :])
             continue
-        i = int(np.searchsorted(R_CENTERS, r0)) - 1
-        f = (r0 - R_CENTERS[i]) / (R_CENTERS[i + 1] - R_CENTERS[i])
+        i = int(np.searchsorted(centers, r0)) - 1
+        f = (r0 - centers[i]) / (centers[i + 1] - centers[i])
         out.append((1 - f) * band[..., i, :] + f * band[..., i + 1, :])
     return out
 
 
-def background_subtracted(band, edges=NEMA):
+def background_subtracted(band, edges=NEMA, r_rebin=1):
     """Per Δt bin: signal r bins minus the background interpolated linearly between the strip-edge counts
-    (section 8.4.2; ``edges=LEGACY`` is the legacy ``background_correction``)."""
-    band = np.asarray(band, np.float64)
-    signal = (R_CENTERS >= -R_SIGNAL_MM) & (R_CENTERS <= R_SIGNAL_MM)
-    left, right = edge_counts(band, edges)
-    r = R_CENTERS[signal]
+    (section 8.4.2; ``edges=LEGACY`` with ``r_rebin=1`` is the legacy ``background_correction``)."""
+    left, right = edge_counts(band, edges, r_rebin)
+    band, centers = rebinned(band, r_rebin)
+    signal = (centers >= -R_SIGNAL_MM) & (centers <= R_SIGNAL_MM)
+    r = centers[signal]
     w_left, w_right = np.sum((R_SIGNAL_MM - r) / (2 * R_SIGNAL_MM)), np.sum((r + R_SIGNAL_MM) / (2 * R_SIGNAL_MM))
     return band[..., signal, :].sum(axis=-2) - w_left * left - w_right * right
+
+
+def r_profile_fwhm(band):
+    """FWHM (mm) of the r profile (counts summed over Δt) above the mean of its two outermost bins, from linear
+    interpolation at half maximum; None without a crossing on both sides. For the section 8.4.1 bin limit."""
+    profile = np.asarray(band, np.float64).sum(axis=-1)
+    level = (profile[0] + profile[-1]) / 2
+    status, width, _ = nema_width(profile - level, R_CENTERS, 0.5)
+    return width if status == FITTED else None
 
 
 def nema_width(hist, centers=T_CENTERS, fraction=0.5):
@@ -164,6 +190,6 @@ def widths(hist, centers=T_CENTERS):
             "events": float(np.sum(hist))}
 
 
-def summarize(raw, band, edges=NEMA):
-    """NEMA widths without and with background subtraction."""
-    return {"raw": widths(raw), "background_subtracted": widths(background_subtracted(band, edges))}
+def summarize(raw, band, edges=NEMA, r_rebin=1):
+    """NEMA widths without and with background subtraction (r bins summed by ``r_rebin`` for the latter)."""
+    return {"raw": widths(raw), "background_subtracted": widths(background_subtracted(band, edges, r_rebin))}
