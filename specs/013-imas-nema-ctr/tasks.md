@@ -327,6 +327,21 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
     - **Gates (model-free):** transfer and acceptance accepted on every frame and pooled.
     - **Photopeak:** 494.5–498.8 keV.
     - **T9 waits on** frame 1 (then rerun to a new output dir); frames 10 and 15 are not transferred.
+  - **Progress, 2026-10-29 (all transferred frames):**
+    - **Run file:** `IMAS_work/necr_present3.json`: frames 1 (split 24), 5, 7, 8, 10 (54), 15 (23), 20 (24, 53), 25 (22–24), 26, 30 (22–26) and 32 (39–42).
+    - **Frame 32 activity:** 0.2137 kBq/ml, from `docs/imas/CTR_NECR_legacy/20241003_NECR_E0h4_120s.actlog` (0.111781 mCi × 1.91193, the xlsx/actlog factor at frame 30); the xlsx stops at frame 30. No legacy `.lm` result for frame 32.
+    - **Run:** 11 min 37 s wall, peak 2.96 GB; output `IMAS_work/necr_present3`.
+    - **NEMA value at 5.3 kBq/ml** (frames 7/8): legacy 724 ± 22, EM 731 ± 29, EM2 + walk3 664 ± 24 ps; model-free 736 / 695 / 671 ps.
+    - **New frames, NEMA / model-free (ps), legacy / EM / EM2 + walk3:**
+      - frame 1 (11.51 kBq/ml): 931 / 913 / 832 and 880 / 856 / 826;
+      - frame 10 (3.61): 670 / 647 / 573 and 694 / 648 / 605;
+      - frame 15 (1.89): 612 / 575 / 542 and 630 / 572 / 535;
+      - frame 32 (0.21): 557 / 481 / 452 and 561 / 496 / 451, level with frame 30.
+      - Pooled: 639 / 570 / 521 and 624 / 561 / 517.
+    - **Gates (model-free):** transfer and acceptance accepted on all eleven frames and pooled (frame 1: 23 vs 16 and 31 vs 15).
+    - **Photopeak:** 494.5–500.0 keV; frame 1 rises to 501.0 keV (pile-up suspected, not investigated).
+    - **Line:** unchanged; per-frame lines within 0.35 mm of the pooled line except frame 1 (0.81 mm).
+    - Every "done when" item is met; T9 awaits the owner's review of the verdicts.
 
 ## Validation
 
