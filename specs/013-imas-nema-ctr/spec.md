@@ -1,6 +1,6 @@
 # Spec 013 — IMAS NEMA NU 2-2018 CTR on the NECR phantom
 
-Status: `approved` (2026-10-28; clarified the same day). [Plan](plan.md), [tasks](tasks.md).
+Status: `shipped` (2026-10-29; approved 2026-10-28; NEMA value at 5.3 kBq/ml, EM2 + walk3: 667 ± 28 ps, see tasks T9–T10). [Plan](plan.md), [tasks](tasks.md).
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md).
 Builds on two shipped specs:
@@ -130,6 +130,10 @@ This is a measurement with an explicit method, not a new calibration. No table i
     - declared splits per frame instead of whole frames (§8.4);
     - c = 0.299792 mm/ps (the standard writes 0.3).
   - **Not NEMA quantities:** the raw width, FWTM, the model-free width, the bootstrap and the gates.
+- **2026-10-29, activity concentration (owner, T10):** the frame activity is NEMA §1.2 a_ave(j), replacing the xlsx column F of Units.
+  - The frame-start activity comes from `docs/imas/CTR_NECR_legacy/20241003_NECR_E0h4_120s.actlog`. LDAT frame j is actlog entry j − 1, as in the xlsx.
+  - It is averaged over T_acq = 120 s (× 0.99371, T½ 6586.2 s) and divided by V = 22,000 ml.
+  - The xlsx equals the undecayed value, so the activities fall by 0.63 %. Frame 7 becomes 5.278 kBq/ml, so §8.5b uses frames 6 and 7 (frame 6 transferred).
 - **2026-10-28, plan:** FR-4 states the legacy script's kept band (`|r| ≤ 22.0644 mm`) for the histogram without background subtraction; the summary said 20 mm.
 
 ## Out of scope (possible follow-up: method improvements)

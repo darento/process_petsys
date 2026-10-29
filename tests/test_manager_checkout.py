@@ -62,7 +62,9 @@ if mode == "imports":
     out["default_profile_exists"] = default_profile_path().exists()
     out["default_profile_is_empty"] = load_profile() == MachineProfile()
     out["tk_root"] = getattr(__import__("tkinter"), "_default_root", None) is not None
-    out["matplotlib_backend"] = sys.modules["matplotlib"].get_backend() if "matplotlib" in sys.modules else None
+    # Unresolved backend is None: get_backend() would resolve it and import a GUI toolkit (PyQt5) itself.
+    out["matplotlib_backend"] = (sys.modules["matplotlib"].rcParams._get_backend_or_none()
+                                 if "matplotlib" in sys.modules else None)
 elif mode == "workflow":
     from src.petsys_manager import workflow as wf
     from src.petsys_manager.contracts import Action, InputDescriptor
@@ -116,10 +118,10 @@ elif mode == "workflow":
         out["run_root"] = None if outcome is None else str(outcome.run_root)
         out["outputs"] = [] if outcome is None else [[a.kind, str(a.path)] for a in outcome.outputs("listmode")]
 files = {}
-for module in list(sys.modules.values()):
+for key, module in list(sys.modules.items()):   # by key: alias shims (src.cornell.skew.lut) hold another module
     name = getattr(module, "__file__", None)
     if name:
-        files[module.__name__] = str(Path(name).resolve())
+        files[key] = str(Path(name).resolve())
 out["module_files"] = files
 print("PROBE-JSON " + json.dumps(out))
 '''
@@ -350,6 +352,7 @@ class CheckoutChecks(PrivateOutput, unittest.TestCase):
 
     # Isolated copy ----------------------------------------------------------------------------
 
+    @pytest.mark.fr("bug-checkout-probe")    # alias shims keyed by sys.modules name; backend probe imported PyQt5
     def test_checkout_copy_imports_headless_without_private_settings(self):
         modules = sorted(".".join(Path(p).with_suffix("").parts) for p in self.closure if p.startswith("src/"))
         modules = [m[:-len(".__init__")] if m.endswith(".__init__") else m for m in modules]

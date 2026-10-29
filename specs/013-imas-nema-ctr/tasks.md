@@ -207,7 +207,7 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
   - Verified 2026-10-28 (Windows, this PC). Selection: the real-data test of the new tool.
     - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data pytest tests/test_imas_necr.py -m real_data -n 0`: 1 passed in 14.1 s. Without the variable it skips naming `PETSYS_DATA_DIR`.
     - `-k command -n 0 --slow-limit 5` after the CLI change: 1 passed.
-- [ ] **T9 — All transferred frames: FR-6 report** (FR-1–FR-8).
+- [x] **T9 — All transferred frames: FR-6 report** (FR-1–FR-8).
   - **Waits on** the owner's notice that the transfer is complete.
   - **Steps:** write `IMAS_work/necr_all.json` with every transferred frame (activity from `CTR_vs_activity_NECR.xlsx`, legacy `.lm` results) and run it.
   - **Done when:**
@@ -341,14 +341,37 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
     - **Gates (model-free):** transfer and acceptance accepted on all eleven frames and pooled (frame 1: 23 vs 16 and 31 vs 15).
     - **Photopeak:** 494.5–500.0 keV; frame 1 rises to 501.0 keV (pile-up suspected, not investigated).
     - **Line:** unchanged; per-frame lines within 0.35 mm of the pooled line except frame 1 (0.81 mm).
-    - Every "done when" item is met; T9 awaits the owner's review of the verdicts.
+    - Every "done when" item is met. **Owner accepted the verdicts (2026-10-29).**
 
 ## Validation
 
-- [ ] **T10 — Validation and ship.**
+- [x] **T10 — Validation and ship.**
   - **Runs:**
     - full non-real suite: `-m "not real_data"`;
     - `-m real_data`, because the feature touches real-data results.
   - **Recording:** results are summarised in `docs/imas/IMAS_timing/index.html` (gitignored), as a NEMA section.
   - **Status changes:** spec 013 Status → `shipped`; memory updated.
   - **Done when** both suites pass, or their failures are recorded with owner decisions.
+  - **Progress, 2026-10-29 (Windows, this PC, clean tree after the T9 commits):**
+    - `-m "not real_data"`: 1 failed, 1532 passed, 19 skipped, 4 xfailed in 296 s.
+      - The failure: `tests/test_manager_checkout.py::CheckoutChecks::test_checkout_copy_imports_headless_without_private_settings`. The class skips while runtime files are uncommitted, so this was the first run of it since spec 011 (earlier full runs: 24 skipped, now 19).
+      - **bug-checkout-probe**, two defects in the test's probe, not in the Manager:
+        - it keyed `module_files` by `module.__name__`, so the spec 011 alias shims (`src.cornell.skew.lut`, `plots`, `pairs`, `solver`, which put the `src.timing` module in `sys.modules`) were missing (KeyError);
+        - its `matplotlib.get_backend()` resolved the unset backend to QtAgg in the clean environment and imported PyQt5 itself, tripping the forbidden-import check. It now records `rcParams._get_backend_or_none()` (no field is asserted).
+      - Fixed in the test; `--fr bug-checkout-probe -n 0 --slow-limit 5`: 1 passed; `tests/test_manager_checkout.py -m "not real_data" -n 0`: 5 passed.
+    - `-m real_data` with `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `PETSYS_CAL_DIR=<repo>/encal_files`: 34 passed, 0 skipped in 1,667 s.
+    - **Activity correction (owner 2026-10-29):** NEMA §8.5a uses a_ave(j) (§1.2): the frame-start activity averaged over T_acq = 120 s (× 0.99370), over V = 22,000 ml.
+      - The frame-start activity comes from `docs/imas/CTR_NECR_legacy/20241003_NECR_E0h4_120s.actlog`. LDAT frame j is actlog entry j − 1, as the legacy xlsx (owner).
+      - The xlsx activity is exactly actlog(j − 1) × 37000/22000, without the decay average. The T9 frame-32 note above named the wrong actlog entry; its value (0.2137) matched by coincidence.
+      - With a_ave, frame 7 is 5.278 kBq/ml, so §8.5b needs frames 6 (6.00) and 7. Frame 6 (split 54) was transferred.
+    - **Final run `IMAS_work/necr_present4.json`** (12 frames: 1, 5, 6, 7, 8, 10, 15, 20, 25, 26, 30, 32; a_ave activities): 13 min 39 s, peak 3.11 GB. The suites ran before it; no code changed between them.
+      - **NEMA value at 5.3 kBq/ml**, frames 6/7, weight on frame 6 0.030: legacy 723 ± 23, EM 736 ± 29, **EM2 + walk3 667 ± 28 ps**. Model-free: 737 / 696 / 673 ps.
+      - Frame 6 (6.00 kBq/ml): NEMA 720 / 695 / 709, model-free 765 / 723 / 704 ps.
+      - Adding frame 6 moved the pooled line slightly. Other frames changed by up to 12 ps NEMA (frame 5 EM 785 → 773) and 1 ps model-free.
+      - Gates (model-free): transfer and acceptance accepted on all twelve frames and pooled (frame 6: 42 vs 11 and 19 vs 10).
+      - Image-line sensitivity at 5.3 kBq/ml: 776 / 706 / 661 ps.
+    - **Recording:**
+      - NEMA section in `docs/imas/IMAS_timing/index.html` (final numbers, links the report).
+      - NEMA-only test report `docs/imas/IMAS_NECR_CTR/nema_report/index.html` from `scripts_imas/necr_nema_report.py` (owner request): §8.5a/b results, test conditions, §8.4 processing, r profile, bracketing-frame histograms, conformance.
+      - Outputs copied to `docs/imas/IMAS_NECR_CTR/run_present4/`.
+    - Spec 013 Status → `shipped`; memory updated.
