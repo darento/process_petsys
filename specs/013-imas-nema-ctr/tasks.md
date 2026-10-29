@@ -305,6 +305,28 @@ Status: open, 2026-10-28. [Approved spec](spec.md), [plan](plan.md).
       - 7,935 of 650 k frame-7 same events fall outside the central 65 cm.
     - **T9 waits on** frames 8, 1, 5, 10 and 15.
     - **Results:** `docs/imas/IMAS_NECR_CTR/` (untracked).
+  - **Progress, 2026-10-29 (frames 5 and 8 arrived, plus more frame-30 splits):**
+    - **Run file:** `IMAS_work/necr_present2.json`: frame 5 (split 23), 7 (24), 8 (41), 20 (53), 25 (22, 23), 26 (22), 30 (22–26). Legacy `.lm` results for frames 5 and 8 from `CTR_vs_activity_NECR.xlsx`.
+    - **Missing:** frame 1 (still copying when the run started), frames 10 and 15.
+    - **Run:** 6 min 49 s wall, peak 1.65 GB; output `IMAS_work/necr_present2`.
+    - **Line:** 38.8 mm from the axis at z = 0, median miss 1.37 mm; per-frame lines within 0.35 mm of the pooled line; 1.86–1.89 mm from the image line.
+    - **NEMA value at 5.3 kBq/ml** (§8.5b, frames 7 and 8): legacy 723 ± 21, EM 730 ± 29, EM2 + walk3 665 ± 27 ps; model-free 736 / 695 / 671 ps.
+    - **Background-subtracted FWHM (ps), legacy / EM / EM2 + walk3:**
+
+      | Frame | kBq/ml | NEMA | model-free |
+      | --- | --- | --- | --- |
+      | 5 | 6.87 | 756 / 782 / 742 | 768 / 729 / 712 |
+      | 7 | 5.31 | 723 / 731 / 665 | 736 / 695 / 672 |
+      | 8 | 4.67 | 750 / 678 / 674 | 721 / 677 / 645 |
+      | 20 | 1.00 | 610 / 532 / 485 | 594 / 535 / 491 |
+      | 25 | 0.52 | 601 / 520 / 469 | 575 / 509 / 470 |
+      | 26 | 0.46 | 600 / 484 / 459 | 584 / 515 / 470 |
+      | 30 | 0.28 | 551 / 499 / 455 | 563 / 496 / 455 |
+      | pooled | | 648 / 594 / 540 | 636 / 576 / 531 |
+
+    - **Gates (model-free):** transfer and acceptance accepted on every frame and pooled.
+    - **Photopeak:** 494.5–498.8 keV.
+    - **T9 waits on** frame 1 (then rerun to a new output dir); frames 10 and 15 are not transferred.
 
 ## Validation
 
