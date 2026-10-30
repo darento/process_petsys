@@ -102,33 +102,48 @@ def side_offset(top_channel, candidates, side, skew, walk, rule):
     inputs). ``side`` = {q_top, q_time, doi_ratio, kev} of the side; ``skew`` has ``lookup(channels)``;
     ``walk`` is an IMAS walk LUT or None (skew only). ``top`` never reads ``candidates``."""
     _known(rule)
-    top_channel = np.asarray(top_channel, np.int64)
     n = len(top_channel)
-    counts = dict.fromkeys(COUNTS, 0)
     if rule == "top":
-        return np.zeros(n), np.zeros(n, bool), counts
-    if rule == "earliest" and walk is not None:
-        raise RuleError("timestamp rule 'earliest' is for skew-only tables (spec 014 clarify 4)")
+        return np.zeros(n), np.zeros(n, bool), dict.fromkeys(COUNTS, 0)
     if candidates is None or candidates.shape != (n, SLOTS) or candidates.dtype != CANDIDATE_DTYPE:
         raise RuleError(f"rule {rule!r} needs the candidates: ({n}, {SLOTS}) {CANDIDATE_DTYPE}")
-    b_top, top_found = skew.lookup(top_channel)
-    c_top = -b_top
+    relative, top_found, counts = skew_relative(top_channel, candidates, skew)
+    offset, acts, found = relative_offset(relative, candidates["charge"], top_found, side, walk, rule)
+    return offset, acts, counts | found
+
+
+def skew_relative(top_channel, candidates, skew):
+    """Candidate times after their skew delay relative to the top's (``lag + b_top - b``, float64 ps; NaN for an
+    empty slot or a candidate without a delay), whether the top has a delay, and the candidate counts. The walk
+    fit (FR-4) keeps these fixed while the walk changes."""
+    b_top, top_found = skew.lookup(np.asarray(top_channel, np.int64))
     present = candidates["channel"] >= 0
     b, found = skew.lookup(np.where(present, candidates["channel"], -1))
-    c = candidates["lag_ps"].astype(np.float64) - b
-    usable = present & found
+    relative = np.where(present & found, candidates["lag_ps"].astype(np.float64) - b + b_top[:, None], np.nan)
+    return relative, top_found, {"candidates": int(np.count_nonzero(present)),
+                                 "candidates excluded (no delay)": int(np.count_nonzero(present & ~found))}
+
+
+def relative_offset(relative, charge, top_found, side, walk, rule):
+    """``side_offset`` from ``skew_relative`` times and the candidate charges: the walk (None: skew only) of each
+    candidate and of the top, the earliest (a tie keeps the top) and the offset under ``rule``. Counts: ``rule
+    acts``, ``candidates excluded (walk input)`` and, with walk, the clamped candidate inputs."""
+    if _known(rule) == "earliest" and walk is not None:
+        raise RuleError("timestamp rule 'earliest' is for skew-only tables (spec 014 clarify 4)")
+    n = len(relative)
+    c, c_top = relative, np.zeros(n)
+    usable = np.isfinite(relative)
+    counts = {"candidates excluded (walk input)": 0}
     if walk is not None:
         w_top, _ = _walk(walk, side["q_top"], side, (n,))
         c_top = c_top - w_top
-        w, outside = _walk(walk, candidates["charge"], side, (n, SLOTS))
+        w, outside = _walk(walk, charge, side, (n, SLOTS))
         walk_ok = np.isfinite(w)
         counts["candidates excluded (walk input)"] = int(np.count_nonzero(usable & ~walk_ok))
         usable &= walk_ok
         c = c - np.where(walk_ok, w, 0.0)
         for name in iw.INPUTS:
             counts[f"candidates clamped {name}"] = int(np.count_nonzero(usable & outside[name]))
-    counts["candidates"] = int(np.count_nonzero(present))
-    counts["candidates excluded (no delay)"] = int(np.count_nonzero(present & ~found))
     earliest = np.min(np.where(usable, c, np.inf), axis=1)
     acts = top_found & np.isfinite(c_top) & (earliest < c_top)   # a tie keeps the top
     lead = np.where(acts, earliest - c_top, 0.0)

@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T4 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T5 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -84,7 +84,7 @@ Status: in progress 2026-10-30 (T1–T4 done). [Approved spec](spec.md), [plan](
 
 ## Refit
 
-- [ ] **T5 — Walk fit under the rule** (FR-4).
+- [x] **T5 — Walk fit under the rule** (FR-4).
   - `imas-walk-fit/1` gains optional `timestamp_rule`, `rule_start` (skew + walk pair), `rule_rounds` and `rule_tolerance_ps`; outer fixed-point loop; manifest fields.
   - **Done when** on a synthetic two-branch bar with injected late tops (10 %, 600 ps) and a known walk:
     - the rule fit converges within the round limit;
@@ -92,6 +92,23 @@ Status: in progress 2026-10-30 (T1–T4 done). [Approved spec](spec.md), [plan](
     - it beats the `top` fit on held-out rows;
     - rounds and changes are recorded;
     - an existing output is refused.
+  - Deviations:
+    - The start is a walk LUT only: `rule_start_walk` plus `rule_start_walk_sha256` (None means no walk). The skew of the walk fit is the frozen `skew_lut`, so a start skew would be redundant.
+    - Options: `timestamp_rule` is `top` or `top_earliest_mean` (`earliest` refused), and a start walk is refused under `top`.
+    - `timestamp.side_offset` is split into `skew_relative` and `relative_offset`, so the walk fit stores the skew-relative candidate times once and only re-applies the walk each round. T1–T4 tests pass unchanged.
+    - `bar_events(rule=)` adds `q_time_s`, `rel_s` and `cand_charge_s` (float32, events × 7), about 112 B per event, or 2.2 GB at 20 M events (64 GB RAM here).
+    - Convergence is the RMS change of the per-event total correction (W_i − W_j minus the offsets) between rounds.
+    - Manifest gains `timestamp_rule`, `rule_rounds` (per round: RMS/max change, share acting, counts, train core RMS), `rule_converged`, `rule_start_walk(_sha256)`, `skew_timestamp_rule` and requirement `014-FR-4`. Top fits are unchanged: no rule keys in options or manifest.
+    - Held-out widths add `after (top)`: the fitted walk without the rule.
+    - "Existing output refused" is `run_fit`'s generic check (spec 012 test). An end-to-end `run_fit` under the rule needs a candidate-carrying job, so it is tested in T6.
+    - Synthetic numbers (seed 31, 120 k train, 40 k held-out): converged in 4 rounds (RMS change 105 → 7.4 → 1.0 → 0.27 ps).
+      - Held-out core RMS: rule fit 230.1 ps, `top` fit 244.9 ps, the rule's walk without the rule 244.8 ps.
+      - Walk recovery error 0.15 of the injected spread (limit 0.2).
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: IMAS `walk.py` (fit, events, options) and `timestamp.py`, so every IMAS test.
+    - `tests/test_imas_timestamp.py -m "not real_data" -n 0 --slow-limit 5`: 19 passed. The rule fit test takes 3.4 s, so it is not marked slow.
+    - `tests/test_imas_*.py -m "not real_data"`: 120 passed.
+    - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
 - [ ] **T6 — Skew solve under the rule** (FR-4).
   - Job keys `candidates`, `timestamp_rule`, `rule_start_skew`, `rule_passes`; EM passes on `RuleAdjusted`; output names with `_rule-mean`; provenance.
   - **Done when:**

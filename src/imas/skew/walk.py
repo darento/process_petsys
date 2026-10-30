@@ -134,7 +134,12 @@ FIT_SCHEMA = "imas-walk-fit/1"
 REPORT_SCHEMA = "imas-walk-fit-report/1"
 _FIT_REQUIRED = {"schema", "job", "work", "skew_lut", "skew_lut_sha256", "output"}
 _FIT_OPTIONAL = {"walk_lut": None, "bins": dict(DEFAULT_BINS), "min_events": core.MIN_EVENTS, "core_ps": 600.0,
-                 "iterations": 4, "branch_iterations": 3, "max_events": 20_000_000}
+                 "iterations": 4, "branch_iterations": 3, "max_events": 20_000_000,
+                 # spec 014 FR-4: fit under a side timestamp rule, from a start walk LUT (None: no walk), as a
+                 # fixed point of at most ``rule_rounds`` rounds stopping below ``rule_tolerance_ps`` RMS change
+                 "timestamp_rule": "top", "rule_start_walk": None, "rule_start_walk_sha256": None, "rule_rounds": 4,
+                 "rule_tolerance_ps": 0.5}
+_FIT_PATHS = ("walk_lut", "rule_start_walk")
 EVENT_STAGES = ("rows read", "no applied delay", "walk input missing", "kept")
 
 
@@ -165,15 +170,22 @@ def load_fit(path):
     if not isinstance(bins, dict) or set(bins) != set(DEFAULT_BINS) or any(
             isinstance(v, bool) or not isinstance(v, int) or v < 2 for v in bins.values()):
         raise core.WalkError(f"bins: integers >= 2 for {sorted(DEFAULT_BINS)}")
-    for key in ("min_events", "iterations", "branch_iterations", "max_events"):
+    for key in ("min_events", "iterations", "branch_iterations", "max_events", "rule_rounds"):
         if isinstance(options[key], bool) or not isinstance(options[key], int) or options[key] < 1:
             raise core.WalkError(f"{key} must be a positive integer")
-    if not float(options["core_ps"]) > 0:
-        raise core.WalkError("core_ps must be positive")
+    for key in ("core_ps", "rule_tolerance_ps"):
+        if not float(options[key]) > 0:
+            raise core.WalkError(f"{key} must be positive")
+    if options["timestamp_rule"] not in ("top", "top_earliest_mean"):
+        raise core.WalkError("timestamp_rule: 'top' or 'top_earliest_mean' ('earliest' is for skew-only tables)")
+    if (options["rule_start_walk"] is None) != (options["rule_start_walk_sha256"] is None):
+        raise core.WalkError("rule_start_walk and rule_start_walk_sha256 go together")
+    if options["rule_start_walk"] is not None and options["timestamp_rule"] == "top":
+        raise core.WalkError("rule_start_walk is the start of a fit under a timestamp rule other than 'top'")
     return {"path": path, "sha256": hashlib.sha256(raw).hexdigest(), "job": local(spec["job"]),
             "work": local(spec["work"]), "skew_lut": local(spec["skew_lut"]),
             "skew_lut_sha256": str(spec["skew_lut_sha256"]).lower(), "output": local(spec["output"]),
-            **options, "walk_lut": None if options["walk_lut"] is None else local(options["walk_lut"])}
+            **options, **{k: None if options[k] is None else local(options[k]) for k in _FIT_PATHS}}
 
 
 def _sha256(path):
@@ -189,18 +201,23 @@ def _train_rows(observations):
     return int(counts["count"][counts["role"] == 0].sum())
 
 
-def bar_events(sets, delays, *, max_events):
+def bar_events(sets, delays, *, max_events, rule="top"):
     """Skew-corrected events of walk-carrying observation sets: every ``stride``-th train row (at most
     ``max_events``) and every held-out (``test``) row, with both TIME channels delayed and every walk input.
-    Returns {"train"|"heldout": {dt, near, far, <input>_i, <input>_j} float32}, counts and the stride."""
+    Returns {"train"|"heldout": {dt, near, far, <input>_i, <input>_j} float32}, counts and the stride. Under a
+    spec 014 ``rule`` the events also hold per side ``q_time_s`` and the candidates' skew-relative times
+    (``rel_s``, ``timestamp.skew_relative``) and charges (``cand_charge_s``), events x slots."""
+    from src.imas.skew import timestamp
     total = sum(_train_rows(s) for s in sets)
     stride = max(1, -(-total // max_events))
     parts = {"train": [], "heldout": []}
     counts = {role: dict.fromkeys(EVENT_STAGES, 0) for role in parts}
+    ruled = rule != "top"
     for observations in sets:
         if not observations.carries_walk:
             raise core.WalkError(f"{observations.directory}: observation set without walk inputs; stream it with "
                                  "carry_walk")
+        timestamp.require_candidates(observations, rule)
         for p in range(observations.partitions):
             rows = observations.partition(p)
             for role, code in (("train", 0), ("heldout", 2)):
@@ -225,11 +242,40 @@ def bar_events(sets, delays, *, max_events):
                 for name in INPUTS:
                     part[f"{name}_i"] = values_i[name][keep].astype(np.float32)
                     part[f"{name}_j"] = values_j[name][keep].astype(np.float32)
+                for s in ("i", "j") if ruled else ():
+                    candidates = timestamp.observation_candidates(chosen[keep], s)
+                    relative, _, found = timestamp.skew_relative(chosen[f"channel_{s}"][keep], candidates, delays)
+                    part[f"q_time_{s}"] = chosen[f"q_time_{s}"][keep].astype(np.float32)
+                    part[f"rel_{s}"] = relative.astype(np.float32)
+                    part[f"cand_charge_{s}"] = candidates["charge"]
+                    for key, n in found.items():
+                        stage[key] = stage.get(key, 0) + n
                 parts[role].append(part)
     keys = ["dt", "near", "far"] + [f"{n}_{s}" for s in ("i", "j") for n in INPUTS]
-    events = {role: {k: np.concatenate([c[k] for c in chunks]) if chunks else np.empty(0, np.float32) for k in keys}
-              for role, chunks in parts.items()}
+    keys += [f"{n}_{s}" for s in ("i", "j") for n in ("q_time", "rel", "cand_charge")] if ruled else []
+
+    def joined(chunks, key):
+        if chunks:
+            return np.concatenate([c[key] for c in chunks])
+        return np.empty((0, timestamp.SLOTS) if key.startswith(("rel", "cand")) else 0, np.float32)
+    events = {role: {k: joined(chunks, k) for k in keys} for role, chunks in parts.items()}
     return events, counts, {"train_rows": total, "stride": stride}
+
+
+def rule_difference(events, walk, rule):
+    """Per event ``offset_i - offset_j`` (ps) of ``bar_events`` arrays under ``rule`` with ``walk`` (None: skew
+    only), whether the rule acts on either side, and the summed counts (the skew part is the events' own)."""
+    from src.imas.skew import timestamp
+    out = []
+    for s in ("i", "j"):
+        side = {"q_top": events[f"charge_{s}"], "q_time": events[f"q_time_{s}"],
+                "doi_ratio": events[f"doi_ratio_{s}"], "kev": events[f"kev_{s}"]}
+        out.append(timestamp.relative_offset(events[f"rel_{s}"].astype(np.float64), events[f"cand_charge_{s}"],
+                                             np.ones(len(events["dt"]), bool), side, walk, rule))
+    counts = {key: out[0][2][key] + out[1][2][key] for key in out[0][2]}
+    acts = out[0][1] | out[1][1]
+    counts["rule acts"] = int(np.count_nonzero(acts))
+    return out[0][0] - out[1][0], acts, counts
 
 
 def sides(events):
@@ -256,28 +302,67 @@ def width(residual, core_ps):
             "robust_sigma_ps": float(1.4826 * np.median(np.abs(residual - np.median(residual))))}
 
 
-def fit_bar(events, options, manifest):
+def _two_branch(side1, side2, dt, train, options, manifest):
+    return core.fit_two_branch(
+        side1, side2, dt, train["near"].astype(np.float64), train["far"].astype(np.float64),
+        np.ones(len(dt), bool), options["bins"], rounds=options["branch_iterations"],
+        core_ps=float(options["core_ps"]), iterations=options["iterations"], minimum=options["min_events"],
+        manifest=manifest, table=WalkLut)
+
+
+def fit_bar(events, options, manifest, *, start=None):
     """FR-3: the walk LUT from the train events (nearer branch re-chosen after each walk update) and the
-    before/after residual widths on train and held-out events, with held-out residual profiles."""
+    before/after residual widths on train and held-out events, with held-out residual profiles.
+
+    Spec 014 FR-4: under ``options["timestamp_rule"]`` other than ``top`` the events carry the candidates
+    (``bar_events(rule=...)``) and the fit is a fixed point. From the ``start`` walk LUT (None: no walk) each
+    round fits on ``dt + offset_i - offset_j`` with the previous walk's offsets held fixed, then recomputes the
+    offsets with the new walk, until the per-event correction (W_i - W_j minus the offsets) changes by less than
+    ``rule_tolerance_ps`` RMS or after ``rule_rounds``. "after" is the walk under the rule; "after (top)" the
+    same walk without it."""
     from src.imas.skew import walkplots
+    rule = options.get("timestamp_rule", "top")
     train = events["train"]
     side1, side2 = sides(train)
-    lut, model, history, flips = core.fit_two_branch(
-        side1, side2, train["dt"].astype(np.float64), train["near"].astype(np.float64),
-        train["far"].astype(np.float64), np.ones(len(train["dt"]), bool), options["bins"],
-        rounds=options["branch_iterations"], core_ps=float(options["core_ps"]), iterations=options["iterations"],
-        minimum=options["min_events"], manifest=manifest, table=WalkLut)
+    dt = train["dt"].astype(np.float64)
+    core_ps = float(options["core_ps"])
+    if rule == "top":
+        lut, model, history, flips = _two_branch(side1, side2, dt, train, options, manifest)
+        offset = 0.0
+    else:
+        manifest = dict(manifest, timestamp_rule=rule,
+                        rule_start_walk_sha256=None if start is None else start.sha256)
+        offset, acts, counts = rule_difference(train, start, rule)
+        previous = (0.0 if start is None else core.walk_difference(start, side1, side2)[0]) - offset
+        rounds = [{"round": 0, "start": "rule start walk" if start is not None else "no walk",
+                   "rule_acts_share": float(np.mean(acts)), "counts": counts}]
+        for k in range(1, options["rule_rounds"] + 1):
+            lut, model, history, flips = _two_branch(side1, side2, dt + offset, train, options, manifest)
+            offset, acts, counts = rule_difference(train, lut, rule)
+            change = (model - offset) - previous
+            previous = model - offset
+            rounds.append({"round": k, "rms_change_ps": float(np.sqrt(np.mean(change ** 2))),
+                           "max_abs_change_ps": float(np.max(np.abs(change))) if len(change) else 0.0,
+                           "rule_acts_share": float(np.mean(acts)), "counts": counts,
+                           "train_core_rms_ps": width(branch_residual(train, model - offset), core_ps).get(
+                               "core_rms_ps")})
+            if rounds[-1]["rms_change_ps"] < float(options["rule_tolerance_ps"]):
+                break
+        lut.manifest["rule_rounds"] = rounds
+        lut.manifest["rule_converged"] = rounds[-1]["rms_change_ps"] < float(options["rule_tolerance_ps"])
     lut.manifest["branch_iterations"] = history
     lut.manifest["branch_flips"] = flips
-    core_ps = float(options["core_ps"])
     widths = {"train": {"before": width(branch_residual(train, 0.0), core_ps),
-                        "after": width(branch_residual(train, model), core_ps)}}
+                        "after": width(branch_residual(train, model - offset), core_ps)}}
     held, profiles = events["heldout"], {}
     if len(held["dt"]):
         h1, h2 = sides(held)
         held_model, _, _ = core.walk_difference(lut, h1, h2)
-        before, after = branch_residual(held, 0.0), branch_residual(held, held_model)
+        held_offset = 0.0 if rule == "top" else rule_difference(held, lut, rule)[0]
+        before, after = branch_residual(held, 0.0), branch_residual(held, held_model - held_offset)
         widths["heldout"] = {"before": width(before, core_ps), "after": width(after, core_ps)}
+        if rule != "top":
+            widths["heldout"]["after (top)"] = width(branch_residual(held, held_model), core_ps)
         edges = {"charge": lut.edges["walk2d"][0], "share": lut.edges["walk2d"][1], "doi_ratio": lut.edges["doi"][0],
                  "kev": lut.edges["kev"][0]}
         profiles["bar held-out (side i)"] = walkplots.residual_profiles(h1, before, after, edges, core_ps=core_ps)
@@ -325,13 +410,23 @@ def run_fit(spec, *, log=print):
                                  "skew LUT was solved with walk")
         if WalkLut.read(spec["walk_lut"]).sha256 != skew_walk:
             raise core.WalkError(f"walk_lut is not the walk LUT {skew_walk[:12]}... the skew LUT was solved with")
+    rule, start = spec.get("timestamp_rule", "top"), None
+    if spec.get("rule_start_walk") is not None:
+        start = WalkLut.read(spec["rule_start_walk"])
+        if start.sha256 != spec["rule_start_walk_sha256"]:
+            raise core.WalkError(f"rule_start_walk {spec['rule_start_walk']} is not the frozen "
+                                 f"{spec['rule_start_walk_sha256']}")
+        if start.manifest.get("map_sha256") != setup.provenance["map_sha256"]:
+            raise core.WalkError("rule_start_walk was fitted for another map (map SHA-256 differs)")
     sets = [ObservationSet(Path(spec["work"]) / run.name / "observations") for run in job.runs]
-    events, counts, sampling = bar_events(sets, DelayTable.from_lut(skew), max_events=spec["max_events"])
+    events, counts, sampling = bar_events(sets, DelayTable.from_lut(skew), max_events=spec["max_events"], rule=rule)
     log(f"{counts['train']['kept']:,} train events (stride {sampling['stride']}), "
         f"{counts['heldout']['kept']:,} held-out events")
-    options = {k: spec[k] for k in _FIT_OPTIONAL if k != "walk_lut"}
+    options = {k: spec[k] for k in _FIT_OPTIONAL if k not in _FIT_PATHS
+               and (rule != "top" or not k.startswith(("timestamp_rule", "rule_")))}
     manifest = {"created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), "fit_kind": "bar",
-                "requirement": "012-FR-3", "fit_file": str(spec["path"]), "fit_file_sha256": spec["sha256"],
+                "requirement": "012-FR-3" if rule == "top" else "014-FR-4", "fit_file": str(spec["path"]),
+                "fit_file_sha256": spec["sha256"],
                 "job": str(spec["job"]), "job_sha256": stamp["sha256"], "work": str(spec["work"]),
                 "skew_lut": str(spec["skew_lut"]), "skew_lut_sha256": spec["skew_lut_sha256"],
                 "skew_lut_table_sha256": skew.manifest["table"]["sha256"],
@@ -340,7 +435,11 @@ def run_fit(spec, *, log=print):
                 "energy_calibration": encal, "cuts": sets[0].manifest["fingerprint"]["features"].get("selection"),
                 "split": "train rows of the job's runs (every stride-th); held-out rows never fitted",
                 "events": counts, "sampling": sampling, "options": options}
-    lut, widths, profiles = fit_bar(events, options, manifest)
+    if rule != "top":
+        from src.imas.skew import timestamp
+        manifest |= {"skew_timestamp_rule": timestamp.table_rule(skew.manifest),
+                     "rule_start_walk": None if start is None else str(spec["rule_start_walk"])}
+    lut, widths, profiles = fit_bar(events, options, manifest, start=start)
     lut.write(output)
     report = {"schema": REPORT_SCHEMA, "walk_lut": str(output), "walk_lut_sha256": lut.sha256, "manifest": lut.manifest,
               "widths": widths, "profiles": profiles, "seconds": round(time.perf_counter() - started, 1)}

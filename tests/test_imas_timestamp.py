@@ -364,3 +364,85 @@ def test_rule_adjusted_partitions_match_correct_dt(tmp_path, setup, candidate_fi
     walk_only = _stream(tmp_path / "walk", setup, candidate_files, carry_walk=True)
     with pytest.raises(ts.RuleError, match="carry_candidates"):
         ts.RuleAdjusted(iw.WalkCorrected(walk_only, walk), skew, walk, "top_earliest_mean")
+
+
+# --- T5: walk fit under the rule (FR-4) ------------------------------------------------------
+RULE_FIT = {"bins": dict(iw.DEFAULT_BINS), "min_events": 50, "core_ps": 600.0, "iterations": 3,
+            "branch_iterations": 2, "max_events": 10 ** 9, "timestamp_rule": "top_earliest_mean", "rule_rounds": 6,
+            "rule_tolerance_ps": 0.5}
+
+
+def truth_walk():
+    edges = {"walk2d": [[0.0, 15.0, 22.0, 100.0], [0.0, 0.75, 1.01]], "doi": [[0.0, 3.0, 10.0]],
+             "kev": [[0.0, 500.0, 1000.0]]}
+    offsets = {"walk2d": [[120.0, 60.0], [0.0, -20.0], [-80.0, -120.0]], "doi": [15.0, -15.0], "kev": [10.0, -10.0]}
+    events = {"walk2d": [[1, 1], [1, 1], [1, 1]], "doi": [1, 1], "kev": [1, 1]}
+    return iw.WalkLut(edges, offsets, events, {b: [] for b in edges}, {})
+
+
+def late_top_events(rng, n, truth, late_ps=600.0, late_share=0.1, sigma=150.0):
+    """``bar_events`` arrays (rule layout) of skew-corrected two-branch events: a share of tops fire ``late_ps``
+    late and then have an on-time neighbour; other sides have a neighbour 30 % of the time."""
+    branch = np.where(rng.random(n) < 0.5, -1070.0, 1070.0)
+    events = {"near": np.full(n, -1070.0, np.float32), "far": np.full(n, 1070.0, np.float32)}
+    arrival = {"i": branch + rng.normal(0, 30, n), "j": np.zeros(n)}
+    stamps = {}
+    for s in ("i", "j"):
+        charge, share = rng.uniform(10, 30, n), rng.uniform(0.55, 1.0, n)
+        q_time, doi, kev = charge / share, rng.uniform(1.5, 5.5, n), rng.uniform(420, 600, n)
+        late = rng.random(n) < late_share
+        values, _ = iw.walk_inputs(charge, q_time, doi, kev)
+        stamps[s] = arrival[s] + truth.correction(values)[0] + rng.normal(0, sigma, n) + np.where(late, late_ps, 0)
+        neighbour = late | (rng.random(n) < 0.3)
+        c_charge = rng.uniform(2, 9, n)
+        c_values, _ = iw.walk_inputs(c_charge, q_time, doi, kev)
+        c_stamp = arrival[s] + truth.correction(c_values)[0] + rng.normal(0, sigma, n)
+        rel = np.full((n, ts.SLOTS), np.nan, np.float32)
+        rel[:, 0] = np.where(neighbour, c_stamp - stamps[s], np.nan)
+        cand_charge = np.zeros((n, ts.SLOTS), np.float32)
+        cand_charge[:, 0] = c_charge
+        events |= {f"charge_{s}": charge, f"share_{s}": share, f"doi_ratio_{s}": doi, f"kev_{s}": kev,
+                   f"q_time_{s}": q_time, f"rel_{s}": rel, f"cand_charge_{s}": cand_charge}
+    events["dt"] = stamps["i"] - stamps["j"]
+    return {k: np.asarray(v, np.float32) for k, v in events.items()}
+
+
+@pytest.mark.fr("014-FR-4")
+def test_walk_fit_under_rule_converges_and_beats_top():
+    rng = np.random.default_rng(31)
+    truth = truth_walk()
+    events = {"train": late_top_events(rng, 120_000, truth), "heldout": late_top_events(rng, 40_000, truth)}
+    top_options = {k: v for k, v in RULE_FIT.items() if not k.startswith(("timestamp_rule", "rule_"))}
+    top_lut, top_widths, _ = iw.fit_bar(events, top_options, {"fit_kind": "synthetic"})
+    lut, widths, _ = iw.fit_bar(events, RULE_FIT, {"fit_kind": "synthetic"})
+    rounds = lut.manifest["rule_rounds"]
+    assert lut.manifest["timestamp_rule"] == "top_earliest_mean" and lut.manifest["rule_start_walk_sha256"] is None
+    assert lut.manifest["rule_converged"] and 2 <= len(rounds) <= RULE_FIT["rule_rounds"] + 1
+    assert rounds[-1]["rms_change_ps"] < 0.5 and rounds[1]["rule_acts_share"] > 0.1
+    assert "rule_rounds" not in top_lut.manifest and "timestamp_rule" not in top_lut.manifest
+    h1, h2 = iw.sides(events["heldout"])
+    fitted, _, _ = iw.core.walk_difference(lut, h1, h2)
+    injected, _, _ = iw.core.walk_difference(truth, h1, h2)
+    assert np.sqrt(np.mean((fitted - injected) ** 2)) < 0.2 * np.sqrt(np.mean(injected ** 2))
+    rule_after, top_after = widths["heldout"]["after"], top_widths["heldout"]["after"]
+    assert rule_after["core_rms_ps"] < top_after["core_rms_ps"] - 5
+    assert rule_after["core_rms_ps"] < widths["heldout"]["after (top)"]["core_rms_ps"]
+
+
+@pytest.mark.fr("014-FR-4")
+def test_rule_fit_options(tmp_path):
+    import json
+    base = {"schema": iw.FIT_SCHEMA, "job": "j.json", "work": "w", "skew_lut": "s.csv", "skew_lut_sha256": "a",
+            "output": "o.json"}
+    for extra, match in (({"timestamp_rule": "earliest"}, "skew-only"), ({"timestamp_rule": "mean"}, "top_earliest"),
+                         ({"rule_rounds": 0}, "positive integer"), ({"rule_tolerance_ps": 0}, "positive"),
+                         ({"timestamp_rule": "top_earliest_mean", "rule_start_walk": "w3.json"}, "go together"),
+                         ({"rule_start_walk": "w3.json", "rule_start_walk_sha256": "b"}, "other than 'top'")):
+        path = tmp_path / "fit.json"
+        path.write_text(json.dumps(base | extra), encoding="utf-8")
+        with pytest.raises(iw.core.WalkError, match=match):
+            iw.load_fit(path)
+    path.write_text(json.dumps(base | {"timestamp_rule": "top_earliest_mean", "rule_start_walk": "w3.json",
+                                       "rule_start_walk_sha256": "b"}), encoding="utf-8")
+    spec = iw.load_fit(path)
+    assert spec["rule_start_walk"] == tmp_path / "w3.json" and spec["rule_rounds"] == 4
