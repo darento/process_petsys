@@ -1,6 +1,6 @@
 # Spec 014 — IMAS side timestamp from the top and earliest TIME hits
 
-Status: `draft` (2026-10-29)
+Status: `approved` (2026-10-30; clarified 2026-10-30, drafted 2026-10-29)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 011](../011-imas-skew-calibration/spec.md) (selection, skew LUT, FR-10 acceptance rule) and shipped [spec 012](../012-imas-timing-walk/spec.md) (walk LUT, round trip, `correct_dt`). Spec 012 put multi-timestamp estimators out of scope; this spec adds one.
 
@@ -43,15 +43,17 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
 ## Requirements
 
 - **FR-1 — Side timestamp rule.**
-  - Per side, every TIME hit of the selected minimodule that passes the hit energy floor (`en_min_ch`) is a candidate. Each candidate is corrected as if it were the timestamped hit: its own channel's skew delay, and the walk with its own charge as the charge input. The share, DOI ratio and keV inputs stay the side's.
+  - Per side, every TIME hit of the selected minimodule that passes the hit energy floor (`en_min_ch`) is a candidate. Each candidate is corrected as if it were the timestamped hit: its own channel's skew delay, and the walk with its own charge as the charge input and its own share (its charge over the side's summed TIME charge; clarify 8). The DOI ratio and keV inputs stay the side's.
   - The **earliest** hit is the candidate with the smallest corrected time.
-  - If the earliest is the top hit, the side time is the top's corrected time (identical to now).
-  - Otherwise the side time is the mean of the top and earliest corrected times. The rule SHALL take a lower bound on how much earlier the earliest may be (`earliest_window_ps`; clarify 1). An earlier hit beyond it is ignored and counted.
+  - Three rules, named in every table manifest and report:
+    - `top`: the top's corrected time (spec 011/012, unchanged).
+    - `top_earliest_mean`: if the earliest is the top hit, the top's corrected time (identical to `top`); otherwise the plain mean of the top and earliest corrected times. No limit on how much earlier the earliest may be (clarify 1).
+    - `earliest`: the earliest candidate's corrected time. For the skew-only tables (legacy, EM) in the FR-5 comparison only (clarify 4).
   - A candidate without an applied delay or with a missing walk input is excluded and counted. The top hit's handling is unchanged (spec 012 FR-6 policy).
   - Ties prefer the top hit.
 - **FR-2 — Features and caches.**
-  - The selection carries, per side, the earliest candidate's channel, raw timestamp and charge beside the top's. With no earlier candidate, it carries the top's own values.
-  - The observation dtype and the stream-set fingerprint record the timestamp rule. A cache built without the earliest-hit columns is refused for the new rule, never silently reused (as spec 012 FR-4).
+  - The earliest hit depends on the tables, which change during the refit, so it is chosen when the tables are applied, not at selection. The selection carries, per side, every other candidate of the minimodule (at most 7): its TIME channel, its timestamp relative to the top's (ps) and its charge (clarify 7).
+  - The observation dtype and the stream-set fingerprint record the carried candidates. A set built without them is refused for a rule other than `top`, never silently reused (as spec 012 FR-4).
   - Cornell features, caches, goldens and results are unchanged.
 - **FR-3 — Correction function and table identity.**
   - `correct_dt` (or a sibling) applies FR-1 from the carried columns for one skew + walk pair.
@@ -61,6 +63,7 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
     1. walk fitted with the shipped em2 skew;
     2. skew re-solved with that walk;
     3. walk refitted.
+  - Under `top_earliest_mean` a side's time involves two channels' delays and walks (½ each), while the shared EM and walk fit assume one per side. Each solve and fit is a fixed point (clarify 9): the solver sees the top's time adjusted by the rule's offset from the previous tables, re-computed after each pass until the tables stop changing (or a pass limit). Passes and changes are reported; the shared EM and walk kernels are unchanged.
   - Held-out widths and the change at each step are reported, as in spec 012 FR-3.
   - New outputs never overwrite the spec 011/012 deliverables.
 - **FR-5 — CTR comparison and acceptance.**
@@ -68,9 +71,10 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
     - em2 + walk3 under `top`;
     - em2 + walk3 under the rule (frozen, mismatch option);
     - the refitted pair under the rule.
-  - It reports these per 22Na position and pooled, with the share of events where the rule acts, ignored earlier hits and excluded candidates.
+  - It reports these per 22Na position and pooled, with the share of events where the rule acts and the excluded candidates.
+  - Under the mismatch option it also reports the frozen legacy and EM skew-only tables under `top` and `earliest` (clarify 4); no skew-only table is refitted (clarify 6).
   - **Acceptance:** pooled over the four 22Na positions, the refitted pair under the rule is better than em2 + walk3 under `top` by more than their combined uncertainty (spec 011 FR-10 rule, model-free FWHM; Gaussian reported). No position may be worse by more than its uncertainty.
-  - The spec 013 NECR tool, given the new pair and rule, reports the NECR frames without breaking its gates. This is evidence, not acceptance.
+  - The spec 013 NECR tool, given the new pair and rule, reports the NECR frames without breaking its gates. This is evidence, not acceptance. Spec 013's headline stays em2 + walk3 under `top`; the new pair is reported beside it (clarify 5).
 - **FR-6 — Exports.**
   - The rule is software-only, like em2 + walk3 (spec 012 spec change): PETsys native and legacy skew exports carry no rule and stay spec 011's EM LUT.
   - The walk LUT export records the rule in its manifest.
@@ -85,7 +89,7 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
 - **Synthetic fixtures:**
   - A side with an injected late top timestamp and an earlier neighbour gets the mean.
   - A side whose top hit is earliest is bit-identical to `top`.
-  - Hits beyond the window, uncorrectable candidates and ties are counted and handled per FR-1.
+  - Uncorrectable candidates and ties are counted and handled per FR-1; an earliest hit far earlier than the top (no window) still gives the mean; `earliest` returns the earliest candidate.
   - Mismatched table rules are refused (FR-3).
   - A cache without the new columns is refused (FR-2).
 - **Cornell:** spec 008/009 tests, goldens and baselines pass unchanged.
@@ -93,13 +97,17 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
 - **Real data (Windows, this PC, HDD attached):** the FR-4 round trip completes with recorded timings and memory, and FR-5 acceptance passes.
 - **Suites:** the required repository suites pass; missing acquisitions are explicit skips naming `PETSYS_DATA_DIR`.
 
-## Clarify questions (open)
+## Clarifications (owner, 2026-10-30)
 
-1. **Earliest window:** no limit, or ignore hits more than 500 ps earlier? On the NECR frames they give the same width (444 vs 444 ps at frame 30; 661 vs 667 at frame 7). A limit guards against dark counts.
-2. **Combination:** the plain mean of top and earliest, or a weighted form? The charge²-weighted mean within ±500 ps matched the plain mean (444 ps at frame 30).
-3. **Interim use:** may the frozen em2 + walk3 be used under the rule before the refit (gain about 8–11 ps on NECR), or only the refitted pair?
-4. **Legacy and EM skew-only tables:** for these the earliest hit outright did better than the mean. Is that variant in scope, or only the em2 + walk3 lineage?
-5. **Spec 013:** after shipping, does the NECR CTR report switch to the new pair, or keep em2 + walk3 as its frozen headline table?
+1. **Earliest window:** no limit. Every earlier candidate counts (FR-1).
+2. **Combination:** plain mean of the top and earliest corrected times.
+3. **Interim use:** frozen em2 + walk3 under the rule only in the FR-5 comparison (mismatch option). The deliverable is the refitted pair.
+4. **Skew-only tables:** in scope. The `earliest` rule is applied to the frozen legacy and EM tables in the FR-5 comparison.
+5. **Spec 013:** keeps em2 + walk3 under `top` as its headline; the new pair is reported beside it as spec 014 evidence.
+6. **Skew-only fit:** none. Legacy and EM are compared frozen; PETsys exports unchanged (FR-6).
+7. **Candidates (plan, 2026-10-30):** carry every other TIME hit of the selected minimodule (≤ 7 per side). Measured on NECR frames 7 and 30: up to 8 TIME hits per minimodule, about 1.7 besides the top per side; EM2 delays spread up to 5.3 ns within a minimodule (median 0.3 ns), the walk2d block 0.4 ns, so any candidate can become the earliest.
+8. **Share input (plan, 2026-10-30):** a candidate's share is its own charge over the side's summed TIME charge, as `walk_inputs` derives it and as the exploratory gain was measured.
+9. **Refit method (plan, 2026-10-30):** fixed point on the top's adjusted time; shared EM and walk kernels unchanged.
 
 ## Out of scope
 
