@@ -69,7 +69,14 @@ def delay_table(path, setup):
 
 def _without_walk(table, path):
     """Spec 012 FR-4: a skew LUT solved with walk-corrected data is valid only with its walk LUT; the native
-    and legacy forms carry no walk, so they are refused."""
+    and legacy forms carry no walk, so they are refused. Spec 014 FR-6: nor do they carry a timestamp rule, so a
+    LUT fitted under a rule other than ``top`` is refused, naming it."""
+    from src.imas.skew import timestamp
+    rule = timestamp.table_rule(table.manifest)
+    if rule != "top":
+        raise lut.LutError(f"{Path(path).name} was fitted under timestamp rule {rule!r}; the native and legacy forms "
+                           "time each side by its top hit (rule 'top'), so they would not reproduce it (apply it "
+                           "with src.imas.skew.walk.correct_dt)")
     walk = (table.manifest.get("provenance") or {}).get("walk_lut_sha256")
     if walk:
         raise lut.LutError(f"{Path(path).name} was solved with walk LUT {walk[:12]}...; the native and legacy forms "

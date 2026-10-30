@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T7 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T9 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -161,7 +161,30 @@ Status: in progress 2026-10-30 (T1–T7 done). [Approved spec](spec.md), [plan](
     - Native and legacy exports refuse a rule skew LUT, naming the rule.
     - The walk export manifest carries `timestamp_rule`.
     - Existing export tests pass unchanged.
-- [ ] **T9 — Diagnostics** (FR-7). **Done when** the PNGs are written headless from a synthetic CTR run.
+  - Deviations:
+    - `outputs._without_walk` checks the rule before the walk pairing, so a rule LUT is refused naming its rule whether or not it was solved with walk (every real rule LUT is).
+    - The walk export's manifest is a byte copy, so it carries `timestamp_rule` when the LUT has it; `export.json` records `timestamp_rule` for every LUT (`top` when absent).
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: IMAS `outputs.py` (native/legacy, CLI `export`) and `walk.export_walk`: every IMAS test plus LUT/export tests.
+    - `tests/test_imas_timestamp.py -k exports -n 0 --slow-limit 5`: 1 passed.
+    - `-k "imas or export or lut" -m "not real_data"`: 273 passed (existing export tests unedited).
+- [x] **T9 — Diagnostics** (FR-7). **Done when** the PNGs are written headless from a synthetic CTR run.
+  - `src/imas/skew/timestampplots.py`: `RuleDiagnostics`, which the CTR accumulator fills for every rule table on near-source events (nominal variant), and `write_plots`. Report keys `timestamp_diagnostics` (pooled, per position, per minimodule) and `timestamp_plots`. PNGs `<stem>_<table>_lead.png`, `_ctr_by_lead.png` and `_minimodule_share.png` sit next to the CTR report.
+  - Deviations:
+    - "Offset" is the **lead** per side: the earliest candidate's corrected time minus the top's, with the table's own skew and walk (0 = top earliest, 25 ps bins over −3 ns, sides below −3 ns counted).
+    - CTR per lead bin: an event is binned by its more negative lead (no act, 0–100, 100–250, 250–500, 500–1000, > 1000 ps). Before = the same tables under `top` (mismatch internal); after = the table's rule.
+    - The residual is oriented so the leading side's late top is positive, and the Gaussian mean is plotted beside the model-free FWHM. Within a bin a late top shifts the peak instead of widening it, so the per-bin FWHM does not show the rule but the mean does.
+    - CTR only; NECR reports its rule counts (T7) but no FR-7 plots.
+    - Cost: one extra `top` correction and two `side_offset` calls per rule table and batch.
+  - Synthetic numbers (T7 fixture, em_walk@mean, pooled; FWHM / mean ps, before → after):
+    - no act: 178 / 6 → 178 / 6 (574 events)
+    - 250–500 ps: 273 / 405 → 219 / 238 (1248 events)
+    - 500–1000 ps: 230 / 435 → 182 / 208 (1400 events)
+    - Rule acts on about 65 % of sides (34.8 % top earliest).
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: IMAS `ctr.py` and the new module, so every IMAS test. PNGs viewed once.
+    - `tests/test_imas_timestamp.py -m "not real_data" -n 0 --slow-limit 5`: 27 passed. The T7 CTR test also covers FR-7 now.
+    - `-k imas -m "not real_data"`: 245 passed.
 
 ## Real data and validation
 

@@ -552,7 +552,9 @@ def check_tables(skew_lut, skew_sha256, walk_lut, setup):
 
 def export_walk(walk_path, out):
     """FR-6: the walk LUT and its manifest (byte copies, SHA-256 checked), ``imas_walk_curves.tsv`` (one row per
-    bin) and ``export.json``; existing outputs are refused. PETsys's native table has no walk."""
+    bin) and ``export.json``; existing outputs are refused. PETsys's native table has no walk. ``export.json``
+    records the timestamp rule the LUT was fitted under (spec 014 FR-6)."""
+    from src.imas.skew import timestamp
     walk_path, out = Path(walk_path), Path(out)
     lut = WalkLut.read(walk_path)
     targets = [out / name for name in EXPORT_FILES]
@@ -582,6 +584,7 @@ def export_walk(walk_path, out):
               "walk_lut_sha256": lut.sha256, "skew_lut_sha256": lut.manifest.get("skew_lut_sha256"),
               "skew_solved_with_walk_lut_sha256": lut.manifest.get("skew_solved_with_walk_lut_sha256"),
               "map_sha256": lut.manifest.get("map_sha256"), "convention": CONVENTION, "edges": "clamp",
+              "timestamp_rule": timestamp.table_rule(lut.manifest),      # spec 014 FR-6
               "files": {t.name: hashlib.sha256(t.read_bytes()).hexdigest() for t in targets[:3]},
               "native_table": "none: PETsys applies no walk correction"}
     targets[3].write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")

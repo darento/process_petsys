@@ -378,6 +378,11 @@ class Accumulator:
         self.ruled = [name for name, table in zip(self.names, self.tables) if table_rule(table) != "top"]
         for stage in self.stages if self.ruled else ():
             stage[RULE_STAGE] = {name: {"near source": 0, "rule acts near source": 0} for name in self.ruled}
+        self.diagnostics = None
+        if self.ruled:                          # spec 014 FR-7: lead and CTR per lead bin, per position
+            from src.imas.skew.timestampplots import RuleDiagnostics
+            self.diagnostics = RuleDiagnostics({name: self.tables[self.names.index(name)] for name in self.ruled},
+                                               positions(spec), self.edges)
         self.pre_geometry = [{} for _ in range(n)]
         self.channels_seen = set()
         self.profile = None
@@ -434,6 +439,9 @@ class Accumulator:
             for name, acts in acting.items():
                 stages[RULE_STAGE][name]["near source"] += int(np.count_nonzero(near))
                 stages[RULE_STAGE][name]["rule acts near source"] += int(np.count_nonzero(acts & near))
+            if self.diagnostics is not None:
+                self.diagnostics.add(index, features, near, tof,
+                                     {name: corrected[self.names.index(name)] for name in self.ruled})
             if self.profile is not None:
                 self._profile(index, features, near, tof, corrected)
             self.channels_seen.update(np.unique(np.concatenate((ch1[near], ch2[near]))).tolist())
@@ -734,6 +742,10 @@ def run_ctr(spec, *, log=print):
         "seconds": round(time.perf_counter() - started, 1),
     }
     spec.output.parent.mkdir(parents=True, exist_ok=True)
+    if accumulator.diagnostics is not None:
+        from src.imas.skew import timestampplots
+        report["timestamp_plots"] = [path.name for path in timestampplots.write_plots(
+            spec.output, report["timestamp_diagnostics"])]
     spec.output.write_text(json.dumps(report, indent=1, default=float) + "\n", encoding="utf-8")
     _write_histograms(spec, accumulator)
     _plot(spec, accumulator, results)
@@ -804,7 +816,11 @@ def _rule_report(spec, accumulator):
                      "pooled": merged(range(len(spec.acquisitions))),
                      "per_position": {p: merged(index) for p, index in positions(spec).items()}}
     return {"timestamp_rules": out, "timestamp_rules_note": "rule acts: on near-source events (nominal variant); "
-            "candidate counts: on the corrected events of the selection, before the LOR cut (spec 014 FR-5)"}
+            "candidate counts: on the corrected events of the selection, before the LOR cut (spec 014 FR-5)",
+            "timestamp_diagnostics": accumulator.diagnostics.summary(),
+            "timestamp_diagnostics_note": "spec 014 FR-7 diagnostics, not validation evidence: per side the "
+            "earliest-minus-top corrected time (lead); CTR per event lead bin before (the same tables under top) "
+            "and after (the table's rule); rule acts per minimodule"}
 
 
 def _write_histograms(spec, accumulator):

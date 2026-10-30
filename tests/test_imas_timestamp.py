@@ -679,7 +679,8 @@ def rule_ctr(tmp_path_factory):
     stamps = [(0, 0, 0, 0)] * len(pairs)
     for f in sel.feature_batches(point, lookup, sel.Selection.production(lookup)):
         _, rows = geometry.endpoints(f)
-        tof = (np.linalg.norm(source - rows[:, :3], axis=1) - np.linalg.norm(source - rows[:, 3:], axis=1)) / C_MM_PER_PS
+        tof = (np.linalg.norm(source - rows[:, :3], axis=1)
+               - np.linalg.norm(source - rows[:, 3:], axis=1)) / C_MM_PER_PS
         for k, (record, c1) in enumerate(zip(f.column("record").tolist(), f.column("time_channel_1").tolist())):
             a, b = pairs[record]
             truth = (tof[k], 0.0) if channels(probe, a[0], a[1])[0][a[2]] == c1 else (0.0, tof[k])
@@ -729,7 +730,7 @@ def rule_ctr_file(case, name, **changes):
 
 
 @pytest.mark.slow
-@pytest.mark.fr("014-FR-5")
+@pytest.mark.fr("014-FR-5", "014-FR-7")
 def test_ctr_rule_tables_improve_on_the_same_events(rule_ctr):
     from src.imas.skew import ctr
     report = ctr.run_ctr(ctr.load_ctr(rule_ctr_file(rule_ctr, "ctr.json")), log=lambda *_: None)
@@ -756,6 +757,28 @@ def test_ctr_rule_tables_improve_on_the_same_events(rule_ctr):
     stage = report["counts"]["na22_41"]["stages"][ctr.RULE_STAGE]["em_walk@mean"]
     assert stage["candidates"] >= 2 * fits["em"]["events"] and stage["candidates excluded (no delay)"] == 0
     assert stage["timestamp rule"]["mismatch"] and "candidate exclusions" in report["cuts"]["same_events"]
+    # FR-7 diagnostics (T9): lead per side, CTR per lead bin before/after, share per minimodule; PNGs headless
+    near = report["counts"]["na22_41"]["stages"]["near source"]
+    diagnostics = report["timestamp_diagnostics"]
+    assert set(diagnostics) == set(rules)
+    mean = diagnostics["em_walk@mean"]
+    assert mean["per_position"]["centre"] == mean["pooled"]
+    pooled = mean["pooled"]
+    assert sum(pooled["lead_counts"]) + pooled["top_earliest_sides"] + pooled["below_range_sides"] == 2 * near
+    assert sum(r["sides"] for r in mean["per_minimodule"]) == 2 * near
+    assert 0.3 < sum(r["acting"] for r in mean["per_minimodule"]) / (2 * near) < 0.7
+    bins = {b["bin"]: b for b in pooled["offset_bins"]}
+    still = bins["rule does not act"]
+    assert still["before"]["model_free_fwhm_ps"] == still["after"]["model_free_fwhm_ps"]   # the rule changes nothing
+    for label in ("250-500 ps", "500-1000 ps"):                                         # the late tops
+        assert bins[label]["events"] > 300
+        before, after = bins[label]["before"]["mean_ps"], bins[label]["after"]["mean_ps"]
+        assert before > 200 and 0 < after < 0.75 * before            # the mean rule halves the late shift
+    assert sum(b["events"] for b in pooled["offset_bins"]) == fits["em_walk@mean"]["events"]
+    out = rule_ctr["base"] / "out"
+    assert len(report["timestamp_plots"]) == 3 * len(rules)
+    assert all((out / name).is_file() for name in report["timestamp_plots"])
+    assert "ctr_em_walk_mean_lead.png" in report["timestamp_plots"]
 
 
 @pytest.mark.fr("014-FR-5")
@@ -823,3 +846,27 @@ def test_necr_passes_rule_tables_through(rule_ctr):
               report["results"]["pooled"]["axis"].items()}
     assert widths["em_walk@mean"] == widths["rule_pair"] < widths["em_walk"]
     assert report["frozen_inputs"]["rule_tables"]["em_walk@mean"]["mismatch"]
+
+
+# --- T8: exports (FR-6) ------------------------------------------------------------------------
+@pytest.mark.fr("014-FR-6")
+def test_exports_refuse_rule_skew_and_record_walk_rule(rule_ctr, tmp_path):
+    import json
+    from src.imas.skew import outputs
+    from src.timing.lut import LutError
+    probe = ImasSetup.from_files(CONFIG)
+    bare = rule_ctr["skew_lut"](tmp_path / "lut_rule_bare.csv", timestamp_rule="top_earliest_mean")
+    for lut in (rule_ctr["lut_rule"], bare):          # with and without a walk LUT: the rule is named first
+        with pytest.raises(LutError, match="timestamp rule 'top_earliest_mean'"):
+            outputs.write_native(lut, tmp_path / "native.tsv", probe)
+        with pytest.raises(LutError, match="timestamp rule 'top_earliest_mean'"):
+            outputs.write_legacy(lut, tmp_path / "legacy.txt", probe)
+    assert not (tmp_path / "legacy.txt").exists() and not (tmp_path / "native.tsv").exists()
+    outputs.write_legacy(rule_ctr["lut"], tmp_path / "legacy.txt", probe)       # top tables still export
+    outputs.write_native(rule_ctr["lut"], tmp_path / "native.tsv", probe)
+    record = iw.export_walk(rule_ctr["walk_rule"], tmp_path / "walk_rule")
+    copied = iw.WalkLut.read(tmp_path / "walk_rule" / "imas_walk_lut.json")
+    assert record["timestamp_rule"] == copied.manifest["timestamp_rule"] == "top_earliest_mean"
+    assert json.loads((tmp_path / "walk_rule" / "export.json").read_text(encoding="utf-8"))["timestamp_rule"] \
+        == "top_earliest_mean"
+    assert iw.export_walk(rule_ctr["walk"], tmp_path / "walk_top")["timestamp_rule"] == "top"
