@@ -22,6 +22,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.imas.skew import walk as iw
+from src.timing.cache import ROLES
 
 RULES = ("top", "top_earliest_mean", "earliest")
 SLOTS = 7                                   # 8 TIME channels per minimodule, the top excluded
@@ -44,6 +45,11 @@ def table_rule(manifest):
     manifest = manifest or {}
     rule = manifest.get("timestamp_rule", (manifest.get("provenance") or {}).get("timestamp_rule", "top"))
     return _known(rule)
+
+
+def skew_rule(skew):
+    """The rule of a skew ``DelayTable`` (its LUT provenance; legacy and provenance-less tables are ``top``)."""
+    return table_rule({"provenance": getattr(skew, "provenance", None)})
 
 
 def check_rule(fitted, rule, *, mismatch=False):
@@ -128,3 +134,65 @@ def side_offset(top_channel, candidates, side, skew, walk, rule):
     lead = np.where(acts, earliest - c_top, 0.0)
     counts["rule acts"] = int(np.count_nonzero(acts))
     return (lead / 2 if rule == "top_earliest_mean" else lead), acts, counts
+
+
+def observation_sides(rows, suffix):
+    """Walk ingredients {q_top, q_time, doi_ratio, kev} of one canonical side of walk-carrying observation rows."""
+    return {"q_top": rows[f"q_top_{suffix}"], "q_time": rows[f"q_time_{suffix}"],
+            "doi_ratio": rows[f"doi_ratio_{suffix}"], "kev": rows[f"energy_kev_{suffix}"]}
+
+
+def rule_offsets(rows, skew, walk, rule):
+    """Per row ``offset_i - offset_j`` (float ps) of candidate-carrying observation rows under ``rule``, whether
+    the rule acts on either side, and the summed counts."""
+    offset_i, acts_i, counts_i = side_offset(rows["channel_i"], observation_candidates(rows, "i"),
+                                             observation_sides(rows, "i"), skew, walk, rule)
+    offset_j, acts_j, counts_j = side_offset(rows["channel_j"], observation_candidates(rows, "j"),
+                                             observation_sides(rows, "j"), skew, walk, rule)
+    counts = {key: counts_i[key] + counts_j[key] for key in counts_i if key != "rule acts"}
+    acts = acts_i | acts_j
+    counts["rule acts"] = int(np.count_nonzero(acts))
+    return offset_i - offset_j, acts, counts
+
+
+class RuleAdjusted:
+    """FR-4 fixed point: an observation set (or view) whose partitions get ``dt_ps += rint(offset_i - offset_j)``
+    under ``rule`` with the previous pass's ``skew`` and ``walk`` (None: skew only), so the EM and the walk fit,
+    which see one delay and one walk per side, solve for the top's channel and inputs while the rule's offset
+    from the previous tables is held fixed. No rule check: the fixed point starts from tables fitted under
+    ``top``. ``counts()`` sums per role the partitions read (each counted once)."""
+
+    def __init__(self, observations, skew, walk, rule):
+        require_candidates(observations, rule)
+        self.observations, self.skew, self.walk, self.rule = observations, skew, walk, rule
+        self.partitions = observations.partitions
+        self._counts = {}
+
+    @property
+    def carries_candidates(self):
+        return True
+
+    def partition(self, p):
+        rows = self.observations.partition(p)
+        if self.rule == "top" or not len(rows):
+            self._counts[p] = {}
+            return rows
+        difference, counts = np.zeros(len(rows)), {}
+        for code, role in enumerate(ROLES):
+            mine = rows["role"] == code
+            if mine.any():
+                difference[mine], _, found = rule_offsets(rows[mine], self.skew, self.walk, self.rule)
+                counts[role] = {"rows": int(mine.sum()), **found}
+        self._counts[p] = counts
+        rows = rows.copy()
+        rows["dt_ps"] += np.rint(difference).astype(np.int64)
+        return rows
+
+    def counts(self):
+        total = {}
+        for counts in self._counts.values():
+            for role, entry in counts.items():
+                mine = total.setdefault(role, {})
+                for key, n in entry.items():
+                    mine[key] = mine.get(key, 0) + n
+        return total

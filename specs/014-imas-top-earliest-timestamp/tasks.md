@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T3 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T4 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -60,7 +60,7 @@ Status: in progress 2026-10-30 (T1–T3 done). [Approved spec](spec.md), [plan](
     - `tests/test_imas_timestamp.py -n 0 --slow-limit 5`: 12 passed.
     - `tests/test_imas_*.py tests/test_cornell_*.py tests/test_timing_*.py tests/test_manager_timing*.py tests/test_golden_provenance.py -m "not real_data"`: 365 passed, 4 xfailed. This covers the Cornell cache and stream goldens (`test_cornell_timing_cache.py`, `test_timing_stream.py`), with no test edited.
     - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
-- [ ] **T4 — Correction and identity** (FR-3).
+- [x] **T4 — Correction and identity** (FR-3).
   - `correct_dt(..., rule, candidates_1, candidates_2)`, `correct_features(..., rule)`, `RuleAdjusted`, `timestamp_rule` read from skew and walk manifests.
   - **Done when:**
     - Under `top`, the output equals today's `correct_dt` bit for bit on the spec 012 fixtures.
@@ -68,6 +68,19 @@ Status: in progress 2026-10-30 (T1–T3 done). [Approved spec](spec.md), [plan](
     - `RuleAdjusted` partitions equal `correct_dt` on the same rows.
     - A table fitted under `top` applied under the rule is refused unless the mismatch option is set.
     - `tests/test_imas_walk.py` passes unchanged.
+  - Deviations:
+    - `correct_dt` checks both tables' rules on every call. A rule table applied under `top` is refused too.
+    - Under a rule, the counts add `rule acts`, the summed candidate counts and a `timestamp rule` record. Under `top` the counts are unchanged, with no new keys.
+    - `DelayTable.from_lut` (shared `src/timing/lut.py`) copies the LUT provenance's `timestamp_rule` only when present, so Cornell and existing IMAS delay tables are unchanged.
+    - New helpers: `timestamp.skew_rule`, `observation_sides`, `rule_offsets`.
+    - `RuleAdjusted` lives in `timestamp.py`, because `walk.py` imports `timestamp` lazily and `timestamp` imports `walk`. It refuses a set without candidates. Its counts are per role.
+    - `WalkCorrected` exposes `carries_candidates`.
+    - "Bit for bit under `top`" is checked against the default call: the arithmetic path is untouched and the spec 012 tests pass unedited.
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: shared `lut.py` (Cornell, Manager), IMAS `walk.correct_dt` (CTR, NECR, job). Consumers too broad to list, so the full non-real suite.
+    - `tests/test_imas_timestamp.py -n 0 --slow-limit 5`: 17 passed.
+    - `-m "not real_data"`: 1554 passed, 24 skipped, 4 xfailed. Skips: 18 Linux-only, 1 Tk input, 5 checkout tests while `lut.py` is uncommitted.
+    - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
 
 ## Refit
 

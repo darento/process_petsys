@@ -192,7 +192,11 @@ class DelayTable:
     def from_lut(cls, table):
         """Applied channels of a ``CanonicalLut``; every other listed channel is missing."""
         missing = table.rows["time_channel"][~table.rows["apply"]].tolist()
-        return cls(table._delay, missing, {"lut_sha256": table.manifest["table"]["sha256"]})
+        provenance = {"lut_sha256": table.manifest["table"]["sha256"]}
+        rule = (table.manifest.get("provenance") or {}).get("timestamp_rule")
+        if rule is not None:                    # IMAS spec 014 FR-3: absent means the top-hit timestamp
+            provenance["timestamp_rule"] = rule
+        return cls(table._delay, missing, provenance)
 
     def lookup(self, channels):
         """(delays, found) for an array of channels; delays are 0 where not found (check ``found``)."""

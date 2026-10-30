@@ -111,6 +111,10 @@ class WalkCorrected:
         self.partitions = observations.partitions
         self._counts = {}
 
+    @property
+    def carries_candidates(self):
+        return getattr(self.observations, "carries_candidates", False)
+
     def partition(self, p):
         rows, self._counts[p] = correct_rows(self.observations.partition(p), self.lut)
         return rows
@@ -367,14 +371,24 @@ CORRECTION_STATUS = ("corrected", "no applied delay", "walk input missing")
 EXPORT_FILES = ("imas_walk_lut.json", "imas_walk_lut.manifest.json", "imas_walk_curves.tsv", "export.json")
 
 
-def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, policy="keep"):
+def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, policy="keep", rule="top",
+               candidates_1=None, candidates_2=None, mismatch=False):
     """``t_1 - t_2`` corrected per side by the skew delays (``DelayTable``) and the walk LUT (None: skew only).
 
     ``side_s``: raw ingredients {q_top, q_time, doi_ratio, kev}. Returns the corrected ``dt`` (float ps), a status
     per event (``CORRECTION_STATUS``) and counts. An event without both delays or (with walk) without every walk
-    input is not corrected: ``keep`` returns its uncorrected ``dt``, ``drop`` NaN (spec 009 FR-6 policy)."""
+    input is not corrected: ``keep`` returns its uncorrected ``dt``, ``drop`` NaN (spec 009 FR-6 policy).
+
+    Spec 014: each side is timestamped by ``rule`` (``timestamp.RULES``) from its ``candidates_s``
+    (``timestamp.CANDIDATE_DTYPE`` slots); the corrected events get ``offset_1 - offset_2`` (``timestamp.
+    side_offset``) and the counts ``rule acts`` (events) and the candidate counts per side summed. Both tables
+    must have been fitted under ``rule`` unless ``mismatch`` names the difference (``timestamp.check_rule``)."""
+    from src.imas.skew import timestamp
     if policy not in POLICIES:
         raise core.WalkError(f"policy must be one of {POLICIES}")
+    rules = [timestamp.check_rule(timestamp.skew_rule(skew), rule, mismatch=mismatch)]
+    if walk is not None:
+        rules.append(timestamp.check_rule(timestamp.table_rule(walk.manifest), rule, mismatch=mismatch))
     dt = np.asarray(dt_ps, np.float64)
     b1, f1 = skew.lookup(np.asarray(channel_1))
     b2, f2 = skew.lookup(np.asarray(channel_2))
@@ -390,19 +404,32 @@ def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, polic
         for name in INPUTS:
             counts[f"clamped {name}"] = int(np.count_nonzero((status == 0) & out_1[name])
                                             + np.count_nonzero((status == 0) & out_2[name]))
+    if rule != "top":
+        offset_1, acts_1, counts_1 = timestamp.side_offset(channel_1, candidates_1, side_1, skew, walk, rule)
+        offset_2, acts_2, counts_2 = timestamp.side_offset(channel_2, candidates_2, side_2, skew, walk, rule)
+        corrected = corrected + np.where(status == 0, offset_1 - offset_2, 0.0)
+        counts["rule acts"] = int(np.count_nonzero((status == 0) & (acts_1 | acts_2)))
+        for key in counts_1:
+            if key != "rule acts":
+                counts[key] = counts_1[key] + counts_2[key]
+        counts["timestamp rule"] = {**rules[-1], "tables": [r["table_rule"] for r in rules]}
     for code, label in enumerate(CORRECTION_STATUS):
         counts[label] = int(np.count_nonzero(status == code))
     counts[f"uncorrected {'kept' if policy == 'keep' else 'dropped'}"] = int(np.count_nonzero(status != 0))
     return np.where(status == 0, corrected, dt if policy == "keep" else np.nan), status, counts
 
 
-def correct_features(features, skew, walk, *, policy="keep"):
-    """``correct_dt`` of a ``FeatureBatch`` (sides 1 and 2, keV from the selection's calibration)."""
+def correct_features(features, skew, walk, *, policy="keep", rule="top", mismatch=False):
+    """``correct_dt`` of a ``FeatureBatch`` (sides 1 and 2, keV from the selection's calibration; under a spec 014
+    rule the candidates from ``features.candidates``)."""
     def side(s):
         return {"q_top": features.column(f"q_top_{s}"), "q_time": features.column(f"q_time_{s}"),
                 "doi_ratio": features.column(f"doi_ratio_{s}"), "kev": features.column(f"energy_kev_{s}")}
+    candidates = features.candidates if rule != "top" else None
     return correct_dt(features.column("dt_ps"), features.column("time_channel_1"), features.column("time_channel_2"),
-                      side(1), side(2), skew, walk, policy=policy)
+                      side(1), side(2), skew, walk, policy=policy, rule=rule, mismatch=mismatch,
+                      candidates_1=None if candidates is None else candidates[:, 0],
+                      candidates_2=None if candidates is None else candidates[:, 1])
 
 
 def check_tables(skew_lut, skew_sha256, walk_lut, setup):

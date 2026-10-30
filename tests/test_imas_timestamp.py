@@ -260,3 +260,107 @@ def test_sets_without_candidates_are_refused(tmp_path, setup, candidate_files):
     ts.require_candidates(carried, "top_earliest_mean")
     assert "candidates" not in walk_only.manifest["fingerprint"] and carried.manifest["fingerprint"]["candidates"][
         "slots"] == ts.SLOTS
+
+
+# --- T4: correction under a rule and table identity (FR-3) -------------------------------------
+def full_skew(setup, seed=5, provenance=None):
+    rng = np.random.default_rng(seed)
+    return DelayTable({int(c): float(rng.normal(0, 400)) for c in setup.time_channels.tolist()},
+                      provenance=provenance)
+
+
+def ruled_walk(rule):
+    lut = walk_lut()
+    lut.manifest = {"timestamp_rule": rule} if rule else {}
+    return lut
+
+
+def _candidate_features(setup, paths):
+    lookup = setup.lookup()
+    return [b for path in paths for b in sel.feature_batches(path, lookup, sel.Selection.production(lookup))
+            if len(b.ints)]
+
+
+@pytest.mark.fr("014-FR-3")
+def test_top_rule_is_todays_correction(setup, candidate_files):
+    skew = full_skew(setup)
+    for features in _candidate_features(setup, candidate_files):
+        for walk in (None, walk_lut()):
+            before = iw.correct_features(features, skew, walk)
+            after = iw.correct_features(features, skew, walk, rule="top")
+            assert before[0].tobytes() == after[0].tobytes() and np.array_equal(before[1], after[1])
+            assert before[2] == after[2] and "rule acts" not in after[2]
+
+
+@pytest.mark.fr("014-FR-3")
+def test_rule_correction_adds_side_offsets(setup, candidate_files):
+    skew, walk, acted = full_skew(setup), walk_lut(), 0
+    for features in _candidate_features(setup, candidate_files):
+        top, status, _ = iw.correct_features(features, skew, walk)
+        ruled, status_r, counts = iw.correct_features(features, skew, walk, rule="top_earliest_mean", mismatch=True)
+        assert np.array_equal(status, status_r)
+        offsets = []
+        for s in (1, 2):
+            side = {"q_top": features.column(f"q_top_{s}"), "q_time": features.column(f"q_time_{s}"),
+                    "doi_ratio": features.column(f"doi_ratio_{s}"), "kev": features.column(f"energy_kev_{s}")}
+            offsets.append(ts.side_offset(features.column(f"time_channel_{s}"), features.candidates[:, s - 1], side,
+                                          skew, walk, "top_earliest_mean"))
+        ok = status == 0
+        np.testing.assert_array_equal(ruled[ok], top[ok] + (offsets[0][0] - offsets[1][0])[ok])
+        assert counts["rule acts"] == int(np.count_nonzero(ok & (offsets[0][1] | offsets[1][1])))
+        assert counts["timestamp rule"] == {"table_rule": "top", "rule": "top_earliest_mean", "mismatch": True,
+                                            "tables": ["top", "top"]}
+        acted += counts["rule acts"]
+    assert acted > 10
+
+
+@pytest.mark.fr("014-FR-3")
+def test_tables_refused_under_another_rule(setup, candidate_files):
+    (features, *_) = _candidate_features(setup, candidate_files)
+    skew = full_skew(setup)
+    with pytest.raises(ts.RuleError, match="'top'.*'top_earliest_mean'"):
+        iw.correct_features(features, skew, walk_lut(), rule="top_earliest_mean")
+    ruled_skew = full_skew(setup, provenance={"lut_sha256": "x", "timestamp_rule": "top_earliest_mean"})
+    with pytest.raises(ts.RuleError, match="'top_earliest_mean'.*'top'"):
+        iw.correct_features(features, ruled_skew, None)
+    with pytest.raises(ts.RuleError, match="'top'.*'top_earliest_mean'"):        # the walk LUT's rule is checked
+        iw.correct_features(features, ruled_skew, ruled_walk(None), rule="top_earliest_mean")
+    iw.correct_features(features, ruled_skew, ruled_walk("top_earliest_mean"), rule="top_earliest_mean")
+    assert ts.skew_rule(skew) == "top" and ts.skew_rule(ruled_skew) == "top_earliest_mean"
+
+
+@pytest.mark.fr("014-FR-3")
+def test_delay_table_keeps_the_lut_rule():
+    from types import SimpleNamespace
+    rows = np.array([(3, True), (4, False)], [("time_channel", "<i8"), ("apply", "?")])
+    for provenance, rule in (({}, "top"), ({"timestamp_rule": "top_earliest_mean"}, "top_earliest_mean")):
+        table = SimpleNamespace(rows=rows, _delay={3: 1.0}, manifest={"table": {"sha256": "s"},
+                                                                       "provenance": provenance})
+        delays = DelayTable.from_lut(table)
+        assert ts.skew_rule(delays) == rule
+        assert delays.provenance == ({"lut_sha256": "s"} | ({"timestamp_rule": rule} if provenance else {}))
+
+
+@pytest.mark.fr("014-FR-3")
+def test_rule_adjusted_partitions_match_correct_dt(tmp_path, setup, candidate_files):
+    observations = _stream(tmp_path / "cand", setup, candidate_files, carry_walk=True, carry_candidates=True)
+    skew, walk = full_skew(setup), walk_lut()
+    view = ts.RuleAdjusted(iw.WalkCorrected(observations, walk), skew, walk, "top_earliest_mean")
+    acted = 0
+    for p in range(observations.partitions):
+        raw, adjusted = observations.partition(p), view.partition(p)
+        assert np.array_equal(raw["record"], adjusted["record"])          # every walk input present here
+        expected, status, counts = iw.correct_dt(
+            raw["dt_ps"], raw["channel_i"], raw["channel_j"], ts.observation_sides(raw, "i"),
+            ts.observation_sides(raw, "j"), skew, walk, rule="top_earliest_mean", mismatch=True,
+            candidates_1=ts.observation_candidates(raw, "i"), candidates_2=ts.observation_candidates(raw, "j"))
+        b_i, _ = skew.lookup(adjusted["channel_i"])
+        b_j, _ = skew.lookup(adjusted["channel_j"])
+        assert (status == 0).all()
+        assert np.abs(adjusted["dt_ps"] - b_i + b_j - expected).max() <= 1.0     # two roundings to integer ps
+        acted += counts["rule acts"]
+    assert view.counts()["train"]["rule acts"] == acted > 10
+    assert view.counts()["train"]["rows"] == sum(len(observations.partition(p)) for p in range(observations.partitions))
+    walk_only = _stream(tmp_path / "walk", setup, candidate_files, carry_walk=True)
+    with pytest.raises(ts.RuleError, match="carry_candidates"):
+        ts.RuleAdjusted(iw.WalkCorrected(walk_only, walk), skew, walk, "top_earliest_mean")
