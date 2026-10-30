@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: planned 2026-10-30. [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -11,7 +11,7 @@ Status: planned 2026-10-30. [Approved spec](spec.md), [plan](plan.md).
 
 ## Core
 
-- [ ] **T1 — The rule** (FR-1, FR-3).
+- [x] **T1 — The rule** (FR-1, FR-3).
   - `src/imas/skew/timestamp.py`: `RULES`, `CANDIDATE_DTYPE`, `side_offset`, `check_rule`, `table_rule`.
   - **Done when** `tests/test_imas_timestamp.py`:
     - a side with an injected late top and an earlier neighbour gets the mean (`top_earliest_mean`) or the neighbour (`earliest`);
@@ -21,6 +21,12 @@ Status: planned 2026-10-30. [Approved spec](spec.md), [plan](plan.md).
     - a tie keeps the top;
     - the candidate's walk uses its own charge and share and the side's DOI and keV;
     - `check_rule` refuses a mismatch, naming both rules, and passes with `mismatch=True`.
+  - Deviations:
+    - `empty_candidates(n)` builds empty slots.
+    - `earliest` with a walk LUT is refused (`RuleError`, clarify 4).
+    - A rule other than `top` without candidates is refused.
+    - Counts add `candidates clamped <input>` (plan risk: walk extrapolation).
+  - Verified 2026-10-30 (Windows, this PC). Selection: the new module only; nothing imports it yet. `tests/test_imas_timestamp.py -n 0 --slow-limit 5`: 8 passed.
 - [ ] **T2 — Selection carries candidates** (FR-2).
   - `_select` fills up to 7 other TIME hits per side (sorted by raw lag); `FeatureBatch.candidates`; the holdout filter slices them; an int32 lag overflow is refused.
   - **Done when:**
