@@ -45,6 +45,17 @@ its outputs are ``lut_<estimator>_walk-<sha12>.csv`` and
 ``job_report_walk-<sha12>.json``, never overwritten. ``run --observe-only``
 stops after stage 2 (``job_report_observe.json``).
 
+Timestamp rule (spec 014 FR-4): ``candidates`` streams the other TIME hits of
+each side into the observation sets (a new work directory; not part of the
+job fingerprint, which identifies the events). ``timestamp_rule``
+``top_earliest_mean`` (em only, with a walk LUT fitted under the same rule)
+solves the skew as a fixed point: from ``rule_start_skew`` (a frozen IMAS LUT
+with its SHA-256), each pass runs the EM on the walk-corrected rows with the
+rule's offsets of the previous delays (``timestamp.RuleAdjusted``) until the
+applied delays change by less than ``rule_tolerance_ps`` (gauge-free RMS) or
+after ``rule_passes``. Outputs gain ``_rule-mean``; the checks read the rows
+under the rule with the final delays.
+
 A disk preflight checks the free space in ``DIR`` against the expected
 observation-set size (6.3 GB per TB of LDAT, T8) with a 2x margin.
 ``job_report.json`` holds stage timings, throughput and peak memory.
@@ -62,11 +73,12 @@ import time
 
 import numpy as np
 
-from src.imas.skew import cache as ic, encal, outputs, solve
+from src.imas.skew import cache as ic, encal, outputs, solve, timestamp
 from src.imas.skew import walk as iw
 from src.imas.skew.geometry import SELECTED_AXIAL_SIGN, SELECTED_TRANSVERSE_SIGN, ImasGeometry
 from src.imas.skew.setup import ImasSetup
-from src.timing.cache import OBSERVATION_DTYPE, OBSERVATION_WALK_DTYPE
+from src.timing.cache import OBSERVATION_DTYPE, OBSERVATION_WALK_DTYPE, observation_dtype
+from src.timing.lut import DelayTable, LutError
 from src.timing.report import peak_memory
 
 SCHEMA = "imas-skew-job/1"
@@ -75,7 +87,9 @@ ROLES = ("encal", "train", "heldout")
 OBSERVATION_BYTES_PER_LDAT_BYTE = 6.3e-3 * OBSERVATION_WALK_DTYPE.itemsize / OBSERVATION_DTYPE.itemsize
 DISK_MARGIN = 2.0
 JOB_KEYS = {"schema", "config", "runs", "estimators", "per_run_solves", "workers", "max_records", "legacy",
-            "transverse_sign", "axial_sign", "walk_lut"}
+            "transverse_sign", "axial_sign", "walk_lut", "candidates", "timestamp_rule", "rule_start_skew",
+            "rule_start_skew_sha256", "rule_passes", "rule_tolerance_ps"}
+RULE_SUFFIX = {"top_earliest_mean": "_rule-mean"}
 
 
 class JobError(ValueError):
@@ -110,6 +124,13 @@ class Job:
     axial_sign: int = SELECTED_AXIAL_SIGN
     source: dict | None = None
     walk_lut: Path | None = None        # spec 012 FR-4: applied before the solves; not in the fingerprint
+    # spec 014 FR-2/FR-4, none in the fingerprint: candidates select the row dtype, the rule the solve
+    candidates: bool = False
+    timestamp_rule: str = "top"
+    rule_start_skew: Path | None = None
+    rule_start_skew_sha256: str | None = None
+    rule_passes: int = 3
+    rule_tolerance_ps: float = 0.5
 
 
 def load_job(path):
@@ -150,12 +171,30 @@ def load_job(path):
     estimators = tuple(data.get("estimators") or solve.ESTIMATORS)
     if not estimators or set(estimators) - set(solve.ESTIMATORS):
         raise JobError(f"{path.name}: estimators must be among {solve.ESTIMATORS}")
+    rule = data.get("timestamp_rule", "top")
+    passes, tolerance = data.get("rule_passes", 3), data.get("rule_tolerance_ps", 0.5)
+    start = data.get("rule_start_skew")
+    if rule not in ("top", "top_earliest_mean"):
+        raise JobError(f"{path.name}: timestamp_rule must be 'top' or 'top_earliest_mean' ('earliest' is for "
+                       "skew-only comparisons)")
+    if isinstance(passes, bool) or not isinstance(passes, int) or passes < 1 or not float(tolerance) > 0:
+        raise JobError(f"{path.name}: rule_passes must be a positive integer and rule_tolerance_ps positive")
+    if rule == "top" and (start or data.get("rule_start_skew_sha256")):
+        raise JobError(f"{path.name}: rule_start_skew is the start of a solve under a timestamp rule other than 'top'")
+    if rule != "top":
+        missing = [k for k in ("walk_lut", "rule_start_skew", "rule_start_skew_sha256") if not data.get(k)]
+        if missing or not data.get("candidates"):
+            raise JobError(f"{path.name}: timestamp_rule {rule!r} needs candidates true, walk_lut, rule_start_skew "
+                           f"and rule_start_skew_sha256 (missing {missing or ['candidates']})")
+        if estimators != ("em",):
+            raise JobError(f"{path.name}: under timestamp_rule {rule!r} the estimators are ['em'] only")
     return Job(Path(data.get("config", "configs/imas_2DAQ.yaml")), tuple(runs), estimators,
                bool(data.get("per_run_solves", False)), int(data.get("workers", 1)), data.get("max_records"),
                Path(data["legacy"]) if data.get("legacy") else None,
                int(data.get("transverse_sign", SELECTED_TRANSVERSE_SIGN)),
                int(data.get("axial_sign", SELECTED_AXIAL_SIGN)), data,
-               Path(data["walk_lut"]) if data.get("walk_lut") else None)
+               Path(data["walk_lut"]) if data.get("walk_lut") else None, bool(data.get("candidates", False)), rule,
+               Path(start) if start else None, data.get("rule_start_skew_sha256"), passes, float(tolerance))
 
 
 def _identity(path):
@@ -172,8 +211,13 @@ def preflight(job, work):
         raise JobError(f"legacy LUT not found: {job.legacy}")
     if job.walk_lut is not None and not job.walk_lut.is_file():
         raise JobError(f"walk LUT not found: {job.walk_lut}")
+    if job.rule_start_skew is not None and not job.rule_start_skew.is_file():
+        raise JobError(f"rule start skew LUT not found: {job.rule_start_skew}")
     ldat = sum(s.path.stat().st_size for r in job.runs for s in r.splits if s.roles & {"train", "heldout"})
-    need = DISK_MARGIN * OBSERVATION_BYTES_PER_LDAT_BYTE * ldat
+    per_byte = OBSERVATION_BYTES_PER_LDAT_BYTE
+    if job.candidates:
+        per_byte *= observation_dtype(True, timestamp.SLOTS).itemsize / OBSERVATION_WALK_DTYPE.itemsize
+    need = DISK_MARGIN * per_byte * ldat
     probe = Path(work)
     while not probe.exists():
         probe = probe.parent
@@ -230,13 +274,19 @@ def _observations(run, directory, job, encal_path, geometry):
     holdout = {"qualified": True, "roles_frozen_before_fitting": True,
                "partitions": [{"index": k, "role": "test" if "heldout" in s.roles else "train",
                                "anchor_start_ps": -2 ** 62, "anchor_end_ps": 2 ** 62} for k, s in enumerate(splits)]}
-    if (directory / "fingerprint.json").is_file() and "walk_inputs" not in json.loads(
-            (directory / "fingerprint.json").read_text(encoding="utf-8")):
-        raise JobError(f"{directory}: observation set streamed without walk inputs (before spec 012); this job "
-                       "streams them: use a new work directory")
+    if (directory / "fingerprint.json").is_file():
+        existing = json.loads((directory / "fingerprint.json").read_text(encoding="utf-8"))
+        if "walk_inputs" not in existing:
+            raise JobError(f"{directory}: observation set streamed without walk inputs (before spec 012); this job "
+                           "streams them: use a new work directory")
+        if ("candidates" in existing) != job.candidates:
+            raise JobError(f"{directory}: observation set streamed {'with' if 'candidates' in existing else 'without'}"
+                           f" the candidates (spec 014); this job {'needs' if job.candidates else 'does not stream'} "
+                           "them: use another work directory")
     return ic.stream_observations(directory, inputs, geometry, config_path=job.config, encal_path=encal_path,
                                   holdout=holdout, energy_calibration_prefix={k: 0 for k in range(len(splits))},
-                                  max_records=job.max_records, workers=job.workers, carry_walk=True)
+                                  max_records=job.max_records, workers=job.workers, carry_walk=True,
+                                  carry_candidates=job.candidates)
 
 
 class PooledObservations:
@@ -248,6 +298,10 @@ class PooledObservations:
         if len(counts) != 1:
             raise JobError("observation sets disagree on pair partitions")
         self.partitions = counts.pop()
+
+    @property
+    def carries_candidates(self):
+        return all(getattr(s, "carries_candidates", False) for s in self.sets)
 
     def partition(self, p):
         return np.concatenate([s.partition(p) for s in self.sets])
@@ -288,12 +342,62 @@ def _walk(job, work, setup, stamp):
         raise JobError(f"walk LUT {job.walk_lut}: fitted for another map (map SHA-256 differs)")
     if table.manifest.get("job_sha256") != stamp["sha256"]:
         raise JobError(f"walk LUT {job.walk_lut}: fitted on another job's events (job SHA-256 differs)")
-    suffix = f"_walk-{table.sha256[:12]}"
+    try:
+        timestamp.check_rule(timestamp.table_rule(table.manifest), job.timestamp_rule)
+    except timestamp.RuleError as error:
+        raise JobError(f"walk LUT {job.walk_lut}: {error}") from None
+    suffix = f"_walk-{table.sha256[:12]}{RULE_SUFFIX.get(job.timestamp_rule, '')}"
     existing = [p for p in [work / f"job_report{suffix}.json", *(work / f"lut_{e}{suffix}.csv" for e in job.estimators)]
                 if p.exists()]
     if existing:
         raise JobError(f"outputs of this walk solve exist: {[p.name for p in existing]}; never overwritten")
     return table, suffix
+
+
+def _start_skew(job, setup):
+    """The frozen start delays of a solve under a timestamp rule (SHA-256 and map checked)."""
+    if hashlib.sha256(job.rule_start_skew.read_bytes()).hexdigest() != job.rule_start_skew_sha256:
+        raise JobError(f"rule start skew LUT {job.rule_start_skew} is not the frozen {job.rule_start_skew_sha256}")
+    try:
+        return DelayTable.from_lut(outputs.read_imas_lut(job.rule_start_skew, setup))
+    except LutError as error:
+        raise JobError(f"rule start skew LUT {job.rule_start_skew}: {error}") from None
+
+
+def delay_change(new, old):
+    """Gauge-free change of applied delays over the common channels: RMS and maximum after removing the median."""
+    common = sorted(set(new) & set(old))
+    if len(common) < 2:
+        return {"channels": len(common), "rms_ps": None, "max_abs_ps": None}
+    difference = np.array([new[c][0] - old[c][0] for c in common])
+    difference -= np.median(difference)
+    return {"channels": len(common), "rms_ps": float(np.sqrt(np.mean(difference ** 2))),
+            "max_abs_ps": float(np.abs(difference).max())}
+
+
+def solve_under_rule(observations, setup, start, walk, rule, *, passes, tolerance_ps, progress=print):
+    """FR-4 fixed point: EM passes on ``observations`` (walk-corrected rows with the candidates) adjusted by the
+    rule's offsets of the previous pass's delays (``start`` first), until the applied delays change by less than
+    ``tolerance_ps`` gauge-free RMS or after ``passes``. Returns the last solution, the per-pass record and its
+    delays as a ``DelayTable``."""
+    previous = start
+    old = {c: (b, np.nan) for c, b in start.delays.items()}
+    history = []
+    for k in range(1, passes + 1):
+        view = timestamp.RuleAdjusted(observations, previous, walk, rule)
+        solution, _ = solve.em_estimator(view, setup)
+        table = solve.applied_table(solution)
+        change = delay_change(table, old)
+        counts = view.counts()
+        history.append({"pass": k, "change": change, "status_counts": solution.diagnostics["status_counts"],
+                        "rule_counts": counts,
+                        "rule_acts_share_train": counts.get("train", {}).get("rule acts", 0)
+                        / max(counts.get("train", {}).get("rows", 0), 1)})
+        progress(f"rule pass {k}: delays changed by {change['rms_ps']} ps RMS")
+        previous, old = DelayTable({c: d for c, (d, _) in table.items()}), table
+        if change["rms_ps"] is not None and change["rms_ps"] < tolerance_ps:
+            break
+    return solution, history, previous
 
 
 def run_job(job, work, *, progress=print, observe_only=False):
@@ -346,10 +450,34 @@ def run_job(job, work, *, progress=print, observe_only=False):
         report["walk"] = {"walk_lut": str(job.walk_lut), "walk_lut_sha256": walk_lut.sha256,
                           "skew_lut_sha256_at_fit": walk_lut.manifest.get("skew_lut_sha256"),
                           "note": "every solve and check (legacy included) reads walk-corrected dt"}
+    solved = {}
+    if job.timestamp_rule != "top":
+        start = _start_skew(job, setup)
+        try:
+            timestamp.require_candidates(pooled, job.timestamp_rule)
+        except timestamp.RuleError as error:
+            raise JobError(str(error)) from None
+        clock = time.perf_counter()
+        solved["em"], history, final = solve_under_rule(pooled, setup, start, walk_lut, job.timestamp_rule,
+                                                        passes=job.rule_passes, tolerance_ps=job.rule_tolerance_ps,
+                                                        progress=progress)
+        report["stages"]["rule_passes_seconds"] = time.perf_counter() - clock
+        converged = history[-1]["change"]["rms_ps"] is not None and \
+            history[-1]["change"]["rms_ps"] < job.rule_tolerance_ps
+        rule = {"timestamp_rule": job.timestamp_rule, "rule_start_skew": str(job.rule_start_skew),
+                "rule_start_skew_sha256": job.rule_start_skew_sha256, "rule_passes": history,
+                "rule_converged": converged, "rule_tolerance_ps": job.rule_tolerance_ps}
+        provenance |= rule
+        report["rule"] = rule | {"note": "the checks (legacy included) read the rows under the rule with the final "
+                                         "pass's delays"}
+        pooled = timestamp.RuleAdjusted(pooled, final, walk_lut, job.timestamp_rule)
+        sets = {name: timestamp.RuleAdjusted(s, final, walk_lut, job.timestamp_rule) for name, s in sets.items()}
     solutions, tables = {}, {}
     for name in job.estimators:
         clock = time.perf_counter()
-        if name == "em":
+        if name in solved:
+            solution = solved[name]
+        elif name == "em":
             solution, _ = solve.em_estimator(pooled, setup, directory=None)
         else:
             solution, _ = solve.pair_estimator(pooled, setup)
@@ -381,7 +509,7 @@ def run_job(job, work, *, progress=print, observe_only=False):
                 entry["alone_versus_pooled"] = solve.compare(solve.applied_table(alone), pooled_table)
             report["per_run"][run.name] = entry
     if walk_lut is not None:
-        report["walk"]["pooled_counts"] = pooled.counts()
+        report["walk"]["pooled_counts"] = (pooled.observations if job.timestamp_rule != "top" else pooled).counts()
     report["stages"]["total_seconds"] = time.perf_counter() - started
     report["peak_memory"] = peak_memory()
     (work / f"job_report{suffix}.json").write_text(json.dumps(report, indent=1, default=float) + "\n",
@@ -402,10 +530,12 @@ def main(argv=None):
     except JobError as error:
         print(f"job refused: {error}")
         return 2
-    print(json.dumps({k: report[k] for k in ("estimators", "comparisons", "held_out", "walk", "stages") if k in report},
+    keys = ("estimators", "comparisons", "held_out", "walk", "rule", "stages")
+    print(json.dumps({k: report[k] for k in keys if k in report},
                      indent=1, default=float))
-    name = "job_report_observe.json" if args.observe_only else \
-        f"job_report{'' if 'walk' not in report else '_walk-' + report['walk']['walk_lut_sha256'][:12]}.json"
+    suffix = '' if 'walk' not in report else '_walk-' + report['walk']['walk_lut_sha256'][:12]
+    suffix += RULE_SUFFIX.get((report.get("rule") or {}).get("timestamp_rule"), "")
+    name = "job_report_observe.json" if args.observe_only else f"job_report{suffix}.json"
     print(f"-> {args.work / name}")
     return 0
 

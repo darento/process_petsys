@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T5 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T6 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -109,7 +109,7 @@ Status: in progress 2026-10-30 (T1–T5 done). [Approved spec](spec.md), [plan](
     - `tests/test_imas_timestamp.py -m "not real_data" -n 0 --slow-limit 5`: 19 passed. The rule fit test takes 3.4 s, so it is not marked slow.
     - `tests/test_imas_*.py -m "not real_data"`: 120 passed.
     - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
-- [ ] **T6 — Skew solve under the rule** (FR-4).
+- [x] **T6 — Skew solve under the rule** (FR-4).
   - Job keys `candidates`, `timestamp_rule`, `rule_start_skew`, `rule_passes`; EM passes on `RuleAdjusted`; output names with `_rule-mean`; provenance.
   - **Done when:**
     - On a synthetic job with injected delays and late tops, the passes converge and recover the delays within the spec 011 synthetic criterion.
@@ -117,6 +117,23 @@ Status: in progress 2026-10-30 (T1–T5 done). [Approved spec](spec.md), [plan](
     - A rule without a candidate-carrying set is refused.
     - Existing outputs are never overwritten.
     - Spec 011/012 job tests pass unchanged.
+  - Deviations:
+    - Job keys are `candidates`, `timestamp_rule`, `rule_start_skew` plus `rule_start_skew_sha256` (checked before the solve), `rule_passes` (default 3) and `rule_tolerance_ps` (default 0.5). None of them enters the job fingerprint.
+    - A rule job needs `candidates` true, `walk_lut`, the start skew and estimators `["em"]` only; pairs and per-position solves keep `top`. Under `top` the start keys are refused.
+    - The walk LUT's `timestamp_rule` must equal the job's. The start skew is read through `outputs.read_imas_lut` and `DelayTable.from_lut`.
+    - `solve_under_rule` runs EM on `RuleAdjusted(observations, previous delays, walk, rule)` until `delay_change` (gauge-free RMS and max of the delay change) is below the tolerance.
+    - The checks after the solve (held out, comparisons, walk counts) read the rows through `RuleAdjusted` with the final delays.
+    - Outputs: `lut_em_walk-<sha12>_rule-mean.csv` and `job_report_walk-<sha12>_rule-mean.json`. Provenance and `report["rule"]` record the rule, the start skew and its SHA-256, and each pass (change, share acting, counts).
+    - A work-dir set whose candidates state differs from the job is refused rather than re-streamed.
+    - Synthetic numbers:
+      - Seed 41, 60 k events, half the channels with 30 % of tops 600 ps late: gauge-free delay error 88.0 ps under `top`, 51.9 ps under the rule. The passes change by 31.7, 4.2, 0.58 and 0.09 ps RMS. The residual is expected, since the mean rule halves the late bias but does not remove it.
+      - Seed 43, no late tops: max |pull| < 4 (the spec 011 criterion).
+    - The end-to-end test also covers the T5 walk fit under the rule on the rule-solved skew (`run_fit` with `rule_start_walk`, requirement `014-FR-4`), which T5 deferred.
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: IMAS `job.py` and the test helpers, so every IMAS test.
+    - `tests/test_imas_timestamp.py -m "not real_data" -n 0 --slow-limit 5`: 22 passed. The two solver tests (17 s, 10 s) and the end-to-end test (13 s) are marked slow.
+    - `-k imas -m "not real_data"`: 240 passed.
+    - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `-k imas -m real_data`: 2 passed.
 
 ## Evaluation
 

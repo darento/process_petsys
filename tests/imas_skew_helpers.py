@@ -7,7 +7,7 @@ import numpy as np
 import yaml
 
 from src.mapping_generator import ChannelType
-from src.timing.cache import (OBSERVATION_DTYPE, OBSERVATION_WALK_DTYPE, PAIR_COUNT_DTYPE, ObservationSet,
+from src.timing.cache import (OBSERVATION_DTYPE, PAIR_COUNT_DTYPE, ObservationSet, observation_dtype,
                               pair_partition, walk_fingerprint)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,12 +140,14 @@ def skew_events(ci, cj, tof, delays, rng, *, noise=200.0, background=0.1, window
     return ci[inside], cj[inside], dt[inside], tof[inside]
 
 
-def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None, walk=None, roles=None):
+def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None, walk=None, roles=None, candidates=None):
     """Minimal canonical ``ObservationSet`` (train role) from arrays with ``channel_i < channel_j``; ``files``
     gives each row its input-file index (default 0); ``walk`` ({column: array}, spec 012) makes a walk-carrying
-    set; ``roles`` gives each row its role code."""
-    rows = np.zeros(len(ci), OBSERVATION_DTYPE if walk is None else OBSERVATION_WALK_DTYPE)
-    for name, values in (walk or {}).items():
+    set; ``roles`` gives each row its role code; ``candidates`` ({cand_*_i/j: events x slots}, spec 014, with
+    ``walk``) makes a candidate-carrying set."""
+    slots = 0 if candidates is None else candidates["cand_channel_i"].shape[1]
+    rows = np.zeros(len(ci), OBSERVATION_DTYPE if walk is None else observation_dtype(True, slots))
+    for name, values in {**(walk or {}), **(candidates or {})}.items():
         rows[name] = values
     if roles is not None:
         rows["role"] = roles
@@ -163,7 +165,7 @@ def observation_set(directory, ci, cj, dt, tof, partitions=2, files=None, walk=N
     table["channel_i"], table["channel_j"], table["count"] = keys[0], keys[1], counts
     np.save(directory / "pair_counts.npy", table)
     (directory / "manifest.json").write_text(json.dumps({"fingerprint": walk_fingerprint({"partitions": partitions},
-                                                                                         walk is not None),
+                                                                                         walk is not None, slots),
                                                          "chunks": [1] * partitions}), encoding="utf-8")
     return ObservationSet(directory)
 

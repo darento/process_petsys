@@ -446,3 +446,188 @@ def test_rule_fit_options(tmp_path):
                                        "rule_start_walk_sha256": "b"}), encoding="utf-8")
     spec = iw.load_fit(path)
     assert spec["rule_start_walk"] == tmp_path / "w3.json" and spec["rule_rounds"] == 4
+
+
+# --- T6: skew solve under the rule (FR-4) ----------------------------------------------------
+def late_top_observations(directory, setup, rng, n=60_000, late_ps=600.0):
+    """Bar observations with injected delays where half of the channels time 30 % of their events ``late_ps``
+    late and then have an on-time neighbour in their minimodule; other sides have a neighbour 20 % of the time."""
+    from imas_skew_helpers import channel_table, lors, observation_set, skew_events
+    from src.imas.skew.geometry import ImasGeometry
+    table = channel_table(setup, (48, 49, 60, 61), (5,))
+    delays = {int(r["ch"]): float(rng.uniform(-2500, 2500)) for r in table}
+    channels = np.array(sorted(delays))
+    late_share = {int(c): (0.3 if k % 2 else 0.0) for k, c in enumerate(channels)}
+    pool = {int(r["ch"]): [int(o["ch"]) for o in table if o["sm"] == r["sm"] and o["ch"] != r["ch"]] for r in table}
+    ci, cj, tof = lors(ImasGeometry.nominal(setup), table, n, rng)
+    ci, cj, dt, tof = skew_events(ci, cj, tof, delays, rng)
+    candidates, sign = {}, {"i": 1.0, "j": -1.0}
+    for s, ch in (("i", ci), ("j", cj)):
+        late = rng.random(len(ch)) < np.array([late_share[int(c)] for c in ch])
+        dt = dt + sign[s] * np.where(late, late_ps, 0.0)
+        neighbour = late | (rng.random(len(ch)) < 0.2)
+        other = np.array([pool[int(c)][rng.integers(len(pool[int(c)]))] for c in ch])
+        lag = (np.array([delays[int(c)] for c in other]) - np.array([delays[int(c)] for c in ch])
+               - np.where(late, late_ps, 0.0) + rng.normal(0, 200, len(ch)))
+        channel = np.full((len(ch), ts.SLOTS), -1, np.int32)
+        channel[:, 0] = np.where(neighbour, other, -1)
+        lags = np.zeros((len(ch), ts.SLOTS), np.int32)
+        lags[:, 0] = np.where(neighbour, np.rint(lag), 0)
+        charge = np.zeros((len(ch), ts.SLOTS), np.float32)
+        charge[:, 0] = 5.0
+        candidates |= {f"cand_channel_{s}": channel, f"cand_lag_{s}": lags, f"cand_charge_{s}": charge}
+    walk = {f"{name}_{s}": np.ones(len(ci)) for s in ("i", "j") for name in ("q_top", "q_time", "doi_ratio")}
+    return observation_set(directory, ci, cj, dt, tof, walk=walk, candidates=candidates), delays, late_share
+
+
+def gauge_free_error(solution, delays, channels=None):
+    rows = solution.channels[solution.channels["apply"]]
+    keep = np.ones(len(rows), bool) if channels is None else np.isin(rows["time_channel"], channels)
+    true = np.array([delays[c] for c in rows["time_channel"][keep].tolist()])
+    difference = rows["delay_ps"][keep] - true
+    return float(np.sqrt(np.mean((difference - difference.mean()) ** 2)))
+
+
+@pytest.mark.slow
+@pytest.mark.fr("014-FR-4")
+def test_skew_solve_under_rule_converges_and_removes_late_bias(tmp_path, setup):
+    """Seed 41: gauge-free delay error 88.0 ps under ``top``, 51.9 ps under the rule; passes change by 31.7, 4.2,
+    0.58 and 0.09 ps RMS (2026-10-30)."""
+    from src.imas.skew import job as ij, solve
+    rng = np.random.default_rng(41)
+    observations, delays, _ = late_top_observations(tmp_path / "obs", setup, rng)
+    top, _ = solve.em_estimator(observations, setup)
+    start = DelayTable({c: d for c, (d, _) in solve.applied_table(top).items()})
+    solution, history, final = ij.solve_under_rule(observations, setup, start, None, "top_earliest_mean", passes=5,
+                                                   tolerance_ps=0.5, progress=lambda _: None)
+    assert history[-1]["change"]["rms_ps"] < 0.5 and len(history) <= 5
+    assert history[0]["change"]["rms_ps"] > history[-1]["change"]["rms_ps"]
+    assert history[0]["rule_acts_share_train"] > 0.1
+    assert gauge_free_error(solution, delays) < 0.7 * gauge_free_error(top, delays)
+    assert set(final.delays) == set(solve.applied_table(solution))
+
+
+@pytest.mark.slow
+@pytest.mark.fr("014-FR-4")
+def test_skew_solve_under_rule_recovers_delays_within_uncertainty(tmp_path, setup):
+    """No late tops: every neighbour is on time, so the rule solve recovers the injected delays within the
+    declared per-channel uncertainty (spec 011 criterion, |pull| < 4)."""
+    from src.imas.skew import job as ij, solve
+    rng = np.random.default_rng(43)
+    observations, delays, _ = late_top_observations(tmp_path / "obs", setup, rng, late_ps=0.0)
+    top, _ = solve.em_estimator(observations, setup)
+    start = DelayTable({c: d for c, (d, _) in solve.applied_table(top).items()})
+    solution, history, _ = ij.solve_under_rule(observations, setup, start, None, "top_earliest_mean", passes=5,
+                                               tolerance_ps=0.5, progress=lambda _: None)
+    rows = solution.channels[solution.channels["apply"]]
+    true = np.array([delays[c] for c in rows["time_channel"].tolist()])
+    pulls = (rows["delay_ps"] - rows["delay_ps"].mean() - (true - true.mean())) / rows["sigma_ps"]
+    assert history[-1]["change"]["rms_ps"] < 0.5 and np.abs(pulls).max() < 4
+
+
+def rule_job_splits(base, setup):
+    """``job_splits`` (two runs x three splits, SMs 50 and 62) where a fifth of the sides have a second TIME hit
+    of their minimodule, half of them 400 ps before the top."""
+    from imas_skew_helpers import SIDES
+    rng = np.random.default_rng(13)
+
+    def energy():
+        return rng.normal(60.0, 4.0) if rng.random() < 0.85 else rng.uniform(5.0, 120.0)
+
+    def one(sm, mm, slab, stamp):
+        t_ch, _ = channels(setup, sm, mm)
+        extra = []
+        if rng.random() < 0.2:
+            extra = [(stamp + (-400 if rng.random() < 0.5 else 300), 3.0, t_ch[(slab + 1) % 4])]
+        e = energy()
+        return ldat_side(setup, sm, mm, time={slab: 9.0}, energy=[e / 5] * 5, stamp=stamp, extra=extra)
+
+    paths = []
+    for index in range(6):
+        records = []
+        for _ in range(3200):
+            (mm_a, slab_a), (mm_b, slab_b) = SIDES[rng.integers(8)], SIDES[rng.integers(8)]
+            records.append((one(50, mm_a, slab_a, T0), one(62, mm_b, slab_b, T0 - int(rng.integers(-900, 900)))))
+        paths.append(write(base / f"run{index // 3}_s{index % 3}.ldat", records))
+    return paths
+
+
+@pytest.mark.slow
+@pytest.mark.fr("014-FR-2", "014-FR-4")
+def test_job_and_walk_fit_under_rule_end_to_end(tmp_path, setup):
+    import hashlib
+    import json
+    from imas_skew_helpers import job_file
+    from src.imas.skew import job as ij
+    from src.timing.lut import CanonicalLut
+    splits = rule_job_splits(tmp_path, setup)
+    probe = ImasSetup.from_files(CONFIG)
+    work = tmp_path / "work"
+    top_job = ij.load_job(job_file(tmp_path / "top.json", splits, estimators=["em"], per_run_solves=False,
+                                   candidates=True))
+    plain = ij.load_job(job_file(tmp_path / "plain.json", splits, estimators=["em"], per_run_solves=False))
+    assert ij.fingerprint(top_job) == ij.fingerprint(plain)                 # candidates select the rows only
+    ij.run_job(top_job, work, progress=lambda _: None)
+    observed = ij.PooledObservations([
+        __import__("src.timing.cache", fromlist=["ObservationSet"]).ObservationSet(work / r / "observations")
+        for r in ("r1", "r2")])
+    assert observed.carries_candidates
+    stamp = ij.fingerprint(top_job)["sha256"]
+    start = work / "lut_em.csv"
+    start_sha = hashlib.sha256(start.read_bytes()).hexdigest()
+    edges = {"walk2d": [np.array([0.0, 8, 20]), np.array([0.5, 0.9, 1.1])], "doi": [np.array([1.0, 4, 6])],
+             "kev": [np.array([300.0, 500, 700])]}
+    offsets = {"walk2d": np.array([[0.0, 30], [0, -30]]), "doi": np.array([0.0, 0]), "kev": np.array([5.0, -5])}
+    counts = {b: np.full(v.shape, 500) for b, v in offsets.items()}
+    base = {"map_sha256": probe.provenance["map_sha256"], "skew_lut_sha256": start_sha, "job_sha256": stamp}
+    walk = iw.WalkLut.from_fit(edges, offsets, counts, base | {"timestamp_rule": "top_earliest_mean"})
+    walk.write(tmp_path / "walk_rule.json")
+    top_walk = iw.WalkLut.from_fit(edges, offsets, counts, base)
+    top_walk.write(tmp_path / "walk_top.json")
+    rule = {"estimators": ["em"], "per_run_solves": False, "candidates": True, "timestamp_rule": "top_earliest_mean",
+            "walk_lut": str(tmp_path / "walk_rule.json"), "rule_start_skew": str(start),
+            "rule_start_skew_sha256": start_sha, "rule_passes": 3}
+    rule_job = ij.load_job(job_file(tmp_path / "rule.json", splits, **rule))
+    assert ij.fingerprint(rule_job) == ij.fingerprint(plain)
+    with pytest.raises(ij.JobError, match="not the frozen"):
+        ij.run_job(ij.load_job(job_file(tmp_path / "s.json", splits, **(rule | {"rule_start_skew_sha256": "0" * 64}))),
+                   work, progress=lambda _: None)
+    report = ij.run_job(rule_job, work, progress=lambda _: None)
+    suffix = f"_walk-{walk.sha256[:12]}_rule-mean"
+    lut = CanonicalLut.read(work / f"lut_em{suffix}.csv")
+    provenance = lut.manifest["provenance"]
+    assert provenance["timestamp_rule"] == "top_earliest_mean" and provenance["rule_start_skew_sha256"] == start_sha
+    assert 1 <= len(provenance["rule_passes"]) <= 3 and provenance["walk_lut_sha256"] == walk.sha256
+    assert report["rule"]["rule_passes"][0]["rule_acts_share_train"] > 0.02
+    assert (work / f"job_report{suffix}.json").is_file() and report["held_out"]["em"]["events"] > 2000
+    with pytest.raises(ij.JobError, match="never overwritten"):
+        ij.run_job(rule_job, work, progress=lambda _: None)
+    # refusals
+    for changes, match in (({"candidates": False}, "needs candidates"),
+                           ({"estimators": ["em", "pairs"]}, r"\['em'\] only"),
+                           ({"walk_lut": None}, "walk_lut")):
+        with pytest.raises(ij.JobError, match=match):
+            ij.load_job(job_file(tmp_path / "bad.json", splits, **(rule | changes)))
+    with pytest.raises(ij.JobError, match="'top'.*'top_earliest_mean'"):
+        ij.run_job(ij.load_job(job_file(tmp_path / "w.json", splits, **(rule | {"walk_lut": str(
+            tmp_path / "walk_top.json")}))), work, progress=lambda _: None)
+    other = tmp_path / "other"                  # streamed without the candidates
+    ij.run_job(plain, other, progress=lambda _: None, observe_only=True)
+    with pytest.raises(ij.JobError, match="without the candidates"):
+        ij.run_job(rule_job, other, progress=lambda _: None)
+    # walk fit under the rule on the rule-solved skew (spec 012 round trip step 3)
+    fit = {"schema": iw.FIT_SCHEMA, "job": str(tmp_path / "rule.json"), "work": str(work),
+           "skew_lut": str(work / f"lut_em{suffix}.csv"),
+           "skew_lut_sha256": hashlib.sha256((work / f"lut_em{suffix}.csv").read_bytes()).hexdigest(),
+           "walk_lut": str(tmp_path / "walk_rule.json"), "output": str(tmp_path / "walk_rule3.json"),
+           "bins": {"charge": 2, "share": 2, "doi_ratio": 2, "kev": 2}, "min_events": 20,
+           "timestamp_rule": "top_earliest_mean", "rule_start_walk": str(tmp_path / "walk_rule.json"),
+           "rule_start_walk_sha256": walk.sha256}
+    (tmp_path / "fit.json").write_text(json.dumps(fit), encoding="utf-8")
+    fitted = iw.run_fit(iw.load_fit(tmp_path / "fit.json"), log=lambda _: None)
+    manifest = fitted["manifest"]
+    assert manifest["timestamp_rule"] == "top_earliest_mean" and manifest["requirement"] == "014-FR-4"
+    assert manifest["skew_timestamp_rule"] == "top_earliest_mean" and manifest["rule_start_walk_sha256"] == walk.sha256
+    assert manifest["rule_rounds"][0]["rule_acts_share"] > 0.02 and "after (top)" in fitted["widths"]["heldout"]
+    with pytest.raises(iw.core.WalkError, match="output exists"):
+        iw.run_fit(iw.load_fit(tmp_path / "fit.json"), log=lambda _: None)
