@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T6 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T7 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -137,13 +137,25 @@ Status: in progress 2026-10-30 (T1–T6 done). [Approved spec](spec.md), [plan](
 
 ## Evaluation
 
-- [ ] **T7 — CTR and NECR under the rule** (FR-5).
+- [x] **T7 — CTR and NECR under the rule** (FR-5).
   - Rule entries, `rule_tables`, counts per position, the `positions_not_worse` gate; NECR passes the entries through.
   - **Done when:**
     - On synthetic 22Na with injected late tops, the rule table improves and the tables share the same events.
     - Mismatch is recorded.
     - The per-position gate fails on a fixture where one position is made worse.
     - Spec 011/012/013 CTR and NECR tests pass unchanged.
+  - Deviations:
+    - No `rule` key on `luts`/`walks`/`legacy` entries: each table is applied under its manifest's rule (legacy `top`). Another rule goes only through `rule_tables` (`{name: {base, rule}}`, base = legacy, a LUT or a walk name), always with the mismatch recorded. A skew LUT and its walk LUT under different rules are refused. `earliest` on a walk table, a rule equal to the base's, and a LUT solved with walk as base are refused.
+    - `ctr.WalkTable` gains `rule`/`mismatch` (walk None = skew only under a rule). The per-table correction is shared: `ctr.correct` / `ctr.correction`, used by the CTR and NECR accumulators. `walk.correct_features(..., with_acts=True)` returns the per-event acts mask (private `_correct_dt`; `correct_dt` unchanged).
+    - Counts: `counts.<acq>.stages["timestamp rule"][table]` (rule acts and candidate counts on the selection's corrected events, before the LOR cut, plus `near source` / `rule acts near source`); report `timestamp_rules` per table, pooled and per position, with `rule_acts_share`. NECR: per frame, `same events rule acts`. Reports without rule tables gain only `timestamp_rule` in `frozen_inputs.luts/walks`.
+    - `walk_acceptance` entries add `positions_not_worse` (`passed` True/False/None when a position is unavailable, `worse`, `unavailable`) and `accepted_pooled_and_positions`; `accepted` stays the spec 012 pooled gate. "Worse" = worse than the reference by more than their quadrature uncertainty.
+    - The per-position gate is tested on `_judge` entries (`test_positions_not_worse_gate`), not a CTR run with a degraded position.
+    - Synthetic numbers (seed 29, 5000 events, 2 TIME hits per side, 30 % of tops 500 ps late, 80 ps per hit, model-free FWHM): em + walk 287.5 ± 7.6 ps, under the mean rule (frozen) 241.4 ± 10.1 ps, the rule-fitted pair identical (same tables); legacy 514.1 → 416.5 ps under `earliest`; em 281.3 → 280.7 ps under `earliest` (the injected walk delays the low-charge neighbour, so not asserted). Rule acts on 88.5 % of near-source events (2 hits with equal noise: the neighbour is earlier about half the time per side).
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: IMAS `ctr.py`, `necr.py` and `walk.correct_features` (callers: CTR, NECR, tests only), so every IMAS test.
+    - `tests/test_imas_timestamp.py -m "not real_data" -n 0 --slow-limit 5`: 26 passed. The CTR (29 s) and NECR (8 s) runs are marked slow.
+    - `-k imas -m "not real_data"`: 244 passed (spec 011/012/013 CTR and NECR tests unedited).
+    - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `-k imas -m real_data`: 2 passed.
 - [ ] **T8 — Exports** (FR-6).
   - **Done when:**
     - Native and legacy exports refuse a rule skew LUT, naming the rule.

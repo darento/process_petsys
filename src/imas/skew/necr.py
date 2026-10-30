@@ -6,7 +6,8 @@ the legacy skew table and the frozen spec 011/012 tables, on the same events.
 The NEMA value is the background-subtracted NEMA FWHM; the gates judge spec
 011's model-free FWHM (owner, T9), which is reported beside it as a non-NEMA
 width. The line is fitted from LOR convergence (``src.timing.line``) or declared.
-Inputs are frozen as in the point-source CTR file (``src.imas.skew.ctr``).
+Inputs are frozen as in the point-source CTR file (``src.imas.skew.ctr``), including its spec 014
+``rule_tables`` and the timestamp rule of each table; rule counts are on the same events.
 """
 from __future__ import annotations
 
@@ -31,9 +32,9 @@ SCHEMA = "imas-necr-ctr/1"
 REPORT_SCHEMA = "imas-necr-ctr-report/2"
 FITTED = "lor_convergence"
 _REQUIRED = {"schema", "job_work", "encal", "luts", "legacy", "output", "frames", "lines", "headline_line"}
-_OPTIONAL = {"walks": {}, "gates": None, "legacy_results": None, "bootstrap": 200, "seed": 0, "max_records": None,
-             "localization_events": 1_000_000, "model_free_window_ps": 3000.0, "model_free_bin_ps": 10.0,
-             "energy_check_records": 2_000_000}
+_OPTIONAL = {"walks": {}, "rule_tables": {}, "gates": None, "legacy_results": None, "bootstrap": 200, "seed": 0,
+             "max_records": None, "localization_events": 1_000_000, "model_free_window_ps": 3000.0,
+             "model_free_bin_ps": 10.0, "energy_check_records": 2_000_000}
 _FRAME_KEYS = {"name", "frame", "ldat", "activity_kbq_ml", "activity_source"}
 _LINE_OPTIONS = {"slab_mm", "near_mm", "seed_near_mm", "floor_mm", "windows_mm"}
 _GATE_KEYS = {"frame", "transfer", "acceptance"}
@@ -129,7 +130,8 @@ def load_necr(path):
     if raw["headline_line"] not in lines:
         raise CtrError(f"headline_line must name one of the lines {sorted(lines)}")
     options = {key: raw.get(key, default) for key, default in _OPTIONAL.items()}
-    names = {ctr.UNCORRECTED, ctr.LEGACY} | set(raw["luts"]) | set(walks)
+    rules = ctr.rule_entries(options["rule_tables"], {ctr.LEGACY} | set(raw["luts"]) | set(walks))
+    names = {ctr.UNCORRECTED, ctr.LEGACY} | set(raw["luts"]) | set(walks) | set(rules)
     gates = None
     if options["gates"] is not None:
         entry = options["gates"]
@@ -164,7 +166,8 @@ def load_necr(path):
     return SimpleNamespace(
         path=path, sha256=_sha256(path), job_work=local(raw["job_work"]), encal=local(raw["encal"]),
         luts={name: ctr._frozen(entry, f"luts.{name}", base) for name, entry in raw["luts"].items()},
-        legacy=ctr._frozen(raw["legacy"], "legacy", base), walks=walks, output=local(raw["output"]),
+        legacy=ctr._frozen(raw["legacy"], "legacy", base), walks=walks, rule_tables=rules,
+        output=local(raw["output"]),
         frames=tuple(frames), lines=lines, headline_line=raw["headline_line"], gates=gates,
         legacy_results=legacy_results, bootstrap=bootstrap, seed=int(options["seed"]),
         max_records=options["max_records"], localization_events=options["localization_events"],
@@ -295,27 +298,21 @@ class Accumulator:
         self.clamped = {}
         self.results = {}
 
-    def corrected(self, features):
-        """Corrected ``dt`` per table, the mask of events with both delays in every table, and the mask of
-        events missing a walk input."""
-        ch1, ch2 = features.column("time_channel_1"), features.column("time_channel_2")
-        dt = features.column("dt_ps").astype(np.float64)
-        applied, walk_missing, out = np.ones(len(dt), bool), np.zeros(len(dt), bool), []
-        for name, table in zip(self.names, self.tables):
-            if isinstance(table, ctr.WalkTable):
-                values, status, counts = iw.correct_features(features, table.skew, table.walk, policy="drop")
-                clamped = self.clamped.setdefault(name, dict.fromkeys(iw.INPUTS, 0))
-                for key in iw.INPUTS:
-                    clamped[key] += counts[f"clamped {key}"]
-                applied &= status != 1
-                walk_missing |= status == 2
-                out.append(values)
-                continue
-            b1, f1 = table.lookup(ch1)
-            b2, f2 = table.lookup(ch2)
-            applied &= f1 & f2
-            out.append(dt - b1 + b2)       # t_1 - t_2 exact in integers, then - b_1 + b_2
-        return out, applied, walk_missing
+    def corrected(self, features, stages):
+        """Corrected ``dt`` per table (``ctr.correction``), the mask of events with both delays in every table,
+        the mask of events missing a walk input, and per rule table whether the rule acts. Walk clamps are
+        summed over frames (``clamped``), rule counts per frame (``stages``)."""
+        found = {}
+        corrected, applied, walk_missing, acting = ctr.correction(self.names, self.tables, features, found)
+        for name, clamped in found.get("walk clamped", {}).items():
+            total = self.clamped.setdefault(name, dict.fromkeys(iw.INPUTS, 0))
+            for key, n in clamped.items():
+                total[key] += n
+        for name, counts in found.get(ctr.RULE_STAGE, {}).items():
+            mine = stages.setdefault(ctr.RULE_STAGE, {}).setdefault(name, {"same events rule acts": 0})
+            for key, value in counts.items():
+                mine[key] = value if key == "timestamp rule" else mine.get(key, 0) + value
+        return corrected, applied, walk_missing, acting
 
     def add(self, index, features, endpoints, split=0):
         """``endpoints``: (codes, rows) of the nominal geometry; ``split`` seeds the bootstrap with the batch."""
@@ -328,10 +325,12 @@ class Accumulator:
         stages["passed pre-geometry"] += len(features.ints)
         if not len(features.ints):
             return
-        corrected, applied, walk_missing = self.corrected(features)
+        corrected, applied, walk_missing, acting = self.corrected(features, stages)
         codes, rows = endpoints
         valid = codes != 1
         same = valid & applied & ~walk_missing
+        for name, acts in acting.items():
+            stages[ctr.RULE_STAGE][name]["same events rule acts"] += int(np.count_nonzero(acts & same))
         stages["invalid endpoint"] += int(np.count_nonzero(~valid))
         stages["no applied delay"] += int(np.count_nonzero(valid & ~applied))
         stages["walk input missing"] += int(np.count_nonzero(valid & applied & walk_missing))
@@ -706,8 +705,8 @@ def run_necr(spec, *, log=print):
         "headline_line": spec.headline_line,
         "cuts": {"pre_geometry": selection.describe(), "geometry": geometry.name, "opening_angle": "none",
                  "same_events": "valid endpoints, both TIME channels with an applied delay in every table"
-                 + (", and every walk input on both sides" if any(isinstance(t, ctr.WalkTable) for t in
-                                                                   tables.values()) else ""),
+                 + (", and every walk input on both sides" if any(isinstance(t, ctr.WalkTable) and t.walk is not None
+                                                                   for t in tables.values()) else ""),
                  "max_records_per_split": spec.max_records,
                  "axial": f"|z_I| <= {nema.NEMA_AXIAL_HALF_MM:g} mm (NEMA section 8.3.5: AFOV about "
                           f"{2 * LINE_HALF_LENGTH_MM:.0f} mm, over 65 cm), NEMA and model-free widths"},

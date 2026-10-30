@@ -44,6 +44,15 @@ median residual (dt - TOF, |residual| < ``PROFILE_CORE_PS``) per bin of each wal
 (side 2 with the residual negated), before (reference) and after (candidate), pooled and per position
 (``profiles``, ``profiles_by_position``; bins of the first walk table's LUT). Diagnostics, not acceptance.
 
+Timestamp rule (spec 014 FR-5): each LUT and walk table is applied under the rule recorded in its manifest
+(``timestamp_rule``, absent = ``top``; a skew LUT and its walk LUT must agree). ``rule_tables`` = {name: {"base":
+<legacy, luts or walks name>, "rule": <rule>}} evaluates a frozen table under another rule, the mismatch named
+and recorded (e.g. ``em2_walk3@mean``, ``legacy@earliest``; ``earliest`` only for skew-only tables). Candidate
+exclusions never drop an event, so every table keeps the same events. Per rule table and position: the share
+of near-source events where the rule acts, and the candidate counts of the corrected events (before the LOR
+cut). Each ``walk_acceptance`` pair also reports ``positions_not_worse``: no declared position worse than its
+reference by more than their combined uncertainty (spec 014 acceptance with the pooled FR-10 rule).
+
 Acceptance (FR-10): a LUT passes when its model-free FWHM is below the
 legacy one by more than their uncertainties added in quadrature
 (conservative: the tables share events). The Gaussian FWHM is reported for
@@ -67,6 +76,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.imas.skew import outputs, select as sel
+from src.imas.skew import timestamp
 from src.imas.skew import walk as iw
 from src.imas.skew.geometry import ImasGeometry
 from src.imas.skew.setup import ImasSetup
@@ -83,11 +93,12 @@ LEGACY = "legacy"
 _REQUIRED = {"schema", "job_work", "encal", "luts", "legacy", "output", "acquisitions"}
 _OPTIONAL = {"lor_distance_mm": 15.0, "sensitivity_lor_mm": [10.0, 25.0], "window_ps": 3000.0, "bin_ps": 10.0,
              "bootstrap": 200, "seed": 0, "depth_variants_mm": [4.0, 10.0], "max_records": None,
-             "localization_events": 500_000, "walks": {}, "walk_acceptance": []}
+             "localization_events": 500_000, "walks": {}, "walk_acceptance": [], "rule_tables": {}}
 _ACQUISITION_KEYS = {"name", "ldat", "source_mm", "source_sigma_mm"}
 STAGES = ("records", "passed pre-geometry", "invalid endpoint", "no applied delay", "LOR outside distance",
           "near source")
 WALK_STAGE = "walk input missing"       # spec 012: only with walk tables, after "no applied delay"
+RULE_STAGE = "timestamp rule"           # spec 014: per table applied under a rule other than top
 PROFILE_CORE_PS, PROFILE_BIN_PS = 600.0, 2.0   # spec 012 FR-7 profiles: the bar fit's core window
 FWHM_KEYS = ("model_free_fwhm_ps", "fwhm_ps")
 MODEL_FREE = core.local_crossings      # owner 2026-10-26: local quadratic crossings (spec 011 FR-10)
@@ -152,7 +163,8 @@ def load_ctr(path):
             raise CtrError(f"walks.{name}: 'skew' must name one of the luts")
         path, sha = _frozen({k: v for k, v in entry.items() if k != "skew"}, f"walks.{name}", base)
         walks[name] = SimpleNamespace(skew=entry["skew"], path=path, sha256=sha)
-    names = {UNCORRECTED, LEGACY} | set(raw["luts"]) | set(walks)
+    rules = rule_entries(options["rule_tables"], {LEGACY} | set(raw["luts"]) | set(walks))
+    names = {UNCORRECTED, LEGACY} | set(raw["luts"]) | set(walks) | set(rules)
     pairs = options["walk_acceptance"]
     if not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) != 2 or not set(pair) <= names
                                           or pair[0] == pair[1] for pair in pairs):
@@ -165,8 +177,25 @@ def load_ctr(path):
         sensitivity_lor_mm=tuple(float(d) for d in options["sensitivity_lor_mm"]), window_ps=window, bin_ps=width,
         bootstrap=bootstrap, seed=int(options["seed"]),
         depth_variants_mm=tuple(float(d) for d in options["depth_variants_mm"]), max_records=options["max_records"],
-        localization_events=int(options["localization_events"]), walks=walks,
+        localization_events=int(options["localization_events"]), walks=walks, rule_tables=rules,
         walk_acceptance=[tuple(pair) for pair in pairs], edges_ps=np.linspace(-window, window, int(round(bins)) + 1))
+
+
+def rule_entries(value, bases):
+    """``rule_tables`` = {name: {base, rule}} (spec 014 FR-5): ``base`` one of ``bases``, ``rule`` one of
+    ``timestamp.RULES``; names never reuse a table name."""
+    if not isinstance(value, dict):
+        raise CtrError("rule_tables: {name: {base, rule}}")
+    out = {}
+    for name, entry in value.items():
+        if name in bases or name == UNCORRECTED:
+            raise CtrError(f"rule table name {name!r} is reserved or a table name")
+        if not isinstance(entry, dict) or set(entry) != {"base", "rule"} or entry["base"] not in bases:
+            raise CtrError(f"rule_tables.{name}: {{base, rule}} with base one of {sorted(bases)}")
+        if entry["rule"] not in timestamp.RULES:
+            raise CtrError(f"rule_tables.{name}: rule one of {timestamp.RULES}")
+        out[name] = SimpleNamespace(base=entry["base"], rule=entry["rule"])
+    return out
 
 
 def _vector(value, label, *, nonnegative=False):
@@ -208,7 +237,8 @@ def frozen_inputs(spec):
         tables[name], canonical[name] = DelayTable.from_lut(table), table
         inputs["luts"][name] = {"path": str(path), "sha256": sha, "table_sha256": table.manifest["table"]["sha256"],
                                 "estimator": provenance.get("estimator"), "applied": len(tables[name].delays),
-                                "solved_with_walk_lut_sha256": provenance.get("walk_lut_sha256")}
+                                "solved_with_walk_lut_sha256": provenance.get("walk_lut_sha256"),
+                                "timestamp_rule": timestamp.skew_rule(tables[name])}
     walk_tables = _walk_tables(spec, setup, tables, canonical, inputs)
     for name in list(tables):
         walk_sha = inputs["luts"][name]["solved_with_walk_lut_sha256"]
@@ -217,6 +247,8 @@ def frozen_inputs(spec):
                 raise CtrError(f"LUT {name}: solved with walk LUT {walk_sha[:12]}...; evaluate it in a walks entry "
                                "with its walk LUT")
             del tables[name]           # evaluated only inside its walk table(s)
+        elif inputs["luts"][name]["timestamp_rule"] != "top":
+            tables[name] = WalkTable(tables[name], None, inputs["luts"][name]["timestamp_rule"])
     legacy_path, legacy_sha = spec.legacy
     if _sha256(legacy_path) != legacy_sha:
         raise CtrError(f"legacy: SHA-256 of {legacy_path} is not the frozen {legacy_sha}")
@@ -246,6 +278,7 @@ def frozen_inputs(spec):
             raise CtrError(f"{acquisition.name}: {acquisition.ldat} is an input of the LUT job")
     zero = DelayTable({int(c): 0.0 for c in setup.time_channels})
     tables = {UNCORRECTED: zero, LEGACY: legacy, **tables, **walk_tables}
+    tables |= _rule_tables(getattr(spec, "rule_tables", {}), tables, inputs)
     named = {name for pair in spec.walk_acceptance for name in pair}
     if named - set(tables):
         raise CtrError(f"walk_acceptance names tables that are not evaluated: {sorted(named - set(tables))} (a LUT "
@@ -254,11 +287,53 @@ def frozen_inputs(spec):
 
 
 class WalkTable:
-    """A skew ``DelayTable`` with a walk LUT: corrected through ``walk.correct_features`` (spec 012 FR-5)."""
+    """A skew ``DelayTable`` with a walk LUT (None: skew only) under a timestamp rule (``mismatch``: not the
+    tables' own), corrected through ``walk.correct_features`` (spec 012 FR-5, spec 014 FR-5)."""
 
-    def __init__(self, delays, walk):
-        self.skew, self.walk = delays, walk
+    def __init__(self, delays, walk, rule="top", mismatch=False):
+        self.skew, self.walk, self.rule, self.mismatch = delays, walk, rule, mismatch
         self.delays = delays.delays
+
+
+def table_rule(table):
+    """The timestamp rule a table of ``frozen_inputs`` is applied under."""
+    return table.rule if isinstance(table, WalkTable) else "top"
+
+
+def correct(table, features):
+    """One table's corrected ``dt`` (NaN where a walk table does not correct), whether both delays apply,
+    whether a walk input is missing, the correction counts (None for a plain delay table) and whether the rule
+    acts (None under ``top``)."""
+    if not isinstance(table, WalkTable):
+        b1, f1 = table.lookup(features.column("time_channel_1"))
+        b2, f2 = table.lookup(features.column("time_channel_2"))
+        # t_1 - t_2 exact in integers, then - b_1 + b_2
+        return features.column("dt_ps").astype(np.float64) - b1 + b2, f1 & f2, np.zeros(len(b1), bool), None, None
+    values, status, counts, acts = iw.correct_features(features, table.skew, table.walk, policy="drop",
+                                                       rule=table.rule, mismatch=table.mismatch, with_acts=True)
+    return values, status != 1, status == 2, counts, None if table.rule == "top" else acts
+
+
+def _rule_tables(entries, tables, inputs):
+    """``rule_tables`` as ``WalkTable``s of their base's delays and walk under the named rule (mismatch
+    recorded)."""
+    out = {}
+    if entries:
+        inputs["rule_tables"] = {}
+    for name, entry in entries.items():
+        if entry.base not in tables:
+            raise CtrError(f"rule_tables.{name}: base {entry.base!r} is not evaluated (a LUT solved with walk is "
+                           "evaluated only inside its walk table)")
+        base = tables[entry.base]
+        skew, walk = (base.skew, base.walk) if isinstance(base, WalkTable) else (base, None)
+        fitted = table_rule(base)
+        if entry.rule == fitted:
+            raise CtrError(f"rule_tables.{name}: {entry.base!r} is already applied under {fitted!r}")
+        if entry.rule == "earliest" and walk is not None:
+            raise CtrError(f"rule_tables.{name}: rule 'earliest' is for skew-only tables (spec 014 clarify 4)")
+        out[name] = WalkTable(skew, walk, entry.rule, mismatch=True)
+        inputs["rule_tables"][name] = {"base": entry.base, **timestamp.check_rule(fitted, entry.rule, mismatch=True)}
+    return out
 
 
 def _walk_tables(spec, setup, tables, canonical, inputs):
@@ -273,10 +348,15 @@ def _walk_tables(spec, setup, tables, canonical, inputs):
             iw.check_tables(canonical[entry.skew], spec.luts[entry.skew][1], walk, setup)
         except (iw.core.WalkError, OSError, KeyError) as error:
             raise CtrError(f"walk {name}: {error}") from None
-        out[name] = WalkTable(tables[entry.skew], walk)
+        rule = timestamp.table_rule(walk.manifest)
+        if rule != timestamp.skew_rule(tables[entry.skew]):
+            raise CtrError(f"walk {name}: walk LUT fitted under timestamp rule {rule!r}, its skew LUT "
+                           f"{entry.skew!r} under {timestamp.skew_rule(tables[entry.skew])!r}")
+        out[name] = WalkTable(tables[entry.skew], walk, rule)
         inputs["walks"][name] = {"skew": entry.skew, "path": str(entry.path), "sha256": entry.sha256,
                                  "walk_lut_sha256": walk.sha256, "fitted_with_skew_lut_sha256":
-                                 walk.manifest.get("skew_lut_sha256"), "fit_kind": walk.manifest.get("fit_kind")}
+                                 walk.manifest.get("skew_lut_sha256"), "fit_kind": walk.manifest.get("fit_kind"),
+                                 "timestamp_rule": rule}
     return out
 
 
@@ -292,14 +372,18 @@ class Accumulator:
         self.hist = np.zeros((t, len(self.variants), n, bins))
         self.boot = np.zeros((t, spec.bootstrap, n, bins))
         self.tof = np.zeros((t, n, len(core.TOF_EDGES_PS) - 1, bins))
-        self.walked = any(isinstance(table, WalkTable) for table in self.tables)
+        self.walked = any(isinstance(table, WalkTable) and table.walk is not None for table in self.tables)
         stages = STAGES[:4] + (WALK_STAGE,) + STAGES[4:] if self.walked else STAGES
         self.stages = [dict.fromkeys(stages, 0) | {"in window": dict.fromkeys(self.names, 0)} for _ in range(n)]
+        self.ruled = [name for name, table in zip(self.names, self.tables) if table_rule(table) != "top"]
+        for stage in self.stages if self.ruled else ():
+            stage[RULE_STAGE] = {name: {"near source": 0, "rule acts near source": 0} for name in self.ruled}
         self.pre_geometry = [{} for _ in range(n)]
         self.channels_seen = set()
         self.profile = None
         if self.walked:                         # FR-7: residual histograms per walk-input bin, per position
-            walk = next(table.walk for table in self.tables if isinstance(table, WalkTable))
+            walk = next(table.walk for table in self.tables if isinstance(table, WalkTable)
+                        and table.walk is not None)
             self.profile_edges = {name: np.asarray(walk.edges[block][k], np.float64)
                                   for block, names in walk.model.blocks.items() for k, name in enumerate(names)}
             self.groups = positions(spec)
@@ -320,24 +404,7 @@ class Accumulator:
         if not len(features.ints):
             return
         ch1, ch2 = features.column("time_channel_1"), features.column("time_channel_2")
-        dt = features.column("dt_ps").astype(np.float64)
-        applied = np.ones(len(dt), bool)
-        walk_missing = np.zeros(len(dt), bool)
-        corrected = []
-        for name, table in zip(self.names, self.tables):
-            if isinstance(table, WalkTable):
-                values, status, counts = iw.correct_features(features, table.skew, table.walk, policy="drop")
-                clamped = stages.setdefault("walk clamped", {}).setdefault(name, dict.fromkeys(iw.INPUTS, 0))
-                for key in iw.INPUTS:
-                    clamped[key] += counts[f"clamped {key}"]
-                applied &= status != 1
-                walk_missing |= status == 2
-                corrected.append(values)
-                continue
-            b1, f1 = table.lookup(ch1)
-            b2, f2 = table.lookup(ch2)
-            applied &= f1 & f2
-            corrected.append(dt - b1 + b2)       # t_1 - t_2 exact in integers, then - b_1 + b_2
+        corrected, applied, walk_missing, acting = correction(self.names, self.tables, features, stages)
         delayed, applied = applied, applied & ~walk_missing
         bins = len(self.edges) - 1
         sigma = np.array(spec.acquisitions[index].source_sigma_mm)
@@ -364,6 +431,9 @@ class Accumulator:
                 stages[WALK_STAGE] += int(np.count_nonzero(valid & delayed & walk_missing))
             stages["LOR outside distance"] += int(np.count_nonzero(valid & applied & ~near))
             stages["near source"] += int(np.count_nonzero(near))
+            for name, acts in acting.items():
+                stages[RULE_STAGE][name]["near source"] += int(np.count_nonzero(near))
+                stages[RULE_STAGE][name]["rule acts near source"] += int(np.count_nonzero(acts & near))
             if self.profile is not None:
                 self._profile(index, features, near, tof, corrected)
             self.channels_seen.update(np.unique(np.concatenate((ch1[near], ch2[near]))).tolist())
@@ -400,6 +470,34 @@ class Accumulator:
         """One table's histograms in the layout ``src.timing.ctr.summarize`` reads."""
         return SimpleNamespace(spec=self.spec, edges=self.edges, variants=self.variants, hist=self.hist[t],
                                boot=self.boot[t], tof=self.tof[t])
+
+
+def correction(names, tables, features, stages):
+    """Every table's ``correct``ed ``dt`` on one batch, the events with both delays in every table, those
+    missing a walk input in a walk table, and per rule table whether the rule acts. Walk clamps and rule counts
+    are added to ``stages`` (``walk clamped``, ``RULE_STAGE``)."""
+    n = len(features.ints)
+    applied, walk_missing, corrected, acting = np.ones(n, bool), np.zeros(n, bool), [], {}
+    for name, table in zip(names, tables):
+        values, delayed, missing, counts, acts = correct(table, features)
+        applied &= delayed
+        walk_missing |= missing
+        corrected.append(values)
+        if counts is None:
+            continue
+        if table.walk is not None:
+            clamped = stages.setdefault("walk clamped", {}).setdefault(name, dict.fromkeys(iw.INPUTS, 0))
+            for key in iw.INPUTS:
+                clamped[key] += counts[f"clamped {key}"]
+        if acts is not None:
+            acting[name] = acts
+            mine = stages.setdefault(RULE_STAGE, {}).setdefault(name, {})
+            for key, value in counts.items():
+                if key == "timestamp rule":
+                    mine[key] = value
+                elif key.startswith(("rule acts", "candidates")):
+                    mine[key] = mine.get(key, 0) + value
+    return corrected, applied, walk_missing, acting
 
 
 def geometries(setup, signs, depths):
@@ -537,6 +635,16 @@ def _judge(new, old):
             "combined_uncertainty_ps": combined, "accepted": bool(reference - value > combined)}
 
 
+def positions_not_worse(per_position):
+    """Spec 014 FR-5: no position worse than its reference by more than their combined uncertainty. ``passed``
+    is None when a position is unavailable and none is worse."""
+    worse = [name for name, entry in per_position.items() if entry.get("status") != "unavailable"
+             and -entry["improvement_ps"] > entry["combined_uncertainty_ps"]]
+    unavailable = [name for name, entry in per_position.items() if entry.get("status") == "unavailable"]
+    return {"passed": False if worse else (None if unavailable else True), "worse": worse,
+            "unavailable": unavailable}
+
+
 def walk_acceptance(spec, accumulator, results):
     """Spec 012 FR-5: each [reference, candidate] pair, pooled (the gate, with the paired same-event uncertainty)
     and per declared position (reported)."""
@@ -548,9 +656,12 @@ def walk_acceptance(spec, accumulator, results):
                 cache[name] = by_position(accumulator, accumulator.names.index(name), groups)
         paired = paired_differences(accumulator, reference, [candidate]).get(candidate, {}).get(ACCEPTANCE_KEY)
         pooled = _judge(results[candidate]["pooled"], results[reference]["pooled"])
+        per_position = {name: _judge(cache[candidate][name], cache[reference][name]) for name in groups}
+        not_worse = positions_not_worse(per_position)
         out.append({"reference": reference, "candidate": candidate, "judged_on": ACCEPTANCE_KEY,
                     "pooled": pooled | {"paired": paired}, "accepted": bool(pooled.get("accepted")),
-                    "per_position": {name: _judge(cache[candidate][name], cache[reference][name]) for name in groups},
+                    "per_position": per_position, "positions_not_worse": not_worse,
+                    "accepted_pooled_and_positions": bool(pooled.get("accepted")) and not_worse["passed"] is True,
                     "positions": {name: [spec.acquisitions[k].name for k in index] for name, index in groups.items()}})
     return out, {name: {p: {"fit": r["fit"], "uncertainty": r.get("uncertainty")} for p, r in by_pos.items()}
                  for name, by_pos in cache.items()}
@@ -601,7 +712,8 @@ def run_ctr(spec, *, log=print):
                  "lor_distance_mm": spec.lor_distance_mm, "lor_between_endpoints": True,
                  "window_ps": spec.window_ps, "bin_ps": spec.bin_ps, "max_records": spec.max_records,
                  "same_events": "both TIME channels with an applied delay in every compared table"
-                 + (", and every walk input on both sides" if accumulator.walked else "")},
+                 + (", and every walk input on both sides" if accumulator.walked else "")
+                 + ("; candidate exclusions never drop an event" if accumulator.ruled else "")},
         "model": "Gaussian + flat background, binned Poisson likelihood (reported only); model-free FWHM/FWTM "
                  "above the fitted background from local quadratic fits (peak within +-"
                  f"{core.PEAK_WINDOW:g} x rough FWHM, crossings within +-{core.EDGE_WINDOW:g} x rough FWHM); "
@@ -615,7 +727,7 @@ def run_ctr(spec, *, log=print):
         "coverage": {name: {"applied_channels": len(table.delays)} for name, table in tables.items()}
         | {"channels_near_source": len(accumulator.channels_seen)},
         "results": results, "acceptance": acceptance(results, paired_differences(accumulator)),
-        **_walk_report(spec, accumulator, results),
+        **_walk_report(spec, accumulator, results), **_rule_report(spec, accumulator),
         "interpretation": "system CTR at these cuts (includes residual offset errors and endpoint blur); not an "
                           "intrinsic detector CTR; the acceptance adds uncertainties in quadrature although the "
                           "tables share events (conservative)",
@@ -669,6 +781,30 @@ def _walk_report(spec, accumulator, results):
         return {}
     judged, by_pos = walk_acceptance(spec, accumulator, results)
     return {"walk_acceptance": judged, "results_by_position": by_pos, **walk_profiles(spec, accumulator)}
+
+
+def _rule_report(spec, accumulator):
+    """Spec 014 FR-5: per table applied under a rule other than ``top``, its rule, the share of near-source
+    events where it acts and the candidate counts, pooled and per declared position."""
+    if not accumulator.ruled:
+        return {}
+    out = {}
+    for name in accumulator.ruled:
+        table = accumulator.tables[accumulator.names.index(name)]
+
+        def merged(index):
+            total = {}
+            for k in index:
+                for key, value in accumulator.stages[k][RULE_STAGE][name].items():
+                    if key != "timestamp rule":
+                        total[key] = total.get(key, 0) + value
+            near = total.get("near source", 0)
+            return total | {"rule_acts_share": total.get("rule acts near source", 0) / near if near else None}
+        out[name] = {"rule": table.rule, "mismatch": table.mismatch,
+                     "pooled": merged(range(len(spec.acquisitions))),
+                     "per_position": {p: merged(index) for p, index in positions(spec).items()}}
+    return {"timestamp_rules": out, "timestamp_rules_note": "rule acts: on near-source events (nominal variant); "
+            "candidate counts: on the corrected events of the selection, before the LOR cut (spec 014 FR-5)"}
 
 
 def _write_histograms(spec, accumulator):

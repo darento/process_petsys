@@ -631,3 +631,195 @@ def test_job_and_walk_fit_under_rule_end_to_end(tmp_path, setup):
     assert manifest["rule_rounds"][0]["rule_acts_share"] > 0.02 and "after (top)" in fitted["widths"]["heldout"]
     with pytest.raises(iw.core.WalkError, match="output exists"):
         iw.run_fit(iw.load_fit(tmp_path / "fit.json"), log=lambda _: None)
+
+
+# --- T7: CTR and NECR under the rule (FR-5) --------------------------------------------------
+LATE_PS, LATE_SHARE, HIT_PS = 500.0, 0.3, 80.0
+
+
+@pytest.fixture(scope="module")
+def rule_ctr(tmp_path_factory):
+    """Opposed ring-2 SMs through a point near the centre, two TIME hits per side, each timed with its
+    channel's delay, the spec 012 charge walk and noise; 30 % of the tops are ``LATE_PS`` late. Tables: spec 013
+    ``frozen_tables`` (em = true delays, its walk LUT, a noisy legacy file) plus a pair fitted under the rule
+    (the same delays and walk, manifests ``top_earliest_mean``)."""
+    import necr_helpers as nh
+    from src.imas.skew.geometry import ImasGeometry
+    from src.timing.cache import _sha256
+    from src.timing.shell import C_MM_PER_PS
+    base = tmp_path_factory.mktemp("rule_ctr")
+    probe = ImasSetup.from_files(CONFIG)
+    rng = np.random.default_rng(29)
+    ring2 = range(48, 72)
+    times = sorted({ch for sm in ring2 for mm in (5, 6) for ch in channels(probe, sm, mm)[0]})
+    delays = dict(zip(times, rng.normal(0.0, 500.0, len(times))))
+    case = nh.frozen_tables(base, probe, times, delays)
+    pairs = []
+    for _ in range(5000):
+        sm, pair = int(rng.choice(ring2[:12])), []
+        for s in (sm, sm + 12):
+            top, other = rng.permutation(8)[:2]
+            q_top = float(rng.uniform(20, 35))
+            pair.append((s, int(rng.integers(5, 7)), int(top), int(other), q_top, float(rng.uniform(5, q_top)),
+                         bool(rng.random() < LATE_SHARE)))
+        pairs.append(pair)
+
+    def one(entry, top_stamp, other_stamp):
+        sm, mm, top, other, q_top, q_other, _ = entry
+        return ldat_side(probe, sm, mm, time={top: q_top}, stamp=T0 + top_stamp,
+                         extra=[(T0 + other_stamp, q_other, channels(probe, sm, mm)[0][other])])
+
+    def records(stamps):
+        return [(one(a, *s[:2]), one(b, *s[2:])) for (a, b), s in zip(pairs, stamps)]
+
+    point = write(base / "na22_00000041.ldat", records([(0, 0, 0, 0)] * len(pairs)))
+    lookup = ImasSetup.from_files(CONFIG, case["encal"]).lookup()
+    geometry = ImasGeometry.from_setup(probe)
+    source = np.array([0.0, 0.0, probe.ring_z[2] + 3.0])
+    stamps = [(0, 0, 0, 0)] * len(pairs)
+    for f in sel.feature_batches(point, lookup, sel.Selection.production(lookup)):
+        _, rows = geometry.endpoints(f)
+        tof = (np.linalg.norm(source - rows[:, :3], axis=1) - np.linalg.norm(source - rows[:, 3:], axis=1)) / C_MM_PER_PS
+        for k, (record, c1) in enumerate(zip(f.column("record").tolist(), f.column("time_channel_1").tolist())):
+            a, b = pairs[record]
+            truth = (tof[k], 0.0) if channels(probe, a[0], a[1])[0][a[2]] == c1 else (0.0, tof[k])
+            out = []
+            for (sm, mm, top, other, q_top, q_other, late), t in zip((a, b), truth):
+                t_ch = channels(probe, sm, mm)[0]
+                out += [int(round(t + delays[t_ch[top]] + nh.charge_walk(q_top) + rng.normal(0, HIT_PS)
+                                  + (LATE_PS if late else 0.0))),
+                        int(round(t + delays[t_ch[other]] + nh.charge_walk(q_other) + rng.normal(0, HIT_PS)))]
+            stamps[record] = tuple(out)
+    write(point, records(stamps))
+    walk = iw.WalkLut.read(case["walk"])
+    walk_rule = iw.WalkLut(walk.edges, walk.offset_ps, walk.events, walk.filled,
+                           {k: v for k, v in walk.manifest.items() if k != "table"}
+                           | {"timestamp_rule": "top_earliest_mean"})
+    walk_rule.write(base / "walk_rule.json")
+    walk_rule = iw.WalkLut.read(base / "walk_rule.json")
+    lut_rule = case["skew_lut"](case["work"] / "lut_em_rule.csv", timestamp_rule="top_earliest_mean",
+                                walk_lut_sha256=walk_rule.sha256)
+    return case | {"point": point, "walk_rule": base / "walk_rule.json", "lut_rule": lut_rule, "sha": _sha256}
+
+
+RULE_TABLES = {"em_walk@mean": {"base": "em_walk", "rule": "top_earliest_mean"},
+               "em@earliest": {"base": "em", "rule": "earliest"},
+               "legacy@earliest": {"base": "legacy", "rule": "earliest"}}
+
+
+def _frozen(case, path):
+    return {"path": str(path), "sha256": case["sha"](path)}
+
+
+def rule_ctr_file(case, name, **changes):
+    import json
+    from src.imas.skew import ctr
+    data = {"schema": ctr.SCHEMA, "job_work": str(case["work"]), "encal": str(case["encal"]),
+            "luts": {"em": _frozen(case, case["lut"]), "em_rule": _frozen(case, case["lut_rule"])},
+            "legacy": _frozen(case, case["legacy"]), "output": str(case["base"] / "out" / name),
+            "acquisitions": [{"name": "na22_41", "ldat": str(case["point"]), "source_mm": "lor_convergence",
+                              "source_sigma_mm": [1, 1, 1], "declared": "centre"}],
+            "walks": {"em_walk": {"skew": "em", **_frozen(case, case["walk"])},
+                      "rule_pair": {"skew": "em_rule", **_frozen(case, case["walk_rule"])}},
+            "rule_tables": RULE_TABLES, "walk_acceptance": [["em_walk", "em_walk@mean"], ["em_walk", "rule_pair"]],
+            "lor_distance_mm": 40.0, "sensitivity_lor_mm": [30.0, 50.0], "bootstrap": 20, **changes}
+    path = case["base"] / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+@pytest.mark.slow
+@pytest.mark.fr("014-FR-5")
+def test_ctr_rule_tables_improve_on_the_same_events(rule_ctr):
+    from src.imas.skew import ctr
+    report = ctr.run_ctr(ctr.load_ctr(rule_ctr_file(rule_ctr, "ctr.json")), log=lambda *_: None)
+    fits = {name: result["pooled"]["fit"] for name, result in report["results"].items()}
+    assert len({f["events"] for f in fits.values()}) == 1 and fits["em"]["events"] > 3000     # same events
+    width = {name: fit["model_free_fwhm_ps"] for name, fit in fits.items()}
+    assert width["em_walk@mean"] < width["em_walk"] and width["legacy@earliest"] < width["legacy"]
+    assert width["rule_pair"] == width["em_walk@mean"]           # the same tables and rule, fitted or frozen
+    judged = {(j["reference"], j["candidate"]): j for j in report["walk_acceptance"]}
+    mean = judged[("em_walk", "em_walk@mean")]
+    assert mean["accepted"] and mean["positions_not_worse"] == {"passed": True, "worse": [], "unavailable": []}
+    assert mean["accepted_pooled_and_positions"] and judged[("em_walk", "rule_pair")]["accepted"]
+    inputs = report["frozen_inputs"]
+    assert inputs["rule_tables"]["em_walk@mean"] == {"base": "em_walk", "table_rule": "top",
+                                                     "rule": "top_earliest_mean", "mismatch": True}
+    assert inputs["walks"]["rule_pair"]["timestamp_rule"] == "top_earliest_mean"
+    assert inputs["luts"]["em_rule"]["timestamp_rule"] == "top_earliest_mean"
+    assert inputs["luts"]["em"]["timestamp_rule"] == "top"
+    rules = report["timestamp_rules"]
+    assert set(rules) == {"rule_pair", *RULE_TABLES}
+    assert rules["rule_pair"]["mismatch"] is False and rules["em@earliest"]["rule"] == "earliest"
+    share = rules["em_walk@mean"]["pooled"]["rule_acts_share"]
+    assert 0.3 < share < 0.9 and rules["em_walk@mean"]["per_position"]["centre"]["rule_acts_share"] == share
+    stage = report["counts"]["na22_41"]["stages"][ctr.RULE_STAGE]["em_walk@mean"]
+    assert stage["candidates"] >= 2 * fits["em"]["events"] and stage["candidates excluded (no delay)"] == 0
+    assert stage["timestamp rule"]["mismatch"] and "candidate exclusions" in report["cuts"]["same_events"]
+
+
+@pytest.mark.fr("014-FR-5")
+def test_ctr_rule_tables_refused(rule_ctr):
+    from src.imas.skew import ctr
+
+    def refused(match, *, load=False, **changes):
+        with pytest.raises(ctr.CtrError, match=match):
+            spec = ctr.load_ctr(rule_ctr_file(rule_ctr, "refused.json", **({"walk_acceptance": []} | changes)))
+            if not load:
+                ctr.frozen_inputs(spec)
+
+    refused("for skew-only tables", rule_tables={"x": {"base": "em_walk", "rule": "earliest"}})
+    refused("already applied under 'top'", rule_tables={"x": {"base": "em", "rule": "top"}})
+    refused("is not evaluated", rule_tables={"x": {"base": "em_rule", "rule": "top"}})
+    refused("rule one of", load=True, rule_tables={"x": {"base": "em", "rule": "latest"}})
+    refused("reserved or a table name", load=True, rule_tables={"em_walk": {"base": "em", "rule": "earliest"}})
+    refused("base one of", load=True, rule_tables={"x": {"base": "uncorrected", "rule": "earliest"}})
+    refused("walk LUT fitted under timestamp rule 'top_earliest_mean', its skew LUT 'em' under 'top'",
+            walks={"bad": {"skew": "em", **_frozen(rule_ctr, rule_ctr["walk_rule"])}}, rule_tables={})
+    spec = ctr.load_ctr(rule_ctr_file(rule_ctr, "plain.json", rule_tables={}, walk_acceptance=[],
+                                      walks={"em_walk": {"skew": "em", **_frozen(rule_ctr, rule_ctr["walk"])}},
+                                      luts={"em": _frozen(rule_ctr, rule_ctr["lut"])}))
+    inputs, _, tables = ctr.frozen_inputs(spec)
+    assert "rule_tables" not in inputs and all(ctr.table_rule(t) == "top" for t in tables.values())
+
+
+@pytest.mark.fr("014-FR-5")
+def test_positions_not_worse_gate():
+    from src.imas.skew import ctr
+
+    def entry(value, u=5.0):
+        return {"fit": {ctr.ACCEPTANCE_KEY: value}, "uncertainty": {ctr.ACCEPTANCE_KEY: {"total": u}}}
+    better, same, worse = (ctr._judge(entry(v), entry(300.0)) for v in (280.0, 305.0, 310.0))
+    assert ctr.positions_not_worse({"a": better, "b": same}) == {"passed": True, "worse": [], "unavailable": []}
+    assert ctr.positions_not_worse({"a": better, "b": worse}) == {"passed": False, "worse": ["b"],
+                                                                  "unavailable": []}   # 10 ps worse > 7.1 ps
+    gap = ctr.positions_not_worse({"a": better, "b": {"status": "unavailable"}})
+    assert gap == {"passed": None, "worse": [], "unavailable": ["b"]}
+
+
+@pytest.mark.slow
+@pytest.mark.fr("014-FR-5")
+def test_necr_passes_rule_tables_through(rule_ctr):
+    import necr_helpers as nh
+    from src.imas.skew import ctr, necr
+    case = rule_ctr
+    path = nh.necr_file(case, {"frame": [case["point"]]}, "necr_rule.json",
+                        luts={"em": _frozen(case, case["lut"]), "em_rule": _frozen(case, case["lut_rule"])},
+                        walks={"em_walk": {"skew": "em", **_frozen(case, case["walk"])},
+                               "rule_pair": {"skew": "em_rule", **_frozen(case, case["walk_rule"])}},
+                        rule_tables={"em_walk@mean": RULE_TABLES["em_walk@mean"]},
+                        lines={"axis": {"p1": [0.0, 0.0, -necr.LINE_HALF_LENGTH_MM],
+                                        "p2": [0.0, 0.0, necr.LINE_HALF_LENGTH_MM], "source": "synthetic axis"}},
+                        headline_line="axis", gates={"frame": "frame", "acceptance": ["em_walk", "em_walk@mean"]})
+    spec = necr.load_necr(path)
+    assert spec.table_names == {"uncorrected", "legacy", "em", "em_rule", "em_walk", "rule_pair", "em_walk@mean"}
+    report = necr.run_necr(spec, log=lambda *_: None)
+    stages = report["counts"]["frame"]["stages"]
+    assert stages["same events"] > 3000
+    acted = stages[ctr.RULE_STAGE]
+    assert set(acted) == {"em_walk@mean", "rule_pair"}
+    assert acted["em_walk@mean"]["same events rule acts"] == acted["rule_pair"]["same events rule acts"] > 1000
+    widths = {name: entry["model_free"]["model_free_fwhm_ps"] for name, entry in
+              report["results"]["pooled"]["axis"].items()}
+    assert widths["em_walk@mean"] == widths["rule_pair"] < widths["em_walk"]
+    assert report["frozen_inputs"]["rule_tables"]["em_walk@mean"]["mismatch"]

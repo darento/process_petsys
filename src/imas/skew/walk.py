@@ -482,6 +482,13 @@ def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, polic
     (``timestamp.CANDIDATE_DTYPE`` slots); the corrected events get ``offset_1 - offset_2`` (``timestamp.
     side_offset``) and the counts ``rule acts`` (events) and the candidate counts per side summed. Both tables
     must have been fitted under ``rule`` unless ``mismatch`` names the difference (``timestamp.check_rule``)."""
+    return _correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, policy=policy, rule=rule,
+                       candidates_1=candidates_1, candidates_2=candidates_2, mismatch=mismatch)[:3]
+
+
+def _correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, policy, rule, candidates_1, candidates_2,
+                mismatch):
+    """``correct_dt`` plus per event whether the rule acts on a corrected event (all False under ``top``)."""
     from src.imas.skew import timestamp
     if policy not in POLICIES:
         raise core.WalkError(f"policy must be one of {POLICIES}")
@@ -494,6 +501,7 @@ def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, polic
     corrected = dt - b1 + b2
     status = np.where(f1 & f2, 0, 1).astype(np.int8)
     counts = {"events": int(len(dt))}
+    acts = np.zeros(len(dt), bool)
     if walk is not None:
         values_1, status_1 = walk_inputs(**side_1)
         values_2, status_2 = walk_inputs(**side_2)
@@ -507,7 +515,8 @@ def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, polic
         offset_1, acts_1, counts_1 = timestamp.side_offset(channel_1, candidates_1, side_1, skew, walk, rule)
         offset_2, acts_2, counts_2 = timestamp.side_offset(channel_2, candidates_2, side_2, skew, walk, rule)
         corrected = corrected + np.where(status == 0, offset_1 - offset_2, 0.0)
-        counts["rule acts"] = int(np.count_nonzero((status == 0) & (acts_1 | acts_2)))
+        acts = (status == 0) & (acts_1 | acts_2)
+        counts["rule acts"] = int(np.count_nonzero(acts))
         for key in counts_1:
             if key != "rule acts":
                 counts[key] = counts_1[key] + counts_2[key]
@@ -515,20 +524,21 @@ def correct_dt(dt_ps, channel_1, channel_2, side_1, side_2, skew, walk, *, polic
     for code, label in enumerate(CORRECTION_STATUS):
         counts[label] = int(np.count_nonzero(status == code))
     counts[f"uncorrected {'kept' if policy == 'keep' else 'dropped'}"] = int(np.count_nonzero(status != 0))
-    return np.where(status == 0, corrected, dt if policy == "keep" else np.nan), status, counts
+    return np.where(status == 0, corrected, dt if policy == "keep" else np.nan), status, counts, acts
 
 
-def correct_features(features, skew, walk, *, policy="keep", rule="top", mismatch=False):
+def correct_features(features, skew, walk, *, policy="keep", rule="top", mismatch=False, with_acts=False):
     """``correct_dt`` of a ``FeatureBatch`` (sides 1 and 2, keV from the selection's calibration; under a spec 014
-    rule the candidates from ``features.candidates``)."""
+    rule the candidates from ``features.candidates``). ``with_acts`` adds per event whether the rule acts."""
     def side(s):
         return {"q_top": features.column(f"q_top_{s}"), "q_time": features.column(f"q_time_{s}"),
                 "doi_ratio": features.column(f"doi_ratio_{s}"), "kev": features.column(f"energy_kev_{s}")}
     candidates = features.candidates if rule != "top" else None
-    return correct_dt(features.column("dt_ps"), features.column("time_channel_1"), features.column("time_channel_2"),
+    out = _correct_dt(features.column("dt_ps"), features.column("time_channel_1"), features.column("time_channel_2"),
                       side(1), side(2), skew, walk, policy=policy, rule=rule, mismatch=mismatch,
                       candidates_1=None if candidates is None else candidates[:, 0],
                       candidates_2=None if candidates is None else candidates[:, 1])
+    return out if with_acts else out[:3]
 
 
 def check_tables(skew_lut, skew_sha256, walk_lut, setup):
