@@ -63,6 +63,11 @@ OBSERVATION_DTYPE = np.dtype([
 WALK_OBSERVATION = ("q_top", "q_time", "doi_ratio")
 OBSERVATION_WALK_DTYPE = np.dtype(OBSERVATION_DTYPE.descr + [(f"{name}_{s}", "<f4") for s in ("i", "j")
                                                              for name in WALK_OBSERVATION])
+# spec 014 FR-2: per canonical side the other TIME hits of the timestamped minimodule (IMAS ``timestamp`` slots:
+# TIME channel, -1 empty; lag to the side's own timestamp, ps; charge, a.u.), only in sets built with
+# ``candidate_slots`` (which needs ``carry_walk``); their fingerprint records ``candidates``.
+CANDIDATE_FIELDS = (("cand_channel", "<i4", "channel"), ("cand_lag", "<i4", "lag_ps"),
+                    ("cand_charge", "<f4", "charge"))
 PAIR_COUNT_DTYPE = np.dtype([("channel_i", "<i4"), ("channel_j", "<i4"), ("role", "i1"), ("count", "<u8")])
 ROLES = ("train", "validation", "test")
 _INT_COLUMNS = {"time_channel_1", "time_channel_2", "sm_1", "mm_1", "sm_2", "mm_2", "slab_1", "slab_2",
@@ -250,25 +255,37 @@ class FeatureCache:
                 yield index, done["role"], rows
 
 
-def observation_dtype(carry_walk=False):
-    return OBSERVATION_WALK_DTYPE if carry_walk else OBSERVATION_DTYPE
+def observation_dtype(carry_walk=False, candidate_slots=0):
+    base = OBSERVATION_WALK_DTYPE if carry_walk else OBSERVATION_DTYPE
+    if not candidate_slots:
+        return base
+    if not carry_walk:
+        raise ValueError("candidates are carried only with the walk inputs (carry_walk)")
+    return np.dtype(base.descr + [(f"{name}_{s}", kind, (candidate_slots,)) for s in ("i", "j")
+                                  for name, kind, _ in CANDIDATE_FIELDS])
 
 
-def walk_fingerprint(fingerprint, carry_walk):
-    """Fingerprint entries of a set carrying walk inputs (none otherwise, so other fingerprints keep their value)."""
+def walk_fingerprint(fingerprint, carry_walk, candidate_slots=0):
+    """Fingerprint entries of a set carrying walk inputs or candidates (none otherwise, so other fingerprints
+    keep their value)."""
     if carry_walk:
         fingerprint["walk_inputs"] = [f"{name}_{s}" for s in ("i", "j") for name in WALK_OBSERVATION]
+    if candidate_slots:
+        fingerprint["candidates"] = {"slots": int(candidate_slots), "order": "raw lag to the side's timestamp",
+                                     "fields": [name for name, _, _ in CANDIDATE_FIELDS]}
     return fingerprint
 
 
-def canonical_observations(rows, result, role, carry_walk=False):
+def canonical_observations(rows, result, role, carry_walk=False, candidates=None):
     """Accepted rows of one geometry result, lower TIME channel first as ``i``; ``carry_walk`` keeps the
-    walk ingredients per side (spec 012 FR-4)."""
+    walk ingredients per side (spec 012 FR-4); ``candidates`` (records x 2 sides x slots with fields channel,
+    lag_ps and charge, aligned with ``rows``) are carried per side (spec 014 FR-2)."""
     accepted = result.codes == 0
     rows = rows[accepted]
     endpoints, tof = result.endpoints_mm[accepted], result.shell_tof_ps[accepted]
     swap = rows["time_channel_1"] > rows["time_channel_2"]
-    out = np.empty(len(rows), observation_dtype(carry_walk))
+    slots = 0 if candidates is None else candidates.shape[2]
+    out = np.empty(len(rows), observation_dtype(carry_walk, slots))
     out["file"], out["record"], out["role"] = rows["file"], rows["record"], ROLES.index(role)
     out["swapped"], out["module_tie"] = swap, rows["module_tie"]
     for i_name, j_name, first, second in (("channel_i", "channel_j", "time_channel_1", "time_channel_2"),
@@ -280,6 +297,11 @@ def canonical_observations(rows, result, role, carry_walk=False):
     for name in WALK_OBSERVATION if carry_walk else ():
         out[f"{name}_i"] = np.where(swap, rows[f"{name}_2"], rows[f"{name}_1"])
         out[f"{name}_j"] = np.where(swap, rows[f"{name}_1"], rows[f"{name}_2"])
+    if slots:
+        candidates = candidates[accepted]
+        for name, _, field in CANDIDATE_FIELDS:
+            out[f"{name}_i"] = np.where(swap[:, None], candidates[field][:, 1], candidates[field][:, 0])
+            out[f"{name}_j"] = np.where(swap[:, None], candidates[field][:, 0], candidates[field][:, 1])
     out["dt_ps"] = np.where(swap, -rows["dt_ps"], rows["dt_ps"])
     out["endpoint_i_mm"] = np.where(swap[:, None], endpoints[:, 3:], endpoints[:, :3])
     out["endpoint_j_mm"] = np.where(swap[:, None], endpoints[:, :3], endpoints[:, 3:])
@@ -427,12 +449,22 @@ class ObservationSet:
         paths = (self.manifest["chunk_paths"][p] if "chunk_paths" in self.manifest     # streamed sets (spec 011 T8)
                  else [f"p{p:03d}_c{c:05d}.npy" for c in range(self.manifest["chunks"][p])])
         chunks = [np.load(self.directory / path) for path in paths]
-        return np.concatenate(chunks) if chunks else np.empty(0, observation_dtype(self.carries_walk))
+        return np.concatenate(chunks) if chunks else np.empty(0, observation_dtype(self.carries_walk,
+                                                                                    self.candidate_slots))
 
     @property
     def carries_walk(self):
         """Rows hold the raw walk ingredients per side (spec 012 FR-4)."""
         return "walk_inputs" in self.manifest["fingerprint"]
+
+    @property
+    def candidate_slots(self):
+        """Other-TIME-hit slots per side in the rows (spec 014 FR-2); 0 when not carried."""
+        return int((self.manifest["fingerprint"].get("candidates") or {}).get("slots", 0))
+
+    @property
+    def carries_candidates(self):
+        return self.candidate_slots > 0
 
     def pair_counts(self):
         return np.load(self.directory / "pair_counts.npy")

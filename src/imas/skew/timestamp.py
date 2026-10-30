@@ -56,6 +56,22 @@ def check_rule(fitted, rule, *, mismatch=False):
     return {"table_rule": fitted, "rule": rule, "mismatch": fitted != rule}
 
 
+def require_candidates(observations, rule):
+    """Refuse an observation set (or a view with ``carries_candidates``) without candidates for a rule other
+    than ``top`` (FR-2)."""
+    if _known(rule) != "top" and not getattr(observations, "carries_candidates", False):
+        raise RuleError(f"timestamp rule {rule!r} needs observation rows with the candidates; stream the set "
+                        "with carry_candidates in a new directory")
+
+
+def observation_candidates(rows, suffix):
+    """``CANDIDATE_DTYPE`` slots of one canonical side (``i``/``j``) of candidate-carrying observation rows."""
+    out = np.empty(rows[f"cand_channel_{suffix}"].shape, CANDIDATE_DTYPE)
+    out["channel"], out["lag_ps"], out["charge"] = (rows[f"cand_channel_{suffix}"], rows[f"cand_lag_{suffix}"],
+                                                    rows[f"cand_charge_{suffix}"])
+    return out
+
+
 def empty_candidates(n):
     out = np.zeros((n, SLOTS), CANDIDATE_DTYPE)
     out["channel"] = -1

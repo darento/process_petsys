@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T2 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T3 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -44,11 +44,22 @@ Status: in progress 2026-10-30 (T1–T2 done). [Approved spec](spec.md), [plan](
     - `tests/test_imas_*.py tests/test_cornell_timing_*.py tests/test_cornell_walk.py tests/test_timing_*.py tests/test_golden_provenance.py -m "not real_data"`: 340 passed, 4 xfailed.
     - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
     - Bit-identity against the HEAD selection: codes, ints, floats and walk identical on 500 k-record prefixes of NECR frame 30 split 22 and frame 1 split 24, production and reference modes (137,736 passing). One-off check, `$CLAUDE_JOB_DIR/tmp/bitident.py`.
-- [ ] **T3 — Observation rows carry candidates** (FR-2).
+- [x] **T3 — Observation rows carry candidates** (FR-2).
   - `OBSERVATION_RULE_DTYPE`, `canonical_observations(..., carry_candidates)`, `stream_observations(..., carry_candidates)` with its fingerprint entry; `carries_candidates` on the set.
   - **Done when:**
     - Tests: the swap moves the candidate blocks with their side; a stream with candidates round-trips; a set without them is refused for a rule other than `top`; `carry_candidates` without `carry_walk` is refused.
     - Cornell cache/stream goldens and fingerprints unchanged (`tests/test_cornell_*cache* tests/test_timing_stream*`, names checked at the task).
+  - Deviations:
+    - There is no fixed `OBSERVATION_RULE_DTYPE`. `observation_dtype(carry_walk, candidate_slots)` appends `cand_channel_s` / `cand_lag_s` (i4) and `cand_charge_s` (f4) per side. Its shape is the slot count, so the core cache stays scanner-neutral.
+    - The core takes `candidate_slots` (IMAS passes `timestamp.SLOTS`). The IMAS adapter keeps `carry_candidates`.
+    - With 0 slots the dtype and fingerprint are unchanged, which keeps the Cornell and spec 011/012 fingerprints.
+    - A stream refuses an adapter whose batches carry no candidates of that slot count.
+    - `timestamp.require_candidates(set, rule)` holds the refusal; `timestamp.observation_candidates(rows, "i"|"j")` reads one side.
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: shared `src/timing/cache.py` and `stream.py`, so every IMAS, Cornell, core timing and Manager timing test, plus golden provenance.
+    - `tests/test_imas_timestamp.py -n 0 --slow-limit 5`: 12 passed.
+    - `tests/test_imas_*.py tests/test_cornell_*.py tests/test_timing_*.py tests/test_manager_timing*.py tests/test_golden_provenance.py -m "not real_data"`: 365 passed, 4 xfailed. This covers the Cornell cache and stream goldens (`test_cornell_timing_cache.py`, `test_timing_stream.py`), with no test edited.
+    - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
 - [ ] **T4 — Correction and identity** (FR-3).
   - `correct_dt(..., rule, candidates_1, candidates_2)`, `correct_features(..., rule)`, `RuleAdjusted`, `timestamp_rule` read from skew and walk manifests.
   - **Done when:**

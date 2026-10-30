@@ -179,3 +179,84 @@ def test_candidates_beyond_slots_or_int32_are_refused(tmp_path, setup):
     seven = ldat_side(setup, *A, time=full)
     (features,) = [b for b in select(tmp_path, setup, [(seven, ldat_side(setup, *B))]) if len(b.ints)]
     assert (features.candidates["channel"][0, 0] >= 0).sum() == 7
+
+
+# --- T3: observation rows carry candidates (FR-2) --------------------------------------------
+@pytest.fixture(scope="module")
+def candidate_files(tmp_path_factory, setup):
+    """Diametric coincidences with 1-4 TIME hits per side at random lags, so swapped sides carry different
+    candidates."""
+    base = tmp_path_factory.mktemp("imas_candidates")
+    rng = np.random.default_rng(23)
+    records = []
+    for _ in range(240):
+        k, ring = int(rng.integers(0, 24)), int(rng.integers(0, 5))
+        a, b = 24 * ring + k, 24 * (4 - ring) + (k + 12) % 24
+        sides = []
+        for sm, stamp in ((a, T0), (b, T0 - int(rng.integers(-900, 900)))):
+            mm = int(rng.integers(0, 16))
+            slabs = rng.permutation(8)[:int(rng.integers(1, 5))]
+            t_ch, _ = channels(setup, sm, mm)
+            time = {int(slabs[0]): float(rng.uniform(20, 30))}
+            extra = [(stamp + int(rng.integers(-2000, 6000)), float(rng.uniform(0.5, 15)), t_ch[int(s)])
+                     for s in slabs[1:]]
+            sides.append(ldat_side(setup, sm, mm, time=time, stamp=stamp, extra=extra))
+        records.append(tuple(sides))
+    return [write(base / f"split_{i}.ldat", records[i::2]) for i in range(2)]
+
+
+def _stream(directory, setup, paths, **options):
+    from src.imas.skew import cache as ic
+    from src.imas.skew.geometry import ImasGeometry
+    return ic.stream_observations(directory, [{"index": i, "path": p} for i, p in enumerate(paths)],
+                                  ImasGeometry.nominal(setup), config_path=CONFIG, encal_path=setup.encal_path,
+                                  holdout=ic.all_train(range(len(paths))), energy_calibration_prefix={},
+                                  partitions=3, buffer_rows=40, **options)
+
+
+def _rows(observations):
+    rows = np.concatenate([observations.partition(p) for p in range(observations.partitions)])
+    return rows[np.lexsort((rows["record"], rows["file"]))]
+
+
+@pytest.mark.fr("014-FR-2")
+def test_observations_carry_candidates_with_their_side(tmp_path, setup, candidate_files):
+    from src.timing import cache as core_cache
+    walk_only = _rows(_stream(tmp_path / "walk", setup, candidate_files, carry_walk=True))
+    carried_set = _stream(tmp_path / "cand", setup, candidate_files, carry_walk=True, carry_candidates=True)
+    carried = _rows(carried_set)
+    assert carried_set.carries_candidates and carried_set.candidate_slots == ts.SLOTS
+    assert carried.dtype == core_cache.observation_dtype(True, ts.SLOTS)
+    assert len(carried) > 150 and carried["swapped"].any() and not carried["swapped"].all()
+    assert all(np.array_equal(carried[n], walk_only[n]) for n in core_cache.OBSERVATION_WALK_DTYPE.names)
+    lookup = setup.lookup()
+    features = {}
+    for index, path in enumerate(candidate_files):
+        for batch in sel.feature_batches(path, lookup, sel.Selection.production(lookup)):
+            for k, record in enumerate(batch.column("record").tolist()):
+                features[(index, record)] = batch.candidates[k]
+    assert sum((c["channel"] >= 0).sum() for c in features.values()) > 300
+    side_i, side_j = ts.observation_candidates(carried, "i"), ts.observation_candidates(carried, "j")
+    assert side_i.dtype == ts.CANDIDATE_DTYPE and side_i.shape == (len(carried), ts.SLOTS)
+    for n, row in enumerate(carried):
+        f = features[(int(row["file"]), int(row["record"]))]
+        i, j = (1, 0) if row["swapped"] else (0, 1)
+        assert side_i[n].tobytes() == f[i].tobytes() and side_j[n].tobytes() == f[j].tobytes()
+    assert (ts.observation_candidates(carried_set.partition(0)[:0], "i").shape == (0, ts.SLOTS))
+
+
+@pytest.mark.fr("014-FR-2")
+def test_sets_without_candidates_are_refused(tmp_path, setup, candidate_files):
+    from src.timing import cache as core_cache
+    walk_only = _stream(tmp_path / "walk", setup, candidate_files, carry_walk=True)
+    with pytest.raises(core_cache.CacheMismatch, match="different inputs"):
+        _stream(tmp_path / "walk", setup, candidate_files, carry_walk=True, carry_candidates=True)
+    with pytest.raises(ValueError, match="carry_walk"):
+        _stream(tmp_path / "plain", setup, candidate_files, carry_candidates=True)
+    with pytest.raises(ts.RuleError, match="carry_candidates"):
+        ts.require_candidates(walk_only, "top_earliest_mean")
+    ts.require_candidates(walk_only, "top")
+    carried = _stream(tmp_path / "cand", setup, candidate_files, carry_walk=True, carry_candidates=True)
+    ts.require_candidates(carried, "top_earliest_mean")
+    assert "candidates" not in walk_only.manifest["fingerprint"] and carried.manifest["fingerprint"]["candidates"][
+        "slots"] == ts.SLOTS

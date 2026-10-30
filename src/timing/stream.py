@@ -33,7 +33,7 @@ from src.timing.shell import GEOMETRY_REJECTIONS
 
 
 def _stream_file(directory, item, adapter, geometry, partition, seed, max_records, partitions, buffer_rows,
-                 carry_walk=False):
+                 carry_walk=False, candidate_slots=0):
     """Worker: one input file into ``files/fNNN``; returns its small ``done`` record."""
     partition = Partition(**partition)
     index, path = item["index"], Path(item["path"])
@@ -73,7 +73,10 @@ def _stream_file(directory, item, adapter, geometry, partition, seed, max_record
         result = geometry.apply(_Columns(rows))
         for label, n in result.counts().items():
             geometry_counts[label] += n
-        observations = canonical_observations(rows, result, partition.role, carry_walk)
+        if candidate_slots and (features.candidates is None or features.candidates.shape[2] != candidate_slots):
+            raise CacheMismatch(f"{path.name}: the feature adapter gives no {candidate_slots}-slot candidates")
+        observations = canonical_observations(rows, result, partition.role, carry_walk,
+                                              features.candidates if candidate_slots else None)
         part = pair_partition(observations["channel_i"], observations["channel_j"], partitions)
         for p in np.unique(part).tolist():
             selected = observations[part == p]
@@ -100,7 +103,7 @@ def _stream_file(directory, item, adapter, geometry, partition, seed, max_record
 
 
 def stream_fingerprint(items, adapter, geometry, partitions_by_file, *, seed, max_records, partitions,
-                       carry_walk=False):
+                       carry_walk=False, candidate_slots=0):
     features = {"schema_version": SCHEMA_VERSION, "kind": adapter.kind,
                 "inputs": [{k: item[k] for k in ("index", "name", "size_bytes", "mtime_ns")} for item in items],
                 **adapter.fingerprint(),
@@ -110,16 +113,18 @@ def stream_fingerprint(items, adapter, geometry, partitions_by_file, *, seed, ma
         "schema_version": SCHEMA_VERSION, "kind": geometry.kind + " (streamed)", "features": features,
         "features_sha256": _digest(_plain(features)), "hypothesis": geometry.describe(), "partitions": partitions,
         "sources_sha256": {name: _sha256(path) for name, path in geometry.sources().items()},
-        "observation_dtype": observation_dtype(carry_walk).descr, "walk": None}, carry_walk))
+        "observation_dtype": observation_dtype(carry_walk, candidate_slots).descr, "walk": None}, carry_walk,
+        candidate_slots))
 
 
 def stream_observations(directory, inputs, adapter, geometry, *, holdout, energy_calibration_prefix, seed=0,
                         max_records=None, workers=1, partitions=16, buffer_rows=250_000, progress=None,
-                        carry_walk=False):
+                        carry_walk=False, candidate_slots=0):
     """Build (or resume) a streamed observation set; returns the completed ``ObservationSet``.
 
     ``progress(done_record)`` is called in the parent as each file completes. ``carry_walk`` keeps the raw
-    walk ingredients in the rows (spec 012 FR-4).
+    walk ingredients in the rows (spec 012 FR-4); ``candidate_slots`` > 0 also keeps the adapter's per-side
+    candidates (``FeatureBatch.candidates``, spec 014 FR-2).
     """
     directory = Path(directory)
     items = []
@@ -130,7 +135,8 @@ def stream_observations(directory, inputs, adapter, geometry, *, holdout, energy
     roles = {item["index"]: asdict(Partition.from_holdout(holdout, item["index"], energy_calibration_prefix))
              for item in items}
     fingerprint = stream_fingerprint(items, adapter, geometry, roles, seed=seed, max_records=max_records,
-                                     partitions=partitions, carry_walk=carry_walk)
+                                     partitions=partitions, carry_walk=carry_walk,
+                                     candidate_slots=candidate_slots)
     marker = directory / "fingerprint.json"
     if marker.exists():
         if json.loads(marker.read_text(encoding="utf-8")) != fingerprint:
@@ -150,7 +156,7 @@ def stream_observations(directory, inputs, adapter, geometry, *, holdout, energy
             done[item["index"]] = json.loads(record.read_text(encoding="utf-8"))
     pending = [item for item in items if item["index"] not in done]
     arguments = [(str(directory), item, adapter, geometry, roles[item["index"]], seed, max_records, partitions,
-                  buffer_rows, carry_walk) for item in pending]
+                  buffer_rows, carry_walk, candidate_slots) for item in pending]
     if workers > 1 and len(pending) > 1:
         with ProcessPoolExecutor(max_workers=min(workers, len(pending))) as pool:
             for result in pool.map(_stream_file, *zip(*arguments)):
