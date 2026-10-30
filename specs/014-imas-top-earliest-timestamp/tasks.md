@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T9 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T10 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -188,10 +188,24 @@ Status: in progress 2026-10-30 (T1–T9 done). [Approved spec](spec.md), [plan](
 
 ## Real data and validation
 
-- [ ] **T10 — Step 0 stream** (FR-2, FR-4). Run `run job_rule.json --work job_rule --observe-only` on the bar runs (D: attached).
+- [x] **T10 — Step 0 stream** (FR-2, FR-4). Run `run job_rule.json --work job_rule --observe-only` on the bar runs (D: attached).
   - **Done when:**
     - The per-run accepted counts equal `job_ship`'s.
     - Time, peak memory and set size are recorded.
+  - Run 2026-10-30 (Windows, this PC):
+    - Input: `IMAS_work/job_rule.json` = `job_ship.json` plus `"candidates": true`. 4 runs, 124 splits on `D:\David_Skew`, 1.176 TB.
+    - Output: `IMAS_work/job_rule/` (job fingerprint = `job_ship`'s; set fingerprint records `candidates` 7 slots, raw-lag order).
+    - Time: 55.5 min wall (3328 s in the report; energy calibration about 166 s per run, re-fitted).
+    - Peak memory: 0.83 GB parent (`job_report_observe.json`).
+    - Set size: 16.5 GB (run 7 4.52, run 8 4.27, run 9 4.05, run 11 3.63 GB), about 338 B per row against 8.3 GB for `job_walk`. C: has 132 GB free afterwards.
+  - Verified (one-off `$CLAUDE_JOB_DIR/tmp/t10_compare.py`):
+    - Per run, the observation counts (train/test), the geometry stage counts and the first-failure counts equal `job_ship`'s, and `job_walk`'s observation counts.
+      - run 7: 12,953,160 / 419,217
+      - run 8: 12,228,903 / 403,833
+      - run 9: 11,575,076 / 385,780
+      - run 11: 10,375,008 / 326,613
+      - In total 48,667,590 rows.
+    - The four `encal.tsv` are byte-identical to `job_ship`'s.
 - [ ] **T11 — Steps 1–3 round trip** (FR-4).
   - **Done when:**
     - Every fit and pass converges or reports its limit.
