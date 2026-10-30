@@ -159,6 +159,7 @@ class FeatureBatch:
     ints: np.ndarray
     floats: np.ndarray
     walk: np.ndarray | None = None      # WALK_FEATURES columns (spec 009), None where not computed
+    candidates: np.ndarray | None = None    # IMAS other TIME hits per side (spec 014 FR-2), None where not computed
 
     def column(self, name):
         if name in FEATURE_INT:

@@ -108,6 +108,7 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
 7. **Candidates (plan, 2026-10-30):** carry every other TIME hit of the selected minimodule (≤ 7 per side). Measured on NECR frames 7 and 30: up to 8 TIME hits per minimodule, about 1.7 besides the top per side; EM2 delays spread up to 5.3 ns within a minimodule (median 0.3 ns), the walk2d block 0.4 ns, so any candidate can become the earliest.
 8. **Share input (plan, 2026-10-30):** a candidate's share is its own charge over the side's summed TIME charge, as `walk_inputs` derives it and as the exploratory gain was measured.
 9. **Refit method (plan, 2026-10-30):** fixed point on the top's adjusted time; shared EM and walk kernels unchanged.
+10. **Ordering (owner, 2026-10-30, after measurement):** the earliest is chosen after skew + walk, as FR-1 states. `scripts_imas/necr_time_order.py` compared it with ordering after skew only (frozen em2 + walk3, NECR, same events, model-free FWHM). Top only / skew ordering / skew + walk ordering: frame 7 667.6 / 657.8 / 657.6 ps, frame 20 488.0 / 480.9 / 480.4 ps, frame 30 454.9 / 446.5 / 445.5 ps (paired SD of the ordering difference 0.4–0.6 ps). The rule acts on 13–14 % of events with skew + walk against 10–11 % with skew only; the two orderings pick a different hit in about 3 %.
 
 ## Out of scope
 

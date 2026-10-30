@@ -21,6 +21,11 @@ window (408-613). Reference mode reproduces ``scripts_imas/
 imas_skew_cal_bigdata_optimized.py``: hits with energy >= 0, 15 ns window and
 ``x`` from the TIME-channel centroid. ``calibration`` stops after cut 5 and
 returns raw ENERGY sums for the energy calibration (FR-4).
+
+Spec 014 FR-2: every passing record also carries, per side, the other TIME hits of the selected minimodule
+(kept hits, so above the production floor) as ``timestamp.CANDIDATE_DTYPE`` slots sorted by raw lag to the
+top (``FeatureBatch.candidates``, shape (records, 2, ``SLOTS``); channel -1 marks an empty slot). More
+candidates than slots, or a lag outside int32, is refused, never truncated or wrapped.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ from src.ldat_stream import LdatStream
 from src.timing.kernels import (ACCEPTED, FEATURE_FLOAT, FEATURE_INT, HOLDOUT_EXCLUSIONS,
                                 LEGACY_COINCIDENCE_WINDOW_PS, WALK_FEATURES, FeatureBatch, _centroid,
                                 _max_module, _min_ch, _time_hits, holdout_codes)
+from src.imas.skew.timestamp import CANDIDATE_DTYPE, SLOTS
 from src.timing.shell import GEOMETRY_REJECTIONS
 
 REJECTIONS = (
@@ -105,8 +111,33 @@ def _walk_ingredients(hits, m, energy, channel, kind, top):
 
 
 @numba.njit(cache=True)
+def _candidates(hits, m, timestamp, energy, channel, kind, top, row, side, out_c, out_l, out_q):
+    """The other TIME hits of ``hits`` into slot row ``row``/``side`` by raw lag to ``top`` (stable); False when
+    they exceed the slots or a lag leaves int32."""
+    k = 0
+    for j in range(m):
+        i = hits[j]
+        if i == top or kind[channel[i]] != 1:
+            continue
+        lag = timestamp[i] - timestamp[top]
+        if k >= out_c.shape[2] or lag < -2147483648 or lag > 2147483647:
+            return False
+        p = k
+        while p > 0 and out_l[row, side, p - 1] > lag:
+            out_c[row, side, p], out_l[row, side, p], out_q[row, side, p] = (
+                out_c[row, side, p - 1], out_l[row, side, p - 1], out_q[row, side, p - 1])
+            p -= 1
+        out_c[row, side, p], out_l[row, side, p], out_q[row, side, p] = channel[i], lag, energy[i]
+        k += 1
+    for p in range(k, out_c.shape[2]):
+        out_c[row, side, p], out_l[row, side, p], out_q[row, side, p] = -1, 0, 0.0
+    return True
+
+
+@numba.njit(cache=True)
 def _select(n1, n2, first, timestamp, energy, channel, kind, sm, mm, coord_x, coord_y, slab, mu, mu_state,
-            min_ch, floor, low, high, window, x_centroid, calibration, first_record, codes, out_i, out_f, out_w):
+            min_ch, floor, low, high, window, x_centroid, calibration, first_record, codes, out_i, out_f, out_w,
+            out_c, out_l, out_q, refused):
     kept0, kept1 = np.empty(512, np.int64), np.empty(512, np.int64)
     sel0, sel1 = np.empty(512, np.int64), np.empty(512, np.int64)
     keys, module_energy = np.empty(512, np.int64), np.empty(512)
@@ -172,6 +203,10 @@ def _select(n1, n2, first, timestamp, energy, channel, kind, sm, mm, coord_x, co
         q1, t1, r1 = _walk_ingredients(sel1, s1, energy, channel, kind, top1)
         out_w[n_out, 0], out_w[n_out, 1], out_w[n_out, 2], out_w[n_out, 3] = q0, t0, e0, r0
         out_w[n_out, 4], out_w[n_out, 5], out_w[n_out, 6], out_w[n_out, 7] = q1, t1, e1, r1
+        if not (_candidates(sel0, s0, timestamp, energy, channel, kind, top0, n_out, 0, out_c, out_l, out_q)
+                and _candidates(sel1, s1, timestamp, energy, channel, kind, top1, n_out, 1, out_c, out_l, out_q)):
+            refused[0] = first_record + k
+            return n_out
         n_out += 1
     return n_out
 
@@ -186,14 +221,23 @@ def select_batch(batch, lookup, selection, *, calibration=False):
     ints = np.empty((count, len(FEATURE_INT)), np.int64)
     floats = np.empty((count, len(FEATURE_FLOAT)))
     walk = np.empty((count, len(WALK_FEATURES)))
+    out_c = np.empty((count, 2, SLOTS), np.int32)
+    out_l = np.empty((count, 2, SLOTS), np.int32)
+    out_q = np.empty((count, 2, SLOTS), np.float32)
+    refused = np.full(1, -1, np.int64)
     floor = 0.0 if selection.energy_floor is None else selection.energy_floor
     low, high = selection.kev_window
     n = _select(batch.n1, batch.n2, batch.first_hit, batch.timestamp, batch.energy, batch.channel,
                 lookup.kind, lookup.sm, lookup.mm, lookup.coord_x, lookup.coord_y, lookup.slab, lookup.mu,
                 lookup.mu_state, lookup.min_ch, float(floor), float(low), float(high), int(selection.window_ps),
                 bool(selection.x_from_time_centroid), bool(calibration), batch.first_record, codes, ints, floats,
-                walk)
-    return FeatureBatch(batch.first_record, codes, ints[:n].copy(), floats[:n].copy(), walk[:n].copy())
+                walk, out_c, out_l, out_q, refused)
+    if refused[0] >= 0:
+        raise ValueError(f"record {int(refused[0])}: more than {SLOTS} other TIME hits in a selected minimodule, "
+                         "or a TIME-hit lag outside int32 ps")
+    candidates = np.empty((n, 2, SLOTS), CANDIDATE_DTYPE)
+    candidates["channel"], candidates["lag_ps"], candidates["charge"] = out_c[:n], out_l[:n], out_q[:n]
+    return FeatureBatch(batch.first_record, codes, ints[:n].copy(), floats[:n].copy(), walk[:n].copy(), candidates)
 
 
 def code_label(code):
@@ -218,7 +262,8 @@ def feature_batches(path, lookup, selection, partition=None, *, max_records=None
             if excluded.any():
                 keep = excluded[features.column("record") - batch.first_record] == 0
                 features = FeatureBatch(features.first_record, np.where(excluded != 0, excluded, features.codes),
-                                        features.ints[keep], features.floats[keep], features.walk[keep])
+                                        features.ints[keep], features.floats[keep], features.walk[keep],
+                                        features.candidates[keep])
         yield features
 
 

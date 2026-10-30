@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-30 (T1–T2 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -27,12 +27,23 @@ Status: in progress 2026-10-30 (T1 done). [Approved spec](spec.md), [plan](plan.
     - A rule other than `top` without candidates is refused.
     - Counts add `candidates clamped <input>` (plan risk: walk extrapolation).
   - Verified 2026-10-30 (Windows, this PC). Selection: the new module only; nothing imports it yet. `tests/test_imas_timestamp.py -n 0 --slow-limit 5`: 8 passed.
-- [ ] **T2 — Selection carries candidates** (FR-2).
+- [x] **T2 — Selection carries candidates** (FR-2).
   - `_select` fills up to 7 other TIME hits per side (sorted by raw lag); `FeatureBatch.candidates`; the holdout filter slices them; an int32 lag overflow is refused.
   - **Done when:**
     - `tests/test_imas_timestamp.py`: on a synthetic IMAS LDAT, the candidates equal a hand-built list (channels, lags, charges, empty slots −1, energy floor, other minimodules excluded).
     - Existing IMAS selection tests pass unchanged: `tests/test_imas_select.py tests/test_imas_walk.py tests/test_imas_cache.py -m "not real_data"` (names checked at the task), with ints/floats/walk bit-identical on the synthetic file.
     - Cornell consumers of `FeatureBatch` pass unchanged (selection recorded at the task).
+  - Deviations:
+    - The refusal covers both cases: more than 7 other TIME hits (duplicate hits on one channel), and a lag outside int32. It raises `ValueError` naming the record.
+    - Scanned real data never triggers it: all of NECR frame 1 split 24 (628 k passing production, 700 k reference) has at most 7 candidates.
+    - Candidates come from the kept hits, so reference mode (floor 0) can list more of them than production does.
+    - Consequence: `select.py` and `kernels.py` source hashes are in the streamed-set fingerprint, so re-running a job on an existing work dir (e.g. `job_walk/`) is refused. This is existing behaviour for any selection edit; T10 streams into a new dir.
+  - Verified 2026-10-30 (Windows, this PC).
+    - Selection: shared `FeatureBatch` (`kernels.py`) and IMAS `select.py`, so their consumers: every IMAS test, Cornell timing/walk, core timing and golden provenance.
+    - `tests/test_imas_timestamp.py -n 0 --slow-limit 5`: 10 passed.
+    - `tests/test_imas_*.py tests/test_cornell_timing_*.py tests/test_cornell_walk.py tests/test_timing_*.py tests/test_golden_provenance.py -m "not real_data"`: 340 passed, 4 xfailed.
+    - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `tests/test_imas_*.py -m real_data`: 2 passed.
+    - Bit-identity against the HEAD selection: codes, ints, floats and walk identical on 500 k-record prefixes of NECR frame 30 split 22 and frame 1 split 24, production and reference modes (137,736 passing). One-off check, `$CLAUDE_JOB_DIR/tmp/bitident.py`.
 - [ ] **T3 — Observation rows carry candidates** (FR-2).
   - `OBSERVATION_RULE_DTYPE`, `canonical_observations(..., carry_candidates)`, `stream_observations(..., carry_candidates)` with its fingerprint entry; `carries_candidates` on the set.
   - **Done when:**

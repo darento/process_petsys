@@ -2,8 +2,11 @@
 import numpy as np
 import pytest
 
+from imas_skew_helpers import CONFIG, T0, channels, mu_file, side as ldat_side, write
+from src.imas.skew import select as sel
 from src.imas.skew import timestamp as ts
 from src.imas.skew import walk as iw
+from src.imas.skew.setup import ImasSetup
 from src.timing.lut import DelayTable
 
 # top channels 10 and 20; candidates 11, 12, 21; 13 known without a delay; 99 not in the table
@@ -115,3 +118,64 @@ def test_earliest_is_skew_only_and_rules_need_candidates():
         ts.side_offset([10], candidates([]), side(1), SKEW, walk_lut(), "earliest")
     with pytest.raises(ts.RuleError, match="needs the candidates"):
         ts.side_offset([10], None, side(1), SKEW, None, "top_earliest_mean")
+
+
+# --- T2: the selection carries candidates (FR-2) ---------------------------------------------
+A, B = (0, 5), (60, 6)
+
+
+@pytest.fixture(scope="module")
+def setup(tmp_path_factory):
+    probe = ImasSetup.from_files(CONFIG)
+    path = mu_file(tmp_path_factory.mktemp("mu") / "mu.tsv", {ch: 511.0 for ch in probe.time_channels.tolist()})
+    return ImasSetup.from_files(CONFIG, path)
+
+
+def select(tmp_path, setup, records):
+    lookup = setup.lookup()
+    path = write(tmp_path / "f.ldat", records)
+    return list(sel.feature_batches(path, lookup, sel.Selection.production(lookup), batch_records=2))
+
+
+@pytest.mark.fr("014-FR-2")
+def test_selection_carries_other_time_hits_by_lag(tmp_path, setup):
+    t_a, _ = channels(setup, *A)
+    t_b, _ = channels(setup, *B)
+    t_other, _ = channels(setup, A[0], 6)
+    extra = [(T0 - 300, 4.0, t_a[6]),          # earlier, above the 0.2 floor
+             (T0 - 900, 0.1, t_a[7]),          # below the floor: not a candidate
+             (T0 - 500, 8.0, t_other[2])]      # another minimodule: not a candidate
+    records = [(ldat_side(setup, *A, time={3: 12.0, 4: 6.0, 5: 9.0}, extra=extra), ldat_side(setup, *B)),
+               (ldat_side(setup, *A, time={3: 12.0}), ldat_side(setup, *B, time={2: 30.0, 0: 1.0})),
+               (ldat_side(setup, *A), ldat_side(setup, *B))]
+    batches = select(tmp_path, setup, records)
+    features = [b for b in batches if len(b.ints)]
+    assert all((b.codes == 0).all() for b in batches)
+    cands = np.concatenate([b.candidates for b in features])
+    assert cands.shape == (3, 2, ts.SLOTS) and cands.dtype == ts.CANDIDATE_DTYPE
+
+    def listed(event, s):
+        row = cands[event, s]
+        return [(int(c), int(l), float(q)) for c, l, q in zip(row["channel"], row["lag_ps"], row["charge"]) if c >= 0]
+    assert listed(0, 0) == [(t_a[6], -300, 4.0), (t_a[4], 10, 6.0), (t_a[5], 20, 9.0)]
+    assert listed(0, 1) == [(t_b[4], 10, 6.0)]
+    assert listed(1, 0) == []
+    assert listed(1, 1) == [(t_b[0], 10, 1.0)]
+    assert (cands["channel"][1, 0] == -1).all() and (cands["lag_ps"][1, 0] == 0).all()
+    tops = np.concatenate([b.column("time_channel_1") for b in features])
+    assert tops.tolist() == [t_a[3]] * 3
+
+
+@pytest.mark.fr("014-FR-2")
+def test_candidates_beyond_slots_or_int32_are_refused(tmp_path, setup):
+    t_a, _ = channels(setup, *A)
+    full = {slab: 20.0 - slab for slab in range(8)}             # top slab 0 and 7 others
+    duplicate = ldat_side(setup, *A, time=full, extra=[(T0 + 900, 1.0, t_a[1])])
+    with pytest.raises(ValueError, match="more than 7 other TIME hits"):
+        select(tmp_path, setup, [(duplicate, ldat_side(setup, *B))])
+    far = ldat_side(setup, *A, extra=[(T0 + 3_000_000_000, 1.0, t_a[6])])
+    with pytest.raises(ValueError, match="int32"):
+        select(tmp_path, setup, [(far, ldat_side(setup, *B))])
+    seven = ldat_side(setup, *A, time=full)
+    (features,) = [b for b in select(tmp_path, setup, [(seven, ldat_side(setup, *B))]) if len(b.ints)]
+    assert (features.candidates["channel"][0, 0] >= 0).sum() == 7
