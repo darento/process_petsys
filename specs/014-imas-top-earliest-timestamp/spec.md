@@ -1,6 +1,6 @@
 # Spec 014 — IMAS side timestamp from the top and earliest TIME hits
 
-Status: `in progress` (2026-10-30, T1; approved 2026-10-30, clarified 2026-10-30, drafted 2026-10-29)
+Status: `shipped` (2026-11-02: em4 + walk_rule4 under `top_earliest_mean`, 22Na 389.9 ± 1.0 ps against 402.8 for em2 + walk3; NEMA 664 ± 7 ps at 5.3 kBq/ml against 683; approved 2026-10-30, clarified 2026-10-30 and 2026-11-02, drafted 2026-10-29)
 
 Constitution: [AGENTS.md](../../AGENTS.md). Workflow: [docs/prompts.md](../../docs/prompts.md). Builds on shipped [spec 011](../011-imas-skew-calibration/spec.md) (selection, skew LUT, FR-10 acceptance rule) and shipped [spec 012](../012-imas-timing-walk/spec.md) (walk LUT, round trip, `correct_dt`). Spec 012 put multi-timestamp estimators out of scope; this spec adds one.
 

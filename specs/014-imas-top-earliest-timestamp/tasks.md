@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-11-02 (T1–T12, T14 done). [Approved spec](spec.md), [plan](plan.md).
+Status: done 2026-11-02 (T1–T14). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -282,7 +282,7 @@ Status: in progress 2026-11-02 (T1–T12, T14 done). [Approved spec](spec.md), [
       - em2_walk3@mean: 680.2 ± 7.0
       - em3_walk_rule3: 663.7 ± 7.6
       - Model-free at the same activity: 668.7 → 652.5 ps.
-    - Model-free per frame, em2_walk3 → em3_walk_rule3 (ps): frame 1 (11.4 kBq/ml) 825.7 → 807.1; frame 7 (5.3) 667.6 → 651.5; frame 15 (1.9) 535.3 → 519.0; frame 20 (1.0) 488.0 → 472.6; frame 25 (0.52) 466.4 → 450.0; frame 30 (0.27) 454.9 → 438.8; frame 32 (0.21) 452.3 → 437.4. The improvement is 15–19 ps at every activity.
+    - Model-free per frame, em2_walk3 → em3_walk_rule3 (ps): frame 1 (11.4 kBq/ml) 825.7 → 807.1; frame 7 (5.3) 667.6 → 651.5; frame 15 (1.9) 535.3 → 519.0; frame 20 (1.0) 488.0 → 472.6; frame 25 (0.52) 466.4 → 450.0; frame 30 (0.27) 454.9 → 438.8; frame 32 (0.21) 452.3 → 437.4. The improvement is 15–19 ps on these seven frames; over all 12 frames it is 8.7–20.0 ps (frame 10, 3.6 kBq/ml, 8.7; frame 6, 6.0 kBq/ml, 20.0; corrected in T13).
     - Rule acts on 13.2–14.1 % of the same events per frame.
   - Owner 2026-11-02: verdict accepted. The two swinging channels may be frozen or damped (T14).
 - [x] **T14 — Freeze swinging channels** (FR-4, clarify 11).
@@ -327,7 +327,28 @@ Status: in progress 2026-11-02 (T1–T12, T14 done). [Approved spec](spec.md), [
     - Model-free per frame: em4 − em3 is between −1.9 and +0.4 ps (frame 6 −1.9, all others |d| ≤ 0.4).
   - Spec 011/012 deliverables and em3, walk_rule1 and walk_rule3 are unchanged (SHA-256 checked after steps 2 and 5).
   - Result: the freeze makes the fixed point converge and gives those three channels the delays measured under `top`. The CTR and NECR equal em3's.
-- [ ] **T13 — Validation** (all FR).
+- [x] **T13 — Validation** (all FR).
   - Full non-real suite plus `-m real_data`; every `--fr 014-FR-n` cited.
   - `IMAS_timing` page section for the new pair.
   - Spec `shipped` only when all completion criteria pass.
+  - Owner 2026-11-02: the deliverable pair is **em4 + walk_rule4** (T14), not em3 + walk_rule3.
+  - Verified 2026-11-02 (Windows, this PC, at commit `069932f` plus this record):
+    - `-m "not real_data"`: 1570 passed, 19 skipped (Linux-only, as in spec 013), 4 xfailed in 349 s.
+    - `-m real_data` with `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `PETSYS_CAL_DIR=<repo>/encal_files`: 34 passed, 0 skipped in 1,640 s. This includes the Cornell spec 008/009 goldens and baselines and the spec 011/013 IMAS real-data tests.
+    - `tests/data/` unchanged.
+    - `--fr` selection counts (not real / real): 014-FR-1 7/0, FR-2 5/0, FR-3 6/0, FR-4 6/0, FR-5 4/0, FR-6 1/0, FR-7 1/0. There are no spec 014 `real_data` tests: the real-data criterion is the recorded round trip (T10, T11, T14) and the FR-5 acceptance (T12, T14), as with 011-FR-12.
+  - Completion criteria:
+    - Synthetic fixtures: FR-1–FR-3 tests (late top gets the mean, top-earliest bit-identical, exclusions and ties, no window, `earliest`, rule mismatch and cache refusals).
+    - Cornell: the suites pass with `tests/data/` unchanged.
+    - IMAS regressions: under `top`, em 468.1 and em2+walk3 402.8 ps equal the spec 012 record, and every em2_walk3 NECR frame equals present5 (T12, T14).
+    - Real data: round trip with timings and memory (T10, T11, T14 step 2–3); FR-5 accepted for em4 + walk_rule4, 12.9 ps against 1.6 ps, at every position (T14 step 4).
+    - Suites: as above.
+  - Deliverable files (`IMAS_work`):
+    - `job_rule/lut_em_walk-f5d870aa6390_rule-mean-freeze200.csv` (em4, `6acea3e2…`).
+    - `walk/walk_rule4.json` (`3cdb98f833e0…`) and its export `walk/export_walk_rule4/`, made 2026-11-02 with `walk-export`. Its `export.json` records `timestamp_rule` `top_earliest_mean` and skew `6acea3e2…`.
+  - `docs/imas/IMAS_timing/index.html` (gitignored):
+    - New section `#rule` ("Timing each photon by its top and earliest hit"): round-trip table, CTR/NEMA table, the three held channels, usage, files, SM 70 mm 8.
+    - New figure `img/timestamp_rule.png`: point-source CTR per position, and NECR change per frame against em2 + walk3. Drawn from `ctr_freeze_4pos`, plus `ctr_rule_4pos` for the per-position values of em2+walk3@mean, and `necr_freeze`.
+    - Lede sentence (390 ps, spec 014), TOC link and provenance line updated. The spec 013 headline (683 ps) and the key-result tiles are unchanged (clarify 5).
+    - `docs/imas/IMAS_timing.zip` and `docs/imas/I3M_newSkew_walk/` were not updated.
+  - Correction: the T12 step 5 range "15–19 ps at every activity" covered seven frames only; over all 12 frames it is 8.7–20.0 ps (em4: 8.9–21.9 ps).
