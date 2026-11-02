@@ -352,3 +352,27 @@ Status: done 2026-11-02 (T1–T14). [Approved spec](spec.md), [plan](plan.md).
     - Lede sentence (390 ps, spec 014), TOC link and provenance line updated. The spec 013 headline (683 ps) and the key-result tiles are unchanged (clarify 5).
     - `docs/imas/IMAS_timing.zip` and `docs/imas/I3M_newSkew_walk/` were not updated.
   - Correction: the T12 step 5 range "15–19 ps at every activity" covered seven frames only; over all 12 frames it is 8.7–20.0 ps (em4: 8.9–21.9 ps).
+
+## Post-ship
+
+- [x] **T15 — Delivery package** (FR-5, FR-6; owner request 2026-11-02).
+  - Add em4 + walk_rule4 to `docs/imas/I3M_newSkew_walk/` (gitignored), with the rule in `listmode_skew_walk.md` (the other TIME hits of the selected minimodule per side). EM2 + walk3 stays in the package as the top-hit pair.
+  - **Done when** the doc's code, run on the script's own hit lists, reproduces `walk.correct_features(..., rule="top_earliest_mean")` on a 22Na file for every event, with the same TIME channels and candidates, and the same holds for EM2 + walk3 under `top`.
+  - Done 2026-11-02 (`docs/imas/`, gitignored):
+    - `I3M_newSkew_walk/luts/skew_em4/` (em4 CSV `6acea3e2…` and its manifest) and `luts/walk_rule4/` (the `walk-export` of walk_rule4, `3cdb98f833e0…`), copied byte for byte.
+    - `listmode_skew_walk.md` rewritten for both pairs.
+      - `ImasTimingCorrection(skew_csv, walk_json, rule)` refuses a walk table whose manifest names another rule.
+      - `side_time(top, others, q_time, doi_ratio, kev)` applies the rule.
+      - `walk_side_inputs` now also returns the other TIME hits (charge ≥ `en_min_ch`, the top excluded).
+      - Event-loop edits, the three held channels, and TOF σ 166 ps.
+    - `README.md`: the EM4 + walk_rule4 row (equal-weight CTR not measured), contents, which to use, provenance and verification.
+    - `legacy_skew_improvements.md` copied into the package: the README listed it, but it was only in `docs/imas/`.
+    - `I3M_newSkew_walk.zip` and `IMAS_timing.zip` rebuilt from the folders (19 and 18 files). The old zips of 2026-10-28 also lacked the spec 013 NEMA section; they were backed up outside the repo.
+  - Verified: the code blocks of section 2.1 were executed verbatim on the script's hit lists (`read_binary_file`, `get_maxEnergy_sm_mM`, `get_max_en_channel`) and compared with `src` (`walk.correct_features`, policy drop), first 100,000 records of each file:
+    - `20261019_Na22_1cm_cFOV_test_300s_coincCompact_00000034.ldat`: 7,959 coincidences.
+      - Top channels and candidates (channel, charge) identical.
+      - EM4 + walk_rule4 under the rule: max |doc − src| 0.12 ps, same corrected set, rule acts on 1,331 events.
+      - EM2 + walk3 under `top`: 0.11 ps, 7,958 corrected by both.
+    - `20261019_Na22_20cm_3d8cFOV_test_300s_coincCompact_00000026.ldat`: 4,567 coincidences, identical inputs. 0.06 ps for both pairs; rule acts on 808 events.
+    - Each walk table is refused under the other rule.
+    - Selection: documentation and data only (no `src` or test change), so no pytest run.
