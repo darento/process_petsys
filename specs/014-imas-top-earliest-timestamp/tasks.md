@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-31 (T1–T11 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-11-02 (T1–T12, T14 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -240,7 +240,7 @@ Status: in progress 2026-10-31 (T1–T11 done). [Approved spec](spec.md), [plan]
     - Held-out core RMS: 246.5 ps (em3, no walk) → 221.6 ps (walk_rule3 under the rule); 225.6 ps for the same walk under `top`.
     - Round trip, held-out core RMS under the rule: walk3 (start) → walk_rule1 222.3 ps → walk_rule3 221.6 ps. walk3 under `top` gave 226.0 ps.
   - The 11 spec 011/012 deliverables (job_ship LUTs, job_walk em2 LUT and report, walk1/walk3 LUTs, manifests and report) are unchanged: SHA-256 checked against a snapshot taken before step 1, after step 2 and again after step 3.
-- [ ] **T12 — Steps 4–5: CTR acceptance and NECR evidence** (FR-5, FR-7).
+- [x] **T12 — Steps 4–5: CTR acceptance and NECR evidence** (FR-5, FR-7).
   - **Done when:**
     - The 4-position report gives the acceptance verdict (pooled gate and per-position rule).
     - The NECR run reports the new pair beside em2 + walk3 with its gates intact.
@@ -284,7 +284,49 @@ Status: in progress 2026-10-31 (T1–T11 done). [Approved spec](spec.md), [plan]
       - Model-free at the same activity: 668.7 → 652.5 ps.
     - Model-free per frame, em2_walk3 → em3_walk_rule3 (ps): frame 1 (11.4 kBq/ml) 825.7 → 807.1; frame 7 (5.3) 667.6 → 651.5; frame 15 (1.9) 535.3 → 519.0; frame 20 (1.0) 488.0 → 472.6; frame 25 (0.52) 466.4 → 450.0; frame 30 (0.27) 454.9 → 438.8; frame 32 (0.21) 452.3 → 437.4. The improvement is 15–19 ps at every activity.
     - Rule acts on 13.2–14.1 % of the same events per frame.
-  - Pending: owner review of the verdict.
+  - Owner 2026-11-02: verdict accepted. The two swinging channels may be frozen or damped (T14).
+- [x] **T14 — Freeze swinging channels** (FR-4, clarify 11).
+  - Job option `rule_freeze_ps` (absent: no freeze, as before; not in the fingerprint). In a rule pass a channel whose gauge-free applied-delay change exceeds it is reset to its start-skew delay, shifted by the median change of the other channels against the start, and held there in every later pass and in the LUT. History and report list each frozen channel with its solved, start and frozen delays.
+  - Outputs `…_rule-mean-freeze<ps>`, so em3 is never overwritten.
+  - **Done when:**
+    - A synthetic test makes one channel swing ±1500 ps per pass: without the freeze the solve stops at its pass limit, unconverged; with 200 ps the channel is frozen at its start delay, the solve converges and the other channels match the no-swing solve.
+    - Real data: step 2 again with `rule_freeze_ps` 200 (em4), step 3 walk refit, steps 4–5 CTR/NECR. The record says which channels froze and whether em4 converged, and gives its CTR beside em3 + walk_rule3.
+  - Code (2026-11-02): `job.freeze_swinging`, `solve_under_rule(freeze_ps=)`, `rule_suffix`; report/provenance `rule_freeze_ps`, `rule_frozen`; per pass `frozen`, `frozen_total`.
+    - Test `test_skew_solve_under_rule_freezes_a_swinging_channel` (slow): without the freeze the solve stops at 4 passes, unconverged; with it the channel freezes in pass 1 at its start delay plus the pass's gauge shift and the solve converges. The other channels are within 1 ps of the no-swing solve (gauge-free).
+    - The end-to-end test runs a freeze job: same fingerprint, output `…-freeze200`, provenance `rule_freeze_ps`; `rule_freeze_ps` 0 or `true` and a freeze under `top` are refused. Its synthetic 400 ps extras move some channels by more than 200 ps, so channels freeze there too; the test only checks that the report is consistent.
+    - Selection: job module changed, its consumers are the job/walk/timestamp tests. `tests/test_imas_skew_job.py tests/test_imas_walk.py tests/test_imas_timestamp.py -m "not real_data"`: 49 passed. Serial `-n 0 --slow-limit 5` on the two changed tests: 2 passed (16.1 s and 10.7 s, both `slow`).
+    - Threshold check: em3 − em2, gauge-free, exceeds 100 ps only on 132518 (−1217) and 263181 (+1439), so 200 ps freezes nothing legitimate.
+  - Step 2 (2026-11-02, `IMAS_work/job_rule_walk_freeze.json` = `job_rule_walk.json` plus `rule_freeze_ps` 200 and `rule_passes` 5; `--work job_rule`):
+    - Output `job_rule/lut_em_walk-f5d870aa6390_rule-mean-freeze200.csv` (em4, file SHA-256 `6acea3e2…`) and `job_report_walk-f5d870aa6390_rule-mean-freeze200.json`. em3 is unchanged (`522a92ff…`).
+    - Time: 3.33 h wall (2 passes, 2.98 h; held-out checks 11.3 min). Peak memory 7.6 GB.
+    - **Converged in 2 passes:** gauge-free change 9.98 → 0.19 ps RMS (max 99.3 → 13.8 ps). Status as em3: 14,534 calibrated, 16 low statistics, 810 unobserved.
+    - Frozen in pass 1 (solved → frozen at the start delay, ps):
+      - 2509: −3620 → −3267. em −3258, em2 −3267; minimodule mates 2504–2515 −680 to −860. A third outlier of the same kind; em3 had left it −61 ps from em2 after its swing, so the threshold check missed it.
+      - 132518: −427 → 279.
+      - 263181: −1083 → −2617.
+      - All three have delays far from their minimodule mates, so under the rule their own delay decides when their hits are the earliest candidate.
+    - em4 − em3 (gauge-free): 0.14 ps RMS without the frozen channels (max 10.9 ps). So the other channels' em3 delays were already converged, and the T11 non-convergence came only from these three.
+    - em4 − em2: 10.0 ps RMS; median |d| 5.7 ps, p99 28.2 ps.
+    - Held-out EM sigma (common, rows under the rule with each table's own final delays): em4 224.5 ps, em3 224.4 ps.
+      - The two sets of rows are adjusted by different delays, so this does not compare like with like. Under the rule the rows of a self-referential channel always ask for a moved delay.
+      - The rule-independent estimate of those three delays is the one under `top`, where em and em2 agree; it is the frozen value.
+  - Step 3 (2026-11-02, `IMAS_work/walk/walk_rule4_fit.json`):
+    - As `walk_rule3_fit.json`, with skew em4 (`6acea3e2…`). Output `walk/walk_rule4.json` (`3cdb98f833e0…`). 6.9 min wall.
+    - Converged in 2 rounds: 13.08 → 0.39 ps RMS (max 82.4 → 1.5 ps). The rule acts on 14.1 % → 14.4 % of train events.
+    - Held-out core RMS: 246.5 → 221.7 ps (walk_rule3: 221.6 ps).
+  - Step 4 (`IMAS_work/ctr_freeze_4pos.json` → `ctr_freeze_4pos/ctr.json`):
+    - As `ctr_rule_4pos.json` plus em4 + walk_rule4. The only rule table kept is em2+walk3@mean.
+    - Time: 10.7 min wall.
+    - Pooled model-free FWHM: em4+walk_rule4 389.9 ± 1.0 ps (Gaussian 435.3); em3+walk_rule3 389.9 ± 0.9 (434.9); em2+walk3 402.8 ± 1.2. Every shared table reproduces T12.
+    - em2+walk3 → em4+walk_rule4: **accepted**, improvement 12.9 ps against a combined 1.6 ps (paired 12.9 ± 0.9 ps). `positions_not_worse` passed; each position is accepted individually (12.2–13.9 ps).
+    - em3+walk_rule3 → em4+walk_rule4: 0.1 ps (paired 0.1 ± 0.3 ps), not an improvement, as expected (about 0.03 % of LORs). Positions 0.0–0.1 ps.
+    - Rule acts on 14.47 % of near-source events, as em3.
+  - Step 5 (`IMAS_work/necr_freeze.json` → `necr_freeze/`):
+    - As `necr_rule.json` plus em4_walk_rule4. Time: 21.0 min wall; peak 3.2 GB. Gates pass, as before.
+    - NEMA at 5.3 kBq/ml: em4_walk_rule4 663.7 ± 7.4 ps, em3_walk_rule3 663.7 ± 7.6, em2_walk3 683.3 ± 7.5 (model-free 652.5 / 652.5 / 668.7).
+    - Model-free per frame: em4 − em3 is between −1.9 and +0.4 ps (frame 6 −1.9, all others |d| ≤ 0.4).
+  - Spec 011/012 deliverables and em3, walk_rule1 and walk_rule3 are unchanged (SHA-256 checked after steps 2 and 5).
+  - Result: the freeze makes the fixed point converge and gives those three channels the delays measured under `top`. The CTR and NECR equal em3's.
 - [ ] **T13 — Validation** (all FR).
   - Full non-real suite plus `-m real_data`; every `--fr 014-FR-n` cited.
   - `IMAS_timing` page section for the new pair.

@@ -525,6 +525,46 @@ def test_skew_solve_under_rule_recovers_delays_within_uncertainty(tmp_path, setu
     assert history[-1]["change"]["rms_ps"] < 0.5 and np.abs(pulls).max() < 4
 
 
+@pytest.mark.slow
+@pytest.mark.fr("014-FR-4")
+def test_skew_solve_under_rule_freezes_a_swinging_channel(tmp_path, setup, monkeypatch):
+    """Clarify 11: one channel's solved delay is pushed -1500/+1500 ps on alternate passes (as 263181 swung in T11
+    step 2). Without the freeze the solve stops at its pass limit; with 200 ps the channel is held at its start
+    delay from pass 1, the solve converges and the other channels equal those of the solve without the swing."""
+    from src.imas.skew import job as ij, solve
+    rng = np.random.default_rng(43)
+    observations, _, _ = late_top_observations(tmp_path / "obs", setup, rng, n=20_000, late_ps=0.0)
+    top, _ = solve.em_estimator(observations, setup)
+    start = DelayTable({c: d for c, (d, _) in solve.applied_table(top).items()})
+    swing, real, calls = sorted(start.delays)[3], solve.em_estimator, []
+
+    def swinging(view, setup):
+        solution, other = real(view, setup)
+        calls.append(1)
+        solution.channels["delay_ps"][solution.channels["time_channel"] == swing] += 1500.0 * (-1) ** len(calls)
+        return solution, other
+
+    def run(**freeze):
+        return ij.solve_under_rule(observations, setup, start, None, "top_earliest_mean", passes=4, tolerance_ps=0.5,
+                                   progress=lambda _: None, **freeze)
+
+    plain, plain_history, _ = run()
+    monkeypatch.setattr(solve, "em_estimator", swinging)
+    _, history, _ = run()
+    assert len(history) == 4 and history[-1]["change"]["max_abs_ps"] > 2000 and "frozen" not in history[0]
+    calls.clear()
+    solution, history, final = run(freeze_ps=200.0)
+    assert [r["channel"] for r in history[0]["frozen"]] == [swing] and history[-1]["frozen_total"] == 1
+    assert history[0]["frozen"][0]["solved_ps"] - start.delays[swing] < -1400
+    assert history[-1]["change"]["rms_ps"] < 0.5 and len(history) <= len(plain_history) + 1
+    table, reference = solve.applied_table(solution), solve.applied_table(plain)
+    others = [c for c in reference if c != swing]
+    shift = np.median([table[c][0] - start.delays[c] for c in others])
+    assert final.delays[swing] == table[swing][0] == pytest.approx(start.delays[swing] + shift)
+    difference = np.array([table[c][0] - reference[c][0] for c in others])
+    assert np.abs(difference - np.median(difference)).max() < 1.0
+
+
 def rule_job_splits(base, setup):
     """``job_splits`` (two runs x three splits, SMs 50 and 62) where a fifth of the sides have a second TIME hit
     of their minimodule, half of them 400 ps before the top."""
@@ -607,12 +647,23 @@ def test_job_and_walk_fit_under_rule_end_to_end(tmp_path, setup):
     assert (work / f"job_report{suffix}.json").is_file() and report["held_out"]["em"]["events"] > 2000
     with pytest.raises(ij.JobError, match="never overwritten"):
         ij.run_job(rule_job, work, progress=lambda _: None)
+    frozen = ij.load_job(job_file(tmp_path / "freeze.json", splits, **(rule | {"rule_freeze_ps": 200})))
+    assert ij.fingerprint(frozen) == ij.fingerprint(plain)                  # clarify 11: a new name, same events
+    report = ij.run_job(frozen, work, progress=lambda _: None)
+    assert (work / f"lut_em{suffix}-freeze200.csv").is_file() and report["rule"]["rule_freeze_ps"] == 200
+    frozen_total = report["rule"]["rule_passes"][-1]["frozen_total"]   # the 400 ps extras move some > 200 ps
+    assert len(report["rule"]["rule_frozen"]) == frozen_total
+    assert CanonicalLut.read(work / f"lut_em{suffix}-freeze200.csv").manifest["provenance"]["rule_freeze_ps"] == 200
     # refusals
     for changes, match in (({"candidates": False}, "needs candidates"),
                            ({"estimators": ["pairs"]}, "must include 'em'"),
-                           ({"walk_lut": None}, "walk_lut")):
+                           ({"walk_lut": None}, "walk_lut"),
+                           ({"rule_freeze_ps": 0}, "rule_freeze_ps must be"),
+                           ({"rule_freeze_ps": True}, "rule_freeze_ps must be")):
         with pytest.raises(ij.JobError, match=match):
             ij.load_job(job_file(tmp_path / "bad.json", splits, **(rule | changes)))
+    with pytest.raises(ij.JobError, match="other than 'top'"):
+        ij.load_job(job_file(tmp_path / "bad.json", splits, estimators=["em"], rule_freeze_ps=200))
     with pytest.raises(ij.JobError, match="'top'.*'top_earliest_mean'"):
         ij.run_job(ij.load_job(job_file(tmp_path / "w.json", splits, **(rule | {"walk_lut": str(
             tmp_path / "walk_top.json")}))), work, progress=lambda _: None)

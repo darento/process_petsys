@@ -55,7 +55,9 @@ with its SHA-256), each pass runs the EM on the walk-corrected rows with the
 rule's offsets of the previous delays (``timestamp.RuleAdjusted``) until the
 applied delays change by less than ``rule_tolerance_ps`` (gauge-free RMS) or
 after ``rule_passes``. Outputs gain ``_rule-mean``; the checks read the rows
-under the rule with the final delays.
+under the rule with the final delays. ``rule_freeze_ps`` (spec 014 clarify 11)
+resets a channel whose delay changes by more than it in a pass to its start
+delay and holds it there; outputs then gain ``_rule-mean-freeze<ps>``.
 
 A disk preflight checks the free space in ``DIR`` against the expected
 observation-set size (6.3 GB per TB of LDAT, T8) with a 2x margin.
@@ -89,8 +91,13 @@ OBSERVATION_BYTES_PER_LDAT_BYTE = 6.3e-3 * OBSERVATION_WALK_DTYPE.itemsize / OBS
 DISK_MARGIN = 2.0
 JOB_KEYS = {"schema", "config", "runs", "estimators", "per_run_solves", "workers", "max_records", "legacy",
             "transverse_sign", "axial_sign", "walk_lut", "candidates", "timestamp_rule", "rule_start_skew",
-            "rule_start_skew_sha256", "rule_passes", "rule_tolerance_ps"}
+            "rule_start_skew_sha256", "rule_passes", "rule_tolerance_ps", "rule_freeze_ps"}
 RULE_SUFFIX = {"top_earliest_mean": "_rule-mean"}
+
+
+def rule_suffix(rule, freeze_ps=None):
+    """Output name suffix of a solve under ``rule``; a freeze has its own (spec 014 clarify 11)."""
+    return RULE_SUFFIX.get(rule, "") + ("" if freeze_ps is None else f"-freeze{freeze_ps:g}")
 
 
 class JobError(ValueError):
@@ -132,6 +139,7 @@ class Job:
     rule_start_skew_sha256: str | None = None
     rule_passes: int = 3
     rule_tolerance_ps: float = 0.5
+    rule_freeze_ps: float | None = None
 
 
 def load_job(path):
@@ -174,13 +182,15 @@ def load_job(path):
         raise JobError(f"{path.name}: estimators must be among {solve.ESTIMATORS}")
     rule = data.get("timestamp_rule", "top")
     passes, tolerance = data.get("rule_passes", 3), data.get("rule_tolerance_ps", 0.5)
-    start = data.get("rule_start_skew")
+    start, freeze = data.get("rule_start_skew"), data.get("rule_freeze_ps")
     if rule not in ("top", "top_earliest_mean"):
         raise JobError(f"{path.name}: timestamp_rule must be 'top' or 'top_earliest_mean' ('earliest' is for "
                        "skew-only comparisons)")
     if isinstance(passes, bool) or not isinstance(passes, int) or passes < 1 or not float(tolerance) > 0:
         raise JobError(f"{path.name}: rule_passes must be a positive integer and rule_tolerance_ps positive")
-    if rule == "top" and (start or data.get("rule_start_skew_sha256")):
+    if freeze is not None and (isinstance(freeze, bool) or not isinstance(freeze, (int, float)) or not freeze > 0):
+        raise JobError(f"{path.name}: rule_freeze_ps must be a positive number of ps (or absent)")
+    if rule == "top" and (start or data.get("rule_start_skew_sha256") or freeze is not None):
         raise JobError(f"{path.name}: rule_start_skew is the start of a solve under a timestamp rule other than 'top'")
     if rule != "top":
         missing = [k for k in ("walk_lut", "rule_start_skew", "rule_start_skew_sha256") if not data.get(k)]
@@ -196,7 +206,8 @@ def load_job(path):
                int(data.get("transverse_sign", SELECTED_TRANSVERSE_SIGN)),
                int(data.get("axial_sign", SELECTED_AXIAL_SIGN)), data,
                Path(data["walk_lut"]) if data.get("walk_lut") else None, bool(data.get("candidates", False)), rule,
-               Path(start) if start else None, data.get("rule_start_skew_sha256"), passes, float(tolerance))
+               Path(start) if start else None, data.get("rule_start_skew_sha256"), passes, float(tolerance),
+               None if freeze is None else float(freeze))
 
 
 def _identity(path):
@@ -348,7 +359,7 @@ def _walk(job, work, setup, stamp):
         timestamp.check_rule(timestamp.table_rule(table.manifest), job.timestamp_rule)
     except timestamp.RuleError as error:
         raise JobError(f"walk LUT {job.walk_lut}: {error}") from None
-    suffix = f"_walk-{table.sha256[:12]}{RULE_SUFFIX.get(job.timestamp_rule, '')}"
+    suffix = f"_walk-{table.sha256[:12]}{rule_suffix(job.timestamp_rule, job.rule_freeze_ps)}"
     existing = [p for p in [work / f"job_report{suffix}.json", *(work / f"lut_{e}{suffix}.csv" for e in solved(job))]
                 if p.exists()]
     if existing:
@@ -383,24 +394,51 @@ def delay_change(new, old):
             "max_abs_ps": float(np.abs(difference).max())}
 
 
-def solve_under_rule(observations, setup, start, walk, rule, *, passes, tolerance_ps, progress=print):
+def freeze_swinging(solution, old, start, frozen, threshold_ps):
+    """Spec 014 clarify 11, in place: channels of ``start`` whose applied delay changed from ``old`` by more than
+    ``threshold_ps`` (gauge-free) join ``frozen``; every frozen applied channel of ``solution`` is reset to its
+    start delay plus the median change of the other channels against ``start`` (this pass's gauge). Returns the
+    newly frozen channels with their solved, start and frozen delays."""
+    table = solve.applied_table(solution)
+    common = sorted(set(table) & set(old))
+    difference = np.array([table[c][0] - old[c][0] for c in common])
+    if len(common) > 1:
+        difference -= np.median(difference)
+    new = [c for c, d in zip(common, difference) if abs(d) > threshold_ps and c in start.delays and c not in frozen]
+    frozen.update(new)
+    others = [c for c in table if c in start.delays and c not in frozen]
+    shift = float(np.median([table[c][0] - start.delays[c] for c in others])) if others else 0.0
+    channels = solution.channels
+    for row in np.flatnonzero(channels["apply"] & np.isin(channels["time_channel"], sorted(frozen))):
+        channels["delay_ps"][row] = start.delays[int(channels["time_channel"][row])] + shift
+    return [{"channel": c, "solved_ps": table[c][0], "start_ps": float(start.delays[c]),
+             "frozen_ps": float(start.delays[c] + shift)} for c in new]
+
+
+def solve_under_rule(observations, setup, start, walk, rule, *, passes, tolerance_ps, freeze_ps=None,
+                     progress=print):
     """FR-4 fixed point: EM passes on ``observations`` (walk-corrected rows with the candidates) adjusted by the
     rule's offsets of the previous pass's delays (``start`` first), until the applied delays change by less than
-    ``tolerance_ps`` gauge-free RMS or after ``passes``. Returns the last solution, the per-pass record and its
-    delays as a ``DelayTable``."""
+    ``tolerance_ps`` gauge-free RMS or after ``passes``. With ``freeze_ps`` swinging channels are held at their
+    start delays (``freeze_swinging``). Returns the last solution, the per-pass record and its delays as a
+    ``DelayTable``."""
     previous = start
     old = {c: (b, np.nan) for c, b in start.delays.items()}
-    history = []
+    history, frozen = [], set()
     for k in range(1, passes + 1):
         view = timestamp.RuleAdjusted(observations, previous, walk, rule)
         solution, _ = solve.em_estimator(view, setup)
+        newly = [] if freeze_ps is None else freeze_swinging(solution, old, start, frozen, freeze_ps)
         table = solve.applied_table(solution)
         change = delay_change(table, old)
         counts = view.counts()
         history.append({"pass": k, "change": change, "status_counts": solution.diagnostics["status_counts"],
                         "rule_counts": counts,
                         "rule_acts_share_train": counts.get("train", {}).get("rule acts", 0)
-                        / max(counts.get("train", {}).get("rows", 0), 1)})
+                        / max(counts.get("train", {}).get("rows", 0), 1)}
+                       | ({} if freeze_ps is None else {"frozen": newly, "frozen_total": len(frozen)}))
+        if newly:
+            progress(f"rule pass {k}: froze {[r['channel'] for r in newly]} at their start delays")
         progress(f"rule pass {k}: delays changed by {change['rms_ps']} ps RMS")
         previous, old = DelayTable({c: d for c, (d, _) in table.items()}), table
         if change["rms_ps"] is not None and change["rms_ps"] < tolerance_ps:
@@ -468,6 +506,7 @@ def run_job(job, work, *, progress=print, observe_only=False):
         clock = time.perf_counter()
         ruled["em"], history, final = solve_under_rule(pooled, setup, start, walk_lut, job.timestamp_rule,
                                                         passes=job.rule_passes, tolerance_ps=job.rule_tolerance_ps,
+                                                        freeze_ps=job.rule_freeze_ps,
                                                         progress=progress)
         report["stages"]["rule_passes_seconds"] = time.perf_counter() - clock
         converged = history[-1]["change"]["rms_ps"] is not None and \
@@ -475,6 +514,9 @@ def run_job(job, work, *, progress=print, observe_only=False):
         rule = {"timestamp_rule": job.timestamp_rule, "rule_start_skew": str(job.rule_start_skew),
                 "rule_start_skew_sha256": job.rule_start_skew_sha256, "rule_passes": history,
                 "rule_converged": converged, "rule_tolerance_ps": job.rule_tolerance_ps}
+        if job.rule_freeze_ps is not None:
+            rule |= {"rule_freeze_ps": job.rule_freeze_ps,
+                     "rule_frozen": [r for entry in history for r in entry["frozen"]]}
         provenance |= rule
         report["rule"] = rule | {"note": "the checks (legacy included) read the rows under the rule with the final "
                                          "pass's delays",
@@ -543,7 +585,8 @@ def main(argv=None):
     print(json.dumps({k: report[k] for k in keys if k in report},
                      indent=1, default=float))
     suffix = '' if 'walk' not in report else '_walk-' + report['walk']['walk_lut_sha256'][:12]
-    suffix += RULE_SUFFIX.get((report.get("rule") or {}).get("timestamp_rule"), "")
+    rule = report.get("rule") or {}
+    suffix += rule_suffix(rule.get("timestamp_rule"), rule.get("rule_freeze_ps"))
     name = "job_report_observe.json" if args.observe_only else f"job_report{suffix}.json"
     print(f"-> {args.work / name}")
     return 0

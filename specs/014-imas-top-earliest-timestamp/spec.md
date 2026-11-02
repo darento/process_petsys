@@ -64,6 +64,7 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
     2. skew re-solved with that walk;
     3. walk refitted.
   - Under `top_earliest_mean` a side's time involves two channels' delays and walks (½ each), while the shared EM and walk fit assume one per side. Each solve and fit is a fixed point (clarify 9): the solver sees the top's time adjusted by the rule's offset from the previous tables, re-computed after each pass until the tables stop changing (or a pass limit). Passes and changes are reported; the shared EM and walk kernels are unchanged.
+  - Optional freeze of swinging channels (clarify 11): with a threshold set, a channel whose applied delay changes by more than it in a skew pass (gauge-free) is reset to its start-skew delay, in that pass's gauge, and held there in every later pass and in the output LUT. Frozen channels are reported with their solved and start delays; the output carries a distinct name, so a solve without the freeze is never overwritten.
   - Held-out widths and the change at each step are reported, as in spec 012 FR-3.
   - New outputs never overwrite the spec 011/012 deliverables.
 - **FR-5 — CTR comparison and acceptance.**
@@ -109,6 +110,7 @@ Each side's timestamp is now the highest-charge TIME hit of the selected minimod
 8. **Share input (plan, 2026-10-30):** a candidate's share is its own charge over the side's summed TIME charge, as `walk_inputs` derives it and as the exploratory gain was measured.
 9. **Refit method (plan, 2026-10-30):** fixed point on the top's adjusted time; shared EM and walk kernels unchanged.
 10. **Ordering (owner, 2026-10-30, after measurement):** the earliest is chosen after skew + walk, as FR-1 states. `scripts_imas/necr_time_order.py` compared it with ordering after skew only (frozen em2 + walk3, NECR, same events, model-free FWHM). Top only / skew ordering / skew + walk ordering: frame 7 667.6 / 657.8 / 657.6 ps, frame 20 488.0 / 480.9 / 480.4 ps, frame 30 454.9 / 446.5 / 445.5 ps (paired SD of the ordering difference 0.4–0.6 ps). The rule acts on 13–14 % of events with skew + walk against 10–11 % with skew only; the two orderings pick a different hit in about 3 %.
+11. **Swinging channels (owner, 2026-11-02, after T11/T12):** the T11 step 2 skew solve did not converge because two channels (263181, 132518) swing about 1.5 ns per pass; a channel's own delay decides when its hits are the earliest candidate, so an outlier feeds back on itself. Freeze, not damp: under `top` the em and em2 solves agree on these channels, while damping would settle at an arbitrary midpoint. They carry about 0.03 % of the LORs, so the pooled CTR moves by well under 1 ps; LORs through them are mistimed by about 1.4 ns with em3. The FR-4 freeze threshold is a job option (200 ps for the real data). With it the T14 solve froze a third outlier of the same kind, 2509, and converged in 2 passes.
 
 ## Out of scope
 
