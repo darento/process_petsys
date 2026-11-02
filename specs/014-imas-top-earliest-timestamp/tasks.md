@@ -1,6 +1,6 @@
 # Tasks — IMAS side timestamp from the top and earliest TIME hits
 
-Status: in progress 2026-10-30 (T1–T10 done). [Approved spec](spec.md), [plan](plan.md).
+Status: in progress 2026-10-31 (T1–T11 done). [Approved spec](spec.md), [plan](plan.md).
 
 **Conventions:**
 - Each task cites `014-FR-n` and names its check before coding.
@@ -156,7 +156,7 @@ Status: in progress 2026-10-30 (T1–T10 done). [Approved spec](spec.md), [plan]
     - `tests/test_imas_timestamp.py -m "not real_data" -n 0 --slow-limit 5`: 26 passed. The CTR (29 s) and NECR (8 s) runs are marked slow.
     - `-k imas -m "not real_data"`: 244 passed (spec 011/012/013 CTR and NECR tests unedited).
     - `PETSYS_DATA_DIR=C:/Users/dsanchez/Desktop/data`, `-k imas -m real_data`: 2 passed.
-- [ ] **T8 — Exports** (FR-6).
+- [x] **T8 — Exports** (FR-6).
   - **Done when:**
     - Native and legacy exports refuse a rule skew LUT, naming the rule.
     - The walk export manifest carries `timestamp_rule`.
@@ -206,17 +206,85 @@ Status: in progress 2026-10-30 (T1–T10 done). [Approved spec](spec.md), [plan]
       - run 11: 10,375,008 / 326,613
       - In total 48,667,590 rows.
     - The four `encal.tsv` are byte-identical to `job_ship`'s.
-- [ ] **T11 — Steps 1–3 round trip** (FR-4).
+- [x] **T11 — Steps 1–3 round trip** (FR-4).
   - **Done when:**
     - Every fit and pass converges or reports its limit.
     - Held-out widths and changes are recorded.
     - No spec 011/012 output is touched.
+  - Deviation (fixes T6 to the plan): a rule job may declare other estimators. Plan step 2 says "the pair estimator is skipped under a rule", but T6 refused any estimator list other than `["em"]`. Estimators are in the job fingerprint, so `["em"]` was refused on `job_rule/` (streamed as `job_ship`, `["em", "pairs"]`). Now a rule job needs `em` among its estimators; the others stay declared (same fingerprint) and are skipped. `job.solved(job)` lists the solved ones; `report.rule.skipped_estimators` records the rest. `test_job_and_walk_fit_under_rule_end_to_end` asserts the new rule: `["pairs"]` refused, `["em", "pairs"]` solves `em` only, with the same fingerprint as the plain job.
+    - `tests/test_imas_skew_job.py tests/test_imas_walk.py tests/test_imas_timestamp.py -m "not real_data"`: 48 passed.
+  - Step 1 (2026-10-30, `IMAS_work/walk/walk_rule1_fit.json`):
+    - Inputs: skew em2 (`daa3b251…`), pairing walk1, start walk3 (`5e8ac010…`), rule `top_earliest_mean`, work `job_rule`, spec 012 default bins and options.
+    - Output `walk/walk_rule1.json` (`f5d870aa6390…`). 9.9 min wall.
+    - Train: 15,710,711 events (stride 3); held-out: 1,535,442.
+    - Converged in 3 rounds: RMS change 15.12 → 0.82 → 0.09 ps (max 41.2 → 2.4 → 0.33 ps). The rule acts on 14.8 % → 14.1 % of train events.
+    - Held-out core RMS: 245.9 ps (em2, no walk) → 222.3 ps (walk_rule1 under the rule); 226.1 ps for the same walk under `top`. walk3 under `top` gave 226.0 ps.
+    - Candidate walk clamps: share 6,365,954 (the lowest share bin, as plan risk "walk extrapolation" predicts), charge 724; no exclusions.
+  - Step 2 (2026-10-30, `IMAS_work/job_rule_walk.json` = `job_rule.json` plus walk_rule1, rule, start em2 `daa3b251…`, `rule_passes` 3; `--work job_rule`):
+    - Output `job_rule/lut_em_walk-f5d870aa6390_rule-mean.csv` (em3, file SHA-256 `522a92ff…`) and `job_report_walk-f5d870aa6390_rule-mean.json`. `pairs` skipped (recorded).
+    - Time: 4.27 h wall (3 passes, 3.94 h, about 79 min each; held-out checks 10.7 min). Peak memory 7.7 GB.
+    - Status: 14,534 calibrated, 16 low statistics, 810 unobserved; 14,550 applied.
+    - **Not converged** (limit of 3 passes): gauge-free delay change 17.4 / 20.4 / 18.0 ps RMS, max 1534 / 1804 / 1547 ps.
+      - Cause: two outlier channels swing about 1.5 ns per pass. 263181 (SM 111 mm 5): em −2617, em2 −2616, em3 −1177 ps; its minimodule mates are −135 to −363 ps. 132518 (SM 70 mm 8): em 450, em2 280, em3 −938 ps; it sits beside 132519 at +1681 ps.
+      - Together they give about 17.6 ps of RMS, so the other channels' last-pass change is near zero.
+      - Under the rule a channel's own delay decides when its hits are the earliest candidate, so an outlier's delay feeds back on itself.
+      - em3 − em2 over 14,549 common channels: RMS 18.5 ps, robust SD 8.5 ps, 10.0 ps RMS without |d| > 200 ps; |d| median 5.7, p99 28.3 ps; 7 channels beyond 50 ps.
+    - Rule acts on 14.1 % of train rows. Candidates: 67.1 M train, 20,350 excluded (no delay), 19.1 M share clamps.
+    - Held-out (rows under the rule with walk_rule1 and the final delays): EM sigma 224.5 ps, legacy 239.0 ps; em vs legacy robust SD 92.9 ps.
+    - Owner 2026-10-31: keep em3 and go on (step 3, then T12). The CTR decides; a fix for swinging channels is a follow-up if the pair is accepted.
+  - Step 3 (2026-10-31, `IMAS_work/walk/walk_rule3_fit.json`):
+    - Inputs: skew em3 (`522a92ff…`), pairing and start walk_rule1 (`f5d870aa…`), rule `top_earliest_mean`, work `job_rule`.
+    - Output `walk/walk_rule3.json` (`aea7b22a416e…`). 7.8 min wall.
+    - Train: 15,710,739 events (stride 3); held-out: 1,535,443.
+    - Converged in 2 rounds: RMS change 13.09 → 0.40 ps (max 82.4 → 1.5 ps). The rule acts on 14.1 % → 14.4 % of train events.
+    - Held-out core RMS: 246.5 ps (em3, no walk) → 221.6 ps (walk_rule3 under the rule); 225.6 ps for the same walk under `top`.
+    - Round trip, held-out core RMS under the rule: walk3 (start) → walk_rule1 222.3 ps → walk_rule3 221.6 ps. walk3 under `top` gave 226.0 ps.
+  - The 11 spec 011/012 deliverables (job_ship LUTs, job_walk em2 LUT and report, walk1/walk3 LUTs, manifests and report) are unchanged: SHA-256 checked against a snapshot taken before step 1, after step 2 and again after step 3.
 - [ ] **T12 — Steps 4–5: CTR acceptance and NECR evidence** (FR-5, FR-7).
   - **Done when:**
     - The 4-position report gives the acceptance verdict (pooled gate and per-position rule).
     - The NECR run reports the new pair beside em2 + walk3 with its gates intact.
     - The diagnostics are written.
     - The owner reviews the verdict.
+  - Step 4 (2026-10-31, `IMAS_work/ctr_rule_4pos.json` → `ctr_rule_4pos/ctr.json`):
+    - Base: the spec 012 `ctr_walk_4pos_fr7.json`, with the same 20 acquisitions over 4 positions, job_walk encal and cuts.
+    - Tables: legacy, em, em2+walk3, em3+walk_rule3 (the refitted pair, under its rule), and the frozen rule tables legacy@earliest, em@earliest, em2+walk3@mean.
+    - Time: 13.5 min wall.
+    - Pooled model-free FWHM (± total uncertainty) and Gaussian FWHM, ps:
+
+      | Table | Model-free | Gaussian |
+      |---|---|---|
+      | legacy | 532.3 ± 1.5 | 616.0 |
+      | legacy@earliest | 524.7 ± 1.4 | 578.8 |
+      | em | 468.1 ± 1.5 | 555.0 |
+      | em@earliest | 464.7 ± 1.3 | 517.2 |
+      | em2+walk3 | 402.8 ± 1.2 | 454.8 |
+      | em2+walk3@mean | 392.3 ± 1.1 | 437.7 |
+      | **em3+walk_rule3** | **389.9 ± 0.9** | **434.9** |
+
+    - Reproduction: em2+walk3 402.8 ps and em 468.1 ps equal the spec 012 record.
+    - **Acceptance (FR-5) passes.** em2+walk3 → em3+walk_rule3: improvement 12.8 ps against a combined 1.5 ps (paired 12.8 ± 0.8 ps). `positions_not_worse` passed.
+      - Per position (reference → refitted, ps): 1cm_3d8cFOV 401.5 → 388.2 (± 3.9); 1cm_cFOV 400.0 → 387.8 (± 2.1); 20cm_3d8cFOV 405.2 → 391.4 (± 3.9); 20cm_cFOV 404.5 → 392.3 (± 2.8). All four are accepted individually.
+      - Frozen em2+walk3@mean: 10.4 ps (paired ± 0.9), so the refit adds 2.4 ps.
+    - Rule acts on 14.5 % of near-source events (14.1–14.7 % per position): 14.9 % for em2+walk3@mean, 10.1 % for legacy@earliest, 9.9 % for em@earliest.
+      - Candidates: 5.48 M; 1,426 excluded (no delay); 1.54 M share clamps.
+    - Diagnostics: 12 PNGs in `ctr_rule_4pos/` and, with shortened legends, `ctr_rule_4pos/plots_v2/` (regenerated from the report; `timestampplots` legend change, T7/T9 CTR test rerun: 1 passed).
+      - The top is earliest on 92.5 % of sides.
+      - In the 250–1000 ps lead bins the rule halves the oriented mean shift.
+      - A spike at a lead of about −2.65 ns (about 1,800 sides) comes from **SM 70 mm 8** (channels 132518/132519): the rule acts on 51.5 % of its sides (median minimodule 7.4 %), also under the frozen em2+walk3 tables, so it is not caused by the refit. Same minimodule as swinging channel 132518 (T11 step 2).
+  - Step 5 (2026-10-31, `IMAS_work/necr_rule.json` → `necr_rule/`):
+    - Base: `necr_present5.json` plus em3+walk_rule3 (`em3_walk_rule3`) and frozen `em2_walk3@mean`. Gates unchanged (frame 7; transfer legacy → em; acceptance em → em2_walk3).
+    - Time: 20.9 min wall; peak memory 3.2 GB.
+    - Gates: transfer and acceptance pass, as in present5.
+    - Reproduction: every em2_walk3 frame value equals present5's.
+    - NEMA value at 5.3 kBq/ml (background-subtracted, interpolated frames 6/7), ps:
+      - em2_walk3 (spec 013 headline, unchanged): 683.3 ± 7.5
+      - em2_walk3@mean: 680.2 ± 7.0
+      - em3_walk_rule3: 663.7 ± 7.6
+      - Model-free at the same activity: 668.7 → 652.5 ps.
+    - Model-free per frame, em2_walk3 → em3_walk_rule3 (ps): frame 1 (11.4 kBq/ml) 825.7 → 807.1; frame 7 (5.3) 667.6 → 651.5; frame 15 (1.9) 535.3 → 519.0; frame 20 (1.0) 488.0 → 472.6; frame 25 (0.52) 466.4 → 450.0; frame 30 (0.27) 454.9 → 438.8; frame 32 (0.21) 452.3 → 437.4. The improvement is 15–19 ps at every activity.
+    - Rule acts on 13.2–14.1 % of the same events per frame.
+  - Pending: owner review of the verdict.
 - [ ] **T13 — Validation** (all FR).
   - Full non-real suite plus `-m real_data`; every `--fr 014-FR-n` cited.
   - `IMAS_timing` page section for the new pair.

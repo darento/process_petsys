@@ -599,12 +599,17 @@ def test_job_and_walk_fit_under_rule_end_to_end(tmp_path, setup):
     assert provenance["timestamp_rule"] == "top_earliest_mean" and provenance["rule_start_skew_sha256"] == start_sha
     assert 1 <= len(provenance["rule_passes"]) <= 3 and provenance["walk_lut_sha256"] == walk.sha256
     assert report["rule"]["rule_passes"][0]["rule_acts_share_train"] > 0.02
+    assert report["rule"]["skipped_estimators"] == [] and set(report["estimators"]) == {"em"}
+    both = ij.load_job(job_file(tmp_path / "both.json", splits, **(rule | {"estimators": ["em", "pairs"]})))
+    assert ij.solved(both) == ("em",) and ij.solved(plain) == ("em",)          # pairs declared, skipped
+    assert ij.fingerprint(both) == ij.fingerprint(ij.load_job(job_file(tmp_path / "ship.json", splits,
+                                                                       estimators=["em", "pairs"])))
     assert (work / f"job_report{suffix}.json").is_file() and report["held_out"]["em"]["events"] > 2000
     with pytest.raises(ij.JobError, match="never overwritten"):
         ij.run_job(rule_job, work, progress=lambda _: None)
     # refusals
     for changes, match in (({"candidates": False}, "needs candidates"),
-                           ({"estimators": ["em", "pairs"]}, r"\['em'\] only"),
+                           ({"estimators": ["pairs"]}, "must include 'em'"),
                            ({"walk_lut": None}, "walk_lut")):
         with pytest.raises(ij.JobError, match=match):
             ij.load_job(job_file(tmp_path / "bad.json", splits, **(rule | changes)))

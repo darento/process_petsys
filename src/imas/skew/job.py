@@ -48,7 +48,8 @@ stops after stage 2 (``job_report_observe.json``).
 Timestamp rule (spec 014 FR-4): ``candidates`` streams the other TIME hits of
 each side into the observation sets (a new work directory; not part of the
 job fingerprint, which identifies the events). ``timestamp_rule``
-``top_earliest_mean`` (em only, with a walk LUT fitted under the same rule)
+``top_earliest_mean`` (em, with a walk LUT fitted under the same rule; other
+declared estimators stay in the fingerprint but are skipped and recorded)
 solves the skew as a fixed point: from ``rule_start_skew`` (a frozen IMAS LUT
 with its SHA-256), each pass runs the EM on the walk-corrected rows with the
 rule's offsets of the previous delays (``timestamp.RuleAdjusted``) until the
@@ -186,8 +187,9 @@ def load_job(path):
         if missing or not data.get("candidates"):
             raise JobError(f"{path.name}: timestamp_rule {rule!r} needs candidates true, walk_lut, rule_start_skew "
                            f"and rule_start_skew_sha256 (missing {missing or ['candidates']})")
-        if estimators != ("em",):
-            raise JobError(f"{path.name}: under timestamp_rule {rule!r} the estimators are ['em'] only")
+        if "em" not in estimators:
+            raise JobError(f"{path.name}: under timestamp_rule {rule!r} the estimators must include 'em' (the "
+                           "others are skipped)")
     return Job(Path(data.get("config", "configs/imas_2DAQ.yaml")), tuple(runs), estimators,
                bool(data.get("per_run_solves", False)), int(data.get("workers", 1)), data.get("max_records"),
                Path(data["legacy"]) if data.get("legacy") else None,
@@ -347,11 +349,17 @@ def _walk(job, work, setup, stamp):
     except timestamp.RuleError as error:
         raise JobError(f"walk LUT {job.walk_lut}: {error}") from None
     suffix = f"_walk-{table.sha256[:12]}{RULE_SUFFIX.get(job.timestamp_rule, '')}"
-    existing = [p for p in [work / f"job_report{suffix}.json", *(work / f"lut_{e}{suffix}.csv" for e in job.estimators)]
+    existing = [p for p in [work / f"job_report{suffix}.json", *(work / f"lut_{e}{suffix}.csv" for e in solved(job))]
                 if p.exists()]
     if existing:
         raise JobError(f"outputs of this walk solve exist: {[p.name for p in existing]}; never overwritten")
     return table, suffix
+
+
+def solved(job):
+    """The estimators a job solves: under a timestamp rule only ``em`` (the others are declared, so they stay in
+    the fingerprint, and skipped)."""
+    return job.estimators if job.timestamp_rule == "top" else ("em",)
 
 
 def _start_skew(job, setup):
@@ -450,7 +458,7 @@ def run_job(job, work, *, progress=print, observe_only=False):
         report["walk"] = {"walk_lut": str(job.walk_lut), "walk_lut_sha256": walk_lut.sha256,
                           "skew_lut_sha256_at_fit": walk_lut.manifest.get("skew_lut_sha256"),
                           "note": "every solve and check (legacy included) reads walk-corrected dt"}
-    solved = {}
+    ruled = {}
     if job.timestamp_rule != "top":
         start = _start_skew(job, setup)
         try:
@@ -458,7 +466,7 @@ def run_job(job, work, *, progress=print, observe_only=False):
         except timestamp.RuleError as error:
             raise JobError(str(error)) from None
         clock = time.perf_counter()
-        solved["em"], history, final = solve_under_rule(pooled, setup, start, walk_lut, job.timestamp_rule,
+        ruled["em"], history, final = solve_under_rule(pooled, setup, start, walk_lut, job.timestamp_rule,
                                                         passes=job.rule_passes, tolerance_ps=job.rule_tolerance_ps,
                                                         progress=progress)
         report["stages"]["rule_passes_seconds"] = time.perf_counter() - clock
@@ -469,14 +477,15 @@ def run_job(job, work, *, progress=print, observe_only=False):
                 "rule_converged": converged, "rule_tolerance_ps": job.rule_tolerance_ps}
         provenance |= rule
         report["rule"] = rule | {"note": "the checks (legacy included) read the rows under the rule with the final "
-                                         "pass's delays"}
+                                         "pass's delays",
+                                 "skipped_estimators": [e for e in job.estimators if e not in solved(job)]}
         pooled = timestamp.RuleAdjusted(pooled, final, walk_lut, job.timestamp_rule)
         sets = {name: timestamp.RuleAdjusted(s, final, walk_lut, job.timestamp_rule) for name, s in sets.items()}
     solutions, tables = {}, {}
-    for name in job.estimators:
+    for name in solved(job):
         clock = time.perf_counter()
-        if name in solved:
-            solution = solved[name]
+        if name in ruled:
+            solution = ruled[name]
         elif name == "em":
             solution, _ = solve.em_estimator(pooled, setup, directory=None)
         else:

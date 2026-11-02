@@ -18,6 +18,7 @@ to the CTR report (headless, Agg).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 
@@ -140,7 +141,9 @@ def write_plots(output, diagnostics):
     output, paths = Path(output), []
     for name, entry in diagnostics.items():
         stem = output.with_name(f"{output.stem}_{_safe(name)}")
-        groups = {**entry["per_position"], "pooled": entry["pooled"]}      # pooled drawn last, in black
+        prefix = os.path.commonprefix(list(entry["per_position"])) if len(entry["per_position"]) > 1 else ""
+        groups = {name[len(prefix):] or name: group for name, group in entry["per_position"].items()}
+        groups["pooled"] = entry["pooled"]                                # pooled drawn last, in black
 
         def colour(k, label):
             return "k" if label == "pooled" else f"C{k}"
@@ -153,7 +156,7 @@ def write_plots(output, diagnostics):
                             f"< {edges[0]:g} ps {group['below_range_sides']}")
         ax.set(yscale="log", xlabel="earliest - top corrected time per side (ps)", ylabel="sides per bin",
                title=f"{name} ({entry['rule']}): lead of the earliest candidate")
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=7, title=prefix.strip() or None, title_fontsize=7)
         figure.tight_layout()
         paths.append(stem.with_name(stem.name + "_lead.png"))
         figure.savefig(paths[-1], dpi=120)
@@ -177,7 +180,7 @@ def write_plots(output, diagnostics):
             ax.patch.set_visible(False)
             ax.set_xticks(x, labels, fontsize=8)
             ax.set(xlabel="event lead (the more negative side)", ylabel=ylabel)
-            ax.legend(fontsize=7, ncol=2)
+            ax.legend(fontsize=6, ncol=2, loc="upper left", title=prefix.strip() or None, title_fontsize=6)
         axes[1].axhline(0, color="k", lw=0.6)
         figure.suptitle(f"{name}: CTR per lead bin, before (top) and after ({entry['rule']})")
         figure.tight_layout()
