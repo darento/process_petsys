@@ -1,0 +1,44 @@
+{
+ "requirements": [
+  "015-FR-3",
+  "015-FR-4",
+  "015-FR-5",
+  "015-FR-6"
+ ],
+ "generated_utc_date": "2026-11-03",
+ "repo_commit": "7bb3516227faf07c21dfcbf4fc74b277995eac56",
+ "sources": {
+  "scripts_imas/imas_listmode_reference_015.py": "2171e9ba953e11aeb46bfda98ef9ac28351c708a79f21cd8a0e74dbf25c11781",
+  "configs/imas_2DAQ.yaml": "1f9addc8292883adfa918e3482f2fcc541c452060162e8ec4ef430f8b59f4b1e",
+  "maps/imas2DAQ_map.yaml": "f12138c86da842422f9ba415421d259e8db0aec2f04567807f55234d74007a09",
+  "IMAS/20261019_Na22_1cm_cFOV_test_300s_coincCompact_00000034.ldat": "553d02230286e923a54ddb77a4e97bd2fe8b83356e77783433f55208c6310343",
+  "IMAS/LUTs/IMASNoCatDOI.h5": "3aa5971e86a6e0bf0d6db505abd24cd46b5a905e9ac1ace64bbdd96a0b882c5a",
+  "IMAS/LUTs/IMASNoCatY.h5": "20d143a08f160152b9ee7d739cd4f4a849f19a8e7f3c35a9860c4cc35e7cbafd",
+  "IMAS/LUTs/pares_5SR.txt": "4665250a5567a90ff56fc6b99f0411aca4cb55e158fe46b6805d7d3c4991f85a",
+  "IMAS_work/job_rule/lut_em_walk-f5d870aa6390_rule-mean-freeze200.csv": "6acea3e2f103d0453a4a1f9b9b6316388f615c5a40df5bad7c8c904a85776932",
+  "IMAS_work/job_rule/skew_20251119_run7/encal/encal.tsv": "5180ede5d23ed637a978e1a77851dcbc32661b56e34c1747cb6180a835fe7497",
+  "IMAS_work/walk/walk_rule4.json": "3cdb98f833e0f4890ba6472b18b26ae6a795f82030fcedb01a451b730e54f023"
+ },
+ "golden": "timing/015_t6_imas_lm_prefix.bin",
+ "sha256": "2438f5033c6c14e44523338f5b809379cbdb201fe1f45efaf872b34705dcd35e",
+ "bytes": 106392,
+ "fixture": "PETSYS_DATA_DIR/IMAS/20261019_Na22_1cm_cFOV_test_300s_coincCompact_00000034.ldat, first 100000 records; SLAB_EN_MAP and walk keV = skew run 7 encal; EM4 + walk_rule4, rule top_earliest_mean; NN IMASNoCat Y/DOI, Keras predict batch 16384, CPU (TF 2.13, Windows)",
+ "method": "scripts_imas/imas_listmode_reference_015.py: the legacy imas_listmode.py per-record loop with the en_min_ch hit floor, zeroed Esignals and every accepted coincidence written (spec 015 FR-3/FR-5/FR-6), dt from the ImasTimingCorrection class of docs/imas/I3M_newSkew_walk/listmode_skew_walk.md; raw CoincidenceV5 records, no header.",
+ "truth": "Output of the corrected legacy listmode loop, not physical truth.",
+ "settings": {
+  "max_records": 100000,
+  "t0_ps": 340000022248993,
+  "accepted": 4433,
+  "codes": {
+   "accepted": 4433,
+   "unmapped channel": 0,
+   "side min channels": 7686,
+   "no positive minimodule energy": 0,
+   "minimodule min channels": 555,
+   "missing energy calibration": 0,
+   "invalid energy calibration": 139,
+   "energy window": 87035,
+   "pair": 152
+  }
+ }
+}
